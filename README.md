@@ -69,6 +69,20 @@ that forwards to Render.
 Same code, three ways to store: a file (`DB_PATH`), Docker volume, or Neon (`DATABASE_URL`). If `DATABASE_URL`
 is set it wins.
 
+## Live catalog from Scenario Manager
+
+SM has no export, so the SM TaskBox userscript (v2.21+, signed in as you) reads every object from `/api/objects`
+and pushes a compact list to `POST /api/catalog/sync`. The page then picks only from real stock (`available`,
+which already subtracts borrowed items) and shows "Kho SM: cap nhat X phut truoc". Rules: type Obj, ACTIVE, has a
+Vietnamese name, available above 0. Categories still come from `data/catalog.csv` (SM has no category field);
+new objects show as "Chua phan loai".
+
+- Set `SYNC_TOKEN` on the server (Render Environment tab). Without it the endpoint is closed (503).
+- In the userscript panel enter the app link and the same token, press "Dong bo kho ngay", and tick the auto box
+  to refresh every 10 minutes while an SM tab is open. A list shorter than 50 items is refused, and the
+  userscript only sends when every page downloaded.
+- The snapshot is stored in the database, so a restart keeps the last list.
+
 ## The catalog
 
 `data/catalog.csv` is your sheetsync export. Rules: status ACTIVE, has a Vietnamese name, quantity above 0
@@ -85,3 +99,24 @@ is set it wins.
 
 `pip install -r requirements-dev.txt && pytest` (SQLite, 17 tests; point `TEST_DATABASE_URL` at a Postgres to run the same suite there: simultaneous boxes, bad model output, stock cap,
 workbook IDs, locks, approval, expiry, access code, DeepSeek client against a fake API).
+
+## Full automation chain (Hanoi-GPI only, nothing in SM is ever edited or deleted)
+
+1. **Available objects.** The userscript (signed in to SM) reads `/api/objects`, keeps only the sector in its "Sector"
+   box (default `Hanoi-GPI`) and sends them to the app with the `SYNC_TOKEN`. The app drops anything outside
+   `SECTORS` (env, default `Hanoi-GPI`) again on its side, so other sectors are never stored.
+2. **Boxes.** The team builds boxes on the page; nothing is duplicated (database-level guarantee).
+3. **Google Sheet.** Paste `integrations/google_sheets_apps_script.gs` into the sheet's Apps Script. A menu fills the
+   approved boxes into the block of the matching tab. It writes only into completely empty cells, re-checks right
+   before writing, never overwrites, and shows a preview first. Timer is optional (same rules).
+4. **Push to SM.** In the userscript, paste the app link in the source field and press "Quét dữ liệu", review the table,
+   then press "Đồng bộ". For boxes from the app it is create-only: it never updates a box that already exists in SM.
+   After each confirmed create it tells the app (`POST /api/boxes/{id}/pushed`, needs `SYNC_TOKEN`), the box shows
+   "Đã đẩy lên SM", and it is skipped from then on, even on later days. A pushed box cannot be reopened or discarded
+   in the app. An admin can undo the mark with `DELETE /api/boxes/{id}/pushed` and the sync token.
+
+No SM password or token is stored on the server. The only secret the server holds for SM is the shared `SYNC_TOKEN`,
+which can only replace the catalog snapshot and mark boxes as pushed.
+
+Tests: `python -m pytest tests` (add `TEST_DATABASE_URL=postgresql://...` to run them on Postgres too),
+`node tests/apps_script_test.js` for the sheet script.

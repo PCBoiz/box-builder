@@ -3,12 +3,12 @@
 
 const PALETTE = ["#17776f", "#4659c9", "#b0346f", "#657214", "#7048b8", "#1f6fa8", "#8a5528", "#4f5d66"];
 const PRESETS = [
-  ["Kitchen and dining", "a kitchen and dining table (tableware, cookware, food items, kitchen tools)"],
-  ["Desk and craft", "a desk and craft corner (stationery, small tools, toys, storage containers)"],
-  ["Cleaning", "a cleaning and laundry station (brushes, sponges, containers, small cloths)"],
-  ["Garden", "a small indoor garden (pots, plants, hand tools, watering items)"],
-  ["Pet care", "a pet care corner (pet toys, bowls, grooming items, small containers)"],
-  ["Personal care", "a dressing table (makeup, brushes, accessories, small containers)"],
+  ["Bếp và bàn ăn", "bàn bếp và bàn ăn (bát đĩa, đồ nấu nướng, thực phẩm, dụng cụ nhà bếp)"],
+  ["Bàn làm việc và thủ công", "góc bàn làm việc và thủ công (văn phòng phẩm, dụng cụ nhỏ, đồ chơi, hộp đựng)"],
+  ["Dọn dẹp", "khu vực dọn dẹp và giặt giũ (bàn chải, miếng rửa, hộp đựng, khăn nhỏ)"],
+  ["Làm vườn", "khu vườn nhỏ trong nhà (chậu, cây, dụng cụ cầm tay, đồ tưới cây)"],
+  ["Thú cưng", "góc chăm sóc thú cưng (đồ chơi, bát ăn, đồ chải lông, hộp đựng nhỏ)"],
+  ["Chăm sóc cá nhân", "bàn trang điểm (mỹ phẩm, cọ, phụ kiện, hộp đựng nhỏ)"],
 ];
 const ICONS = {
   lock: '<path d="M4 7.5h8v6H4z"/><path d="M5.7 7.5V5.6a2.3 2.3 0 0 1 4.6 0v1.9"/>',
@@ -18,7 +18,7 @@ const ICONS = {
 };
 
 const $ = (s, el = document) => el.querySelector(s);
-const fmt = (n) => Number(n).toLocaleString("en-US");
+const fmt = (n) => Number(n).toLocaleString("vi-VN");
 const store = {
   get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode: ignore */ } },
@@ -66,12 +66,12 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json", "X-Access-Code": code },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (res.status === 401) throw Object.assign(new Error("Access code required"), { status: 401 });
+  if (res.status === 401) throw Object.assign(new Error("Cần nhập mã truy cập"), { status: 401 });
   let json = null;
   try { json = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
     const d = json && json.detail;
-    const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg).join("; ") : `Request failed (${res.status})`;
+    const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg).join("; ") : `Yêu cầu thất bại (${res.status})`;
     throw Object.assign(new Error(msg), { status: res.status });
   }
   return json;
@@ -102,13 +102,30 @@ async function copyText(text) {
 function setLive(ok) {
   const live = $("#live");
   live.classList.toggle("off", !ok);
-  $("b", live).textContent = ok ? "Live" : "Offline, retrying";
+  $("b", live).textContent = ok ? "Trực tiếp" : "Mất kết nối, đang thử lại";
+}
+
+function renderKho() {
+  const chip = $("#kho");
+  const c = data && data.catalog;
+  if (!c) return;
+  chip.hidden = false;
+  if (c.source !== "live") {
+    chip.textContent = "Kho: file CSV, chưa đồng bộ với SM";
+    chip.classList.add("warn");
+    return;
+  }
+  const min = Math.max(0, Math.round((Date.now() / 1000 - c.synced_at) / 60));
+  const ago = min < 1 ? "vừa xong" : min < 60 ? `${min} phút trước` : `${Math.round(min / 60)} giờ trước`;
+  chip.textContent = `Kho SM: cập nhật ${ago}`;
+  chip.title = `${fmt(c.usable)} món dùng được trên ${fmt(c.received)} món SM trả về`;
+  chip.classList.toggle("warn", min >= 60);       // a stale list is worse than none: say so
 }
 
 function renderLedger(d) {
   const { stats, boxes } = d;
   $("#free-n").textContent = fmt(stats.free);
-  $("#ledger-sub").textContent = `${fmt(stats.catalog)} usable objects in the catalog`;
+  $("#ledger-sub").textContent = `${fmt(stats.catalog)} món dùng được trong kho` + (stats.gone ? ` · ⚠ ${fmt(stats.gone)} món trong hộp không còn tồn kho ở SM` : "");
   const bar = $("#bar"), legend = $("#legend");
   bar.replaceChildren();
   legend.replaceChildren();
@@ -117,24 +134,24 @@ function renderLedger(d) {
     const n = b.items.length;
     if (!n) continue;
     const color = colorOf(b);
-    bar.append(seg(n, "", color, `${b.module} ${b.label}: ${n} objects`));
-    legend.append(h("li", { style: "--c:" + color }, h("i"), h("b", {}, `${b.module} ${b.label}`), `${n} objects`));
+    bar.append(seg(n, "", color, `${b.module} ${b.label}: ${n} món`));
+    legend.append(h("li", { style: "--c:" + color }, h("i"), h("b", {}, `${b.module} ${b.label}`), `${n} món`));
   }
   if (stats.external) {
-    bar.append(seg(stats.external, "ext", "", `Used in the sheet: ${stats.external}`));
-    legend.append(h("li", {}, h("i", { class: "ext" }), h("b", {}, "Used in the sheet"), `${fmt(stats.external)} objects`));
+    bar.append(seg(stats.external, "ext", "", `Đã dùng trong bảng tính: ${stats.external}`));
+    legend.append(h("li", {}, h("i", { class: "ext" }), h("b", {}, "Đã dùng trong bảng tính"), `${fmt(stats.external)} món`));
   }
-  bar.append(seg(Math.max(stats.free, 0.0001), "free", "", `Free: ${stats.free}`));
-  bar.setAttribute("aria-label", `${fmt(stats.free)} of ${fmt(stats.catalog)} objects are free`);
+  bar.append(seg(Math.max(stats.free, 0.0001), "free", "", `Còn trống: ${stats.free}`));
+  bar.setAttribute("aria-label", `${fmt(stats.free)} trên ${fmt(stats.catalog)} món còn trống`);
 }
 
 function renderUsed(d) {
   const wrap = $("#u-list-wrap");
   wrap.hidden = d.used.length === 0;
-  $("#u-count").textContent = `${fmt(d.used.length)} objects marked as used`;
+  $("#u-count").textContent = `${fmt(d.used.length)} món đã đánh dấu là đã dùng`;
   const ul = $("#u-list");
   ul.replaceChildren(...d.used.slice(0, 400).map((u) =>
-    h("li", {}, h("button", { type: "button", title: (u.note ? u.note + ". " : "") + "Click to release this object", "aria-label": `Release ${u.id}`,
+    h("li", {}, h("button", { type: "button", title: (u.note ? u.note + ". " : "") + "Bấm để trả món này về kho", "aria-label": `Trả ${u.id} về kho`,
       onclick: () => api("/api/used/" + u.id, { method: "DELETE" }).then(() => poll(true)).catch(fail) }, u.id, icon("x")))));
 }
 
@@ -177,12 +194,12 @@ function mountBox(box) {
 function emptyState() {
   return h("div", { class: "empty-state" },
     h("div", { class: "msg" },
-      h("h2", {}, "No boxes yet"),
-      h("p", {}, "Describe a setting on the left and press Generate box. The page picks the objects and keeps every one of them out of all other boxes.")),
+      h("h2", {}, "Chưa có hộp nào"),
+      h("p", {}, "Mô tả bối cảnh ở bên trái rồi bấm Tạo hộp. Trang sẽ chọn đồ và đảm bảo không món nào trùng với hộp khác.")),
     h("div", { class: "ghost-tray", "aria-hidden": "true" }, Array.from({ length: 21 }, () => h("i"))));
 }
 
-const STATUS = { generating: "Picking objects", draft: "Draft", approved: "Approved", error: "Needs attention" };
+const STATUS = { generating: "Đang chọn đồ", draft: "Nháp", approved: "Đã duyệt", error: "Cần xử lý" };
 
 function buildBox(box, u) {
   const n = box.items.length;
@@ -195,7 +212,7 @@ function buildBox(box, u) {
   let note = null;
   if (box.status === "error") note = h("p", { class: "note bad", role: "alert" }, box.message);
   else if (box.status === "generating" && box.message) note = h("p", { class: "note" }, box.message);
-  else if (filled) note = h("p", { class: "note" }, `${filled} ${filled === 1 ? "object was" : "objects were"} chosen by code (dashed edge) because the model returned too few valid ones. Review them, or press Regenerate.`);
+  else if (filled) note = h("p", { class: "note" }, `${filled} món do hệ thống tự điền (viền nét đứt) vì mô hình trả về thiếu món hợp lệ. Hãy kiểm tra lại hoặc bấm Chọn lại.`);
 
   return h("article", { class: "tray", "data-id": box.id, style: "--c:" + colorOf(box), "aria-label": `${box.module} ${box.label}` },
     h("header", { class: "tray-head" },
@@ -203,8 +220,9 @@ function buildBox(box, u) {
         h("span", { class: "mod" }, box.module),
         h("h2", {}, box.label),
         h("span", { class: "pill " + box.status }, STATUS[box.status]),
-        box.owner ? h("span", { class: "by" }, "Started by " + box.owner) : null),
-      box.title ? h("p", { class: "tb-title", title: "Title in SM TaskBox" }, box.title) : null,
+        box.pushed ? h("span", { class: "pill pushed", title: "Box ID trong SM: " + box.pushed.sm_box_id }, "Đã đẩy lên SM") : null,
+        box.owner ? h("span", { class: "by" }, "Tạo bởi " + box.owner) : null),
+      box.title ? h("p", { class: "tb-title", title: "Tiêu đề trong SM TaskBox" }, box.title) : null,
       box.theme ? h("p", { class: "theme" }, box.theme) : null,
       note),
     h("div", { class: "slots", style: `--rows3:${Math.ceil(box.count / 3)};--rows2:${Math.ceil(box.count / 2)}` }, slots),
@@ -215,33 +233,33 @@ function slotEl(box, pos, it, editable) {
   const gen = box.status === "generating";
   if (!it) {
     return h("div", { class: "slot empty" + (gen ? " wait" : "") },
-      h("span", { class: "stt" }, pos), h("div", { class: "body" }, gen ? "Picking…" : "Empty slot"));
+      h("span", { class: "stt" }, pos), h("div", { class: "body" }, gen ? "Đang chọn…" : "Ô trống"));
   }
   const cap = Math.max(1, Math.min(cfg.max_qty, it.stock || 1));
-  const tip = [it.name, it.vi, it.category, `Stock ${it.stock}, slot ${it.slot}`].filter(Boolean).join("\n");
+  const tip = [it.name, it.vi, it.category, `Tồn ${it.stock}, vị trí ${it.slot}`].filter(Boolean).join("\n");
   const act = (fn) => () => fn().then(() => poll(true)).catch(fail);
   const base = `/api/boxes/${box.id}/items/${pos}`;
   return h("div", { class: "slot" + (it.locked ? " locked" : "") + (it.source === "fill" ? " fill" : ""), title: tip },
-    h("span", { class: "stt", title: it.source === "fill" ? "Chosen by code, not by the model" : null }, pos),
+    h("span", { class: "stt", title: it.source === "fill" ? "Do hệ thống tự điền, không phải do mô hình chọn" : null }, pos),
     h("div", { class: "body" },
       h("div", { class: "l1" },
         h("span", { class: "oid" }, it.id),
         h("button", { class: "qty", type: "button", "data-keep": `q${pos}`, disabled: !editable || cap < 2,
-          title: cap < 2 ? "Only one in stock" : "Quantity in this box. Click to change",
-          "aria-label": `Quantity ${it.qty}${cap < 2 ? "" : ", press to change"}`,
+          title: cap < 2 ? "Chỉ còn 1 trong kho" : "Số lượng trong hộp này. Bấm để đổi",
+          "aria-label": `Số lượng ${it.qty}${cap < 2 ? "" : ", bấm để đổi"}`,
           onclick: act(() => api(base, { method: "PATCH", body: { qty: it.qty >= cap ? 1 : it.qty + 1 } })) }, "×" + it.qty),
         h("span", { class: "cat" }, it.category)),
       h("div", { class: "en" }, it.name),
       h("div", { class: "vi" }, it.vi)),
     editable ? h("div", { class: "tools" },
       h("button", { class: "tool" + (it.locked ? " on" : ""), type: "button", "data-keep": `l${pos}`,
-        title: it.locked ? "Unlock this object" : "Lock this object so Regenerate keeps it",
-        "aria-label": (it.locked ? "Unlock " : "Lock ") + it.id, "aria-pressed": it.locked ? "true" : "false",
+        title: it.locked ? "Mở khoá món này" : "Khoá món này để Chọn lại giữ nguyên",
+        "aria-label": (it.locked ? "Mở khoá " : "Khoá ") + it.id, "aria-pressed": it.locked ? "true" : "false",
         onclick: act(() => api(base + "/lock", { method: "POST", body: { locked: !it.locked } })) }, icon(it.locked ? "lock" : "unlock")),
       h("button", { class: "tool", type: "button", "data-keep": `r${pos}`, disabled: it.locked,
-        title: it.locked ? "Unlock first to replace" : "Replace with a different object", "aria-label": "Replace " + it.id,
+        title: it.locked ? "Mở khoá trước khi thay" : "Thay bằng món khác", "aria-label": "Thay " + it.id,
         onclick: act(() => api(base + "/replace", { method: "POST" })) }, icon("swap")),
-      h("button", { class: "tool", type: "button", "data-keep": `x${pos}`, title: "Remove from this box", "aria-label": "Remove " + it.id,
+      h("button", { class: "tool", type: "button", "data-keep": `x${pos}`, title: "Bỏ khỏi hộp này", "aria-label": "Bỏ " + it.id,
         onclick: act(() => api(base, { method: "DELETE" })) }, icon("x"))) : null);
 }
 
@@ -257,36 +275,36 @@ function footEl(box, u, n, editable) {
 
   if (!gen) {
     kids.push(
-      btn("Copy IDs", async () => {
+      btn("Sao chép ID", async () => {
         const text = Array.from({ length: box.count }, (_, i) => (box.items.find((x) => x.pos === i + 1) || {}).id || "").join("\n");
-        toast((await copyText(text)) ? `Copied ${n} IDs. Paste them into the Object ID column.` : "Copy was blocked by the browser. Select the IDs by hand.", "");
-      }, { keep: "copyids", disabled: !n, title: "One ID per line in STT order, with leading zeros" }),
-      btn("Copy quantities", async () => {
+        toast((await copyText(text)) ? `Đã sao chép ${n} ID. Dán vào cột Object ID.` : "Trình duyệt chặn việc sao chép. Hãy chọn ID bằng tay.", "");
+      }, { keep: "copyids", disabled: !n, title: "Mỗi dòng một ID theo thứ tự STT, giữ số 0 ở đầu" }),
+      btn("Sao chép số lượng", async () => {
         const text = Array.from({ length: box.count }, (_, i) => String((box.items.find((x) => x.pos === i + 1) || {}).qty || "")).join("\n");
-        toast((await copyText(text)) ? `Copied ${n} quantities. Paste them into the SL column.` : "Copy was blocked by the browser.", "");
-      }, { keep: "copyqty", disabled: !n, title: "One quantity per line in STT order" }));
+        toast((await copyText(text)) ? `Đã sao chép ${n} số lượng. Dán vào cột SL.` : "Trình duyệt chặn việc sao chép.", "");
+      }, { keep: "copyqty", disabled: !n, title: "Mỗi dòng một số lượng theo thứ tự STT" }));
   }
   if (editable) {
     kids.push(findEl(box, u));
   }
   kids.push(h("span", { class: "grow" }));
   if (editable) {
-    if (n < box.count) kids.push(btn("Fill empty slots", call("/fill", { method: "POST" }), { keep: "fill" }));
-    kids.push(btn("Regenerate", call("/regenerate", { method: "POST" }), { keep: "regen", title: "Replace every unlocked object" }));
-    kids.push(btn("Approve", call("/approve", { method: "POST" }, `Approved ${name}`), { cls: "primary", keep: "approve", disabled: n < box.count,
-      title: n < box.count ? `Needs ${box.count} objects` : "Mark as final. Objects stay reserved." }));
+    if (n < box.count) kids.push(btn("Điền ô trống", call("/fill", { method: "POST" }), { keep: "fill" }));
+    kids.push(btn("Chọn lại", call("/regenerate", { method: "POST" }), { keep: "regen", title: "Thay mọi món chưa khoá" }));
+    kids.push(btn("Duyệt", call("/approve", { method: "POST" }, `Đã duyệt ${name}`), { cls: "primary", keep: "approve", disabled: n < box.count,
+      title: n < box.count ? `Cần đủ ${box.count} món` : "Chốt hộp. Các món vẫn được giữ chỗ." }));
   } else if (box.status === "approved") {
-    kids.push(btn("Reopen", call("/reopen", { method: "POST" }), { keep: "reopen" }));
+    if (!box.pushed) kids.push(btn("Mở lại", call("/reopen", { method: "POST" }), { keep: "reopen" }));
   }
   if (u.confirm) {
-    kids.push(h("span", { class: "confirm" }, `Release ${n} objects?`,
-      btn("Discard box", call("", { method: "DELETE" }, `Discarded ${name}`), { cls: "danger small", keep: "discard-yes" }),
-      btn("Keep", () => { u.confirm = false; remount(box.id); }, { cls: "small", keep: "discard-no" })));
+    kids.push(h("span", { class: "confirm" }, `Trả ${n} món về kho?`,
+      btn("Huỷ hộp", call("", { method: "DELETE" }, `Đã huỷ ${name}`), { cls: "danger small", keep: "discard-yes" }),
+      btn("Giữ lại", () => { u.confirm = false; remount(box.id); }, { cls: "small", keep: "discard-no" })));
   } else {
-    kids.push(btn("Discard", () => { u.confirm = true; remount(box.id); }, { cls: "danger", keep: "discard" }));
+    if (!box.pushed) kids.push(btn("Huỷ", () => { u.confirm = true; remount(box.id); }, { cls: "danger", keep: "discard" }));
   }
   if (box.status === "approved") {
-    kids.push(h("p", { class: "sheet-tip" }, "Before pasting into the sheet, set the Object ID cells to Plain text so 004702 keeps its leading zeros."));
+    kids.push(h("p", { class: "sheet-tip" }, "Trước khi dán vào bảng tính, hãy đặt các ô Object ID thành Plain text để 004702 giữ số 0 ở đầu."));
   }
   return h("footer", { class: "tray-foot" }, kids);
 }
@@ -294,8 +312,8 @@ function footEl(box, u, n, editable) {
 function findEl(box, u) {
   const full = box.items.length >= box.count;
   const input = h("input", {
-    type: "search", "data-keep": "find", placeholder: full ? "Box is full" : "Add an object by name or ID", disabled: full,
-    "aria-label": "Add an object by name or ID", autocomplete: "off",
+    type: "search", "data-keep": "find", placeholder: full ? "Hộp đã đầy" : "Thêm món theo tên hoặc ID", disabled: full,
+    "aria-label": "Thêm món theo tên hoặc ID", autocomplete: "off",
     oninput: (e) => { u.q = e.target.value; debounced(box.id)(u.q); },
     onkeydown: (e) => { if (e.key === "Escape") { u.q = ""; u.results = null; remount(box.id); } },
   });
@@ -304,8 +322,8 @@ function findEl(box, u) {
   if (u.q.trim().length >= 2 && u.results) {
     list = h("div", { class: "results" }, u.results.length
       ? u.results.map((r) => h("button", { type: "button", onclick: () => addObject(box, r) },
-          h("b", {}, r.id), h("span", {}, r.name), h("small", {}, `${r.vi} (${r.category || "no category"})`)))
-      : h("p", {}, "No free object matches. It may already be in another box."));
+          h("b", {}, r.id), h("span", {}, r.name), h("small", {}, `${r.vi} (${r.category || "chưa phân loại"})`)))
+      : h("p", {}, "Không có món trống nào khớp. Có thể món đó đã nằm trong hộp khác."));
   }
   return h("div", { class: "find" }, input, list);
 }
@@ -324,7 +342,7 @@ async function addObject(box, r) {
   const u = uiOf(box.id);
   try {
     const res = await api(`/api/boxes/${box.id}/items`, { method: "POST", body: { object_id: r.id, qty: 1 } });
-    toast(`Added ${r.id} to slot ${res.pos} and locked it.`);
+    toast(`Đã thêm ${r.id} vào ô ${res.pos} và khoá lại.`);
     u.q = ""; u.results = null;
     await poll(true);
   } catch (e) { fail(e); }
@@ -344,6 +362,7 @@ async function poll(force) {
     if (d.unchanged) return;
     rev = d.rev;
     data = d;
+    renderKho();
     renderLedger(d);
     renderUsed(d);
     renderBoxes(d);
@@ -387,7 +406,7 @@ function setupNewBox() {
     go.disabled = true;
     try {
       await api("/api/boxes", { method: "POST", body });
-      toast(`Picking ${body.count} objects for ${body.module} ${body.label}.`);
+      toast(`Đang chọn ${body.count} món cho ${body.module} ${body.label}.`);
       await poll(true);
     } catch (err) { fail(err); } finally { go.disabled = false; }
   });
@@ -397,13 +416,13 @@ function setupUsed() {
   $("#used").addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = $("#u-text").value;
-    if (!text.trim()) return toast("Paste at least one Object ID.", "bad");
+    if (!text.trim()) return toast("Hãy dán ít nhất một Object ID.", "bad");
     try {
       const r = await api("/api/used", { method: "POST", body: { text, note: $("#u-note").value } });
-      const bits = [`Marked ${fmt(r.added)} ${r.added === 1 ? "object" : "objects"} as used.`];
-      if (r.already_in_a_box.length) bits.push(`${r.already_in_a_box.length} already belong to a box here.`);
-      if (r.not_in_catalog.length) bits.push(`${r.not_in_catalog.length} are not in the catalog.`);
-      if (r.unreadable.length) bits.push(`Could not read: ${r.unreadable.slice(0, 4).join(", ")}.`);
+      const bits = [`Đã đánh dấu ${fmt(r.added)} món là đã dùng.`];
+      if (r.already_in_a_box.length) bits.push(`${r.already_in_a_box.length} món đã nằm trong một hộp ở đây.`);
+      if (r.not_in_catalog.length) bits.push(`${r.not_in_catalog.length} món không có trong kho.`);
+      if (r.unreadable.length) bits.push(`Không đọc được: ${r.unreadable.slice(0, 4).join(", ")}.`);
       toast(bits.join(" "));
       $("#u-text").value = "";
       await poll(true);
@@ -419,7 +438,7 @@ function setupCategories() {
       h("label", {}, h("input", { type: "checkbox", checked: chosenCats.has(c.name), onchange: (e) => {
         e.target.checked ? chosenCats.add(c.name) : chosenCats.delete(c.name); sum(); } }), c.name, h("small", {}, c.count))));
   };
-  const sum = () => { $("#cats-sum").textContent = chosenCats.size ? `${chosenCats.size} selected` : "All categories"; };
+  const sum = () => { $("#cats-sum").textContent = chosenCats.size ? `đã chọn ${chosenCats.size}` : "Tất cả nhóm"; };
   q.addEventListener("input", draw);
   $("#cats-clear").addEventListener("click", () => { chosenCats.clear(); draw(); sum(); });
   api("/api/categories").then((c) => { categories = c; draw(); }).catch(() => {});
@@ -434,7 +453,7 @@ async function init() {
   $("#f-count").value = cfg.default_count;
   const chip = $("#llm");
   chip.hidden = false;
-  chip.textContent = cfg.llm === "mock" ? "Test picks, no model connected" : `DeepSeek ${cfg.model}`;
+  chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
   setupGate(); setupNewBox(); setupUsed();
   updateExport();
@@ -442,6 +461,7 @@ async function init() {
   if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });
   setupCategories();
   schedule();
+  setInterval(renderKho, 30000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(true); });
 }
 init();

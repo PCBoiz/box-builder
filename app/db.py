@@ -171,6 +171,12 @@ def _schema(pg: bool) -> list[str]:
               source     TEXT NOT NULL DEFAULT 'llm',
               PRIMARY KEY(box_id, pos))""",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_object_once ON box_items(object_id)",
+        "CREATE TABLE IF NOT EXISTS catalog_snapshot(k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        # which approved boxes already exist in Scenario Manager (written back by the userscript after a confirmed create)
+        f"""CREATE TABLE IF NOT EXISTS sm_push(
+              box_id     BIGINT PRIMARY KEY REFERENCES boxes(id) ON DELETE CASCADE,
+              sm_box_id  TEXT NOT NULL,
+              pushed_at  {real} NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS external_used(
               object_id TEXT PRIMARY KEY,
               note      TEXT NOT NULL DEFAULT '')""",

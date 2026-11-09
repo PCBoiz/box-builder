@@ -24,7 +24,7 @@ def env(request, tmp_path):
     target = str(tmp_path / "t.db") if request.param == "sqlite" else PG_URL
     if request.param == "postgres":
         c = db.connect(target)
-        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta CASCADE")
+        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push CASCADE")
         c.close()
     s = Settings(db_path=target, catalog_path=str(tmp_path / "catalog.csv"), llm_mode="mock")
     shutil.copy(REAL_CSV, s.catalog_path)
@@ -197,7 +197,7 @@ def test_filters_too_narrow_gives_clear_error(env):
     picker.run_generation(s, cat, picker.MockLLM(), box)
     c = conn_of(s)
     b = service.get_box(c, box)
-    assert b["status"] == "error" and "free objects match" in b["message"]
+    assert b["status"] == "error" and "món trống khớp bộ lọc" in b["message"]
 
 
 # ----------------------------------------------------------------------------- HTTP flow
@@ -381,3 +381,118 @@ def test_deepseek_http_error_is_shown_on_the_box(env):
     assert b["status"] == "error" and "401" in b["message"]
     assert len(seen) == 1, "a 401 must not be retried"
     assert service.box_items(c, box) == []
+
+
+# ----------------------------------------------------------------------------- live catalog pushed from Scenario Manager
+def _sm_rows(n=120, start=9000):
+    """Rows shaped like the userscript compacts SM's /api/objects: n usable objects plus one of each skipped kind."""
+    rows = [{"id": f"{start + i:06d}", "name": f"Test object {i}", "vi": f"Đồ thử {i}", "type": "Obj",
+             "status": "ACTIVE", "avail": 5, "qty": 5, "loc": f"A{i % 9 + 1:02d}", "sector": "Hanoi-GPI"} for i in range(n)]
+    rows += [
+        {"id": "009990", "name": "Environment", "vi": "Môi trường", "type": "Env", "status": "ACTIVE", "avail": 3, "qty": 3, "sector": "Hanoi-GPI"},
+        {"id": "009991", "name": "No vi", "vi": "", "type": "Obj", "status": "ACTIVE", "avail": 3, "qty": 3, "sector": "Hanoi-GPI"},
+        {"id": "009992", "name": "Out", "vi": "Hết hàng", "type": "Obj", "status": "ACTIVE", "avail": 0, "qty": 9, "sector": "Hanoi-GPI"},
+        {"id": "009993", "name": "Old", "vi": "Cũ", "type": "Obj", "status": "INACTIVE", "avail": 3, "qty": 3, "sector": "Hanoi-GPI"},
+        {"id": "009994", "name": "Elsewhere", "vi": "Nơi khác", "type": "Obj", "status": "ACTIVE", "avail": 7, "qty": 7, "sector": "Saigon-XYZ"},
+        {"id": "009995", "name": "No sector", "vi": "Thiếu sector", "type": "Obj", "status": "ACTIVE", "avail": 7, "qty": 7},
+    ]
+    return rows
+
+
+def test_catalog_sync_security_and_rules(env):
+    s, cat = env
+    # no SYNC_TOKEN configured: the endpoint is closed
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    assert client.post("/api/catalog/sync", json={"objects": _sm_rows()}).status_code == 503
+
+    s.sync_token = "secret-sync"
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    bad = client.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Sync-Token": "nope"})
+    assert bad.status_code == 401
+    # the shared access code never opens it, and a short list is refused so a half-failed fetch cannot wipe the kho
+    s.access_code = "team"
+    client2 = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    assert client2.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Access-Code": "team"}).status_code == 401
+    short = client.post("/api/catalog/sync", json={"objects": _sm_rows(10)}, headers={"X-Sync-Token": "secret-sync"})
+    assert short.status_code == 422
+
+    ok = client.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Sync-Token": "secret-sync"})
+    assert ok.status_code == 200
+    d = ok.json()
+    assert d["usable"] == 120 and d["received"] == 126
+    assert d["skipped"] == {"other_sector": 2, "other_type": 1, "inactive": 1, "no_vietnamese_name": 1, "out_of_stock": 1, "bad_id": 0}
+    assert client.get("/api/catalog", headers={"X-Access-Code": "team"}).json()["source"] == "live"
+
+
+def test_live_catalog_drives_picks_survives_restart_and_flags_gone_items(env):
+    s, cat = env
+    s.sync_token = "tok"
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    assert client.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Sync-Token": "tok"}).status_code == 200
+    st = client.get("/api/state").json()
+    assert st["stats"]["catalog"] == 120 and st["catalog"]["source"] == "live"
+
+    bid = client.post("/api/boxes", json={"module": "M8", "label": "Box A1", "theme": "test"}).json()["id"]
+    box = wait_settled(client, bid)
+    assert len(box["items"]) == 21 and all(i["id"].startswith("009") for i in box["items"])    # only live objects
+
+    # a restart (new app, fresh Catalog from the CSV) loads the saved snapshot from the database
+    cat2 = Catalog(s.catalog_path)
+    client2 = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat2))
+    assert client2.get("/api/state").json()["stats"]["catalog"] == 120
+
+    # next sync: one object in the box has run out in SM -> reported, still shown, counted as gone
+    gone = box["items"][0]["id"]
+    rows = [dict(r, avail=0) if r["id"] == gone else r for r in _sm_rows()]
+    r = client2.post("/api/catalog/sync", json={"objects": rows}, headers={"X-Sync-Token": "tok"}).json()
+    assert r["claimed_now_unavailable"] == [gone]
+    st = client2.get("/api/state").json()
+    assert st["stats"]["gone"] == 1
+    assert next(i for i in next(b for b in st["boxes"] if b["id"] == bid)["items"] if i["id"] == gone)["name"] == "(không còn trong kho)"
+
+
+def _approved_box(client, label="Box A1", module="M8"):
+    bid = client.post("/api/boxes", json={"module": module, "label": label, "theme": "test"}).json()["id"]
+    wait_settled(client, bid)
+    assert client.post(f"/api/boxes/{bid}/approve").status_code == 200
+    return bid
+
+
+def test_pushed_to_sm_tracking_is_create_once_and_token_protected(env):
+    s, cat = env
+    s.sync_token = "tok"
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    bid = _approved_box(client)
+    other = _approved_box(client, "Box B1")
+
+    url = f"/api/boxes/{bid}/pushed"
+    assert client.post(url, json={"sm_box_id": "SM-1"}).status_code == 401                       # no token
+    assert client.post(url, json={"sm_box_id": "SM-1"}, headers={"X-Sync-Token": "x"}).status_code == 401
+    assert client.post(url, json={"sm_box_id": " "}, headers={"X-Sync-Token": "tok"}).status_code == 422
+    assert client.post(url, json={"sm_box_id": "SM-1"}, headers={"X-Sync-Token": "tok"}).status_code == 200
+    assert client.post(url, json={"sm_box_id": "SM-1"}, headers={"X-Sync-Token": "tok"}).status_code == 200   # idempotent
+
+    tbs = client.get("/api/taskboxes").json()["boxes"]
+    assert {b["builder"]["box_id"]: bool(b["builder"]["pushed"]) for b in tbs} == {bid: True, other: False}
+    pending = client.get("/api/taskboxes?pending=true").json()["boxes"]
+    assert [b["builder"]["box_id"] for b in pending] == [other]
+
+    # a pushed box cannot be reopened or discarded here, so the app never drifts from what SM holds
+    assert client.post(f"/api/boxes/{bid}/reopen").status_code == 409
+    assert client.delete(f"/api/boxes/{bid}").status_code == 409
+    st = client.get("/api/state").json()
+    assert next(b for b in st["boxes"] if b["id"] == bid)["pushed"]["sm_box_id"] == "SM-1"
+
+    # only approved boxes can be marked; the admin can undo
+    draft = client.post("/api/boxes", json={"module": "M9", "label": "Box A1", "theme": "t"}).json()["id"]
+    wait_settled(client, draft)
+    assert client.post(f"/api/boxes/{draft}/pushed", json={"sm_box_id": "9"}, headers={"X-Sync-Token": "tok"}).status_code == 409
+    assert client.delete(url, headers={"X-Sync-Token": "tok"}).status_code == 200
+    assert client.post(f"/api/boxes/{bid}/reopen").status_code == 200
+
+
+def test_pushed_endpoint_closed_without_sync_token(env):
+    s, cat = env
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    bid = _approved_box(client)
+    assert client.post(f"/api/boxes/{bid}/pushed", json={"sm_box_id": "1"}).status_code == 503

@@ -39,14 +39,25 @@ class Item:
     blob: str      # folded text used for search
 
 
+UNCATEGORISED = "Chưa phân loại"
+LIVE_TYPES = ("Obj",)          # SM object types that can go in a box (Env = environments, Meta = system)
+
+
 class Catalog:
-    """Usable objects only: ACTIVE, has a Vietnamese name, stock > 0 (same rules as the Make blueprint)."""
+    """Usable objects only: ACTIVE, has a Vietnamese name, stock > 0 (same rules as the Make blueprint).
+
+    Two sources. The CSV export is the fallback and also supplies categories (SM has no category field).
+    Once the userscript has pushed a live snapshot from Scenario Manager, that snapshot is the catalog."""
 
     def __init__(self, path: str):
         self.path = path
         self._lock = threading.Lock()
         self._mtime = None
         self._items: dict[str, Item] = {}
+        self._cat_of: dict[str, str] = {}
+        self._live: dict[str, Item] | None = None
+        self.sectors: tuple[str, ...] = ()        # empty = every sector; the app sets it from SECTORS
+        self._live_info: dict = {}
         self._load()
 
     def _load(self):
@@ -65,7 +76,12 @@ class Catalog:
                 continue
             name, cat, slot = r[1].strip(), r[3].strip(), r[5].strip()
             items[oid] = Item(oid, name, vi, cat, slot, int(qty), fold(f"{name} {vi} {cat}"))
-        self._items, self._mtime = items, mtime
+        # categories for every CSV row, even ones that are out of stock today
+        cat_of = {}
+        for r in rows[1:]:
+            if len(r) >= 8 and pad_id(r[0]) and r[3].strip():
+                cat_of[pad_id(r[0])] = r[3].strip()
+        self._items, self._cat_of, self._mtime = items, cat_of, mtime
 
     def _fresh(self):
         try:
@@ -77,7 +93,57 @@ class Catalog:
 
     def items(self) -> dict[str, Item]:
         self._fresh()
-        return self._items
+        return self._live if self._live is not None else self._items
+
+    # ---------------------------------------------------------------- live snapshot from Scenario Manager
+    def set_live(self, rows: list[dict], synced_at: float) -> dict:
+        """Replace the catalog with SM's current objects. Returns counts so the caller can show what was skipped."""
+        items: dict[str, Item] = {}
+        skipped = {"other_sector": 0, "other_type": 0, "inactive": 0, "no_vietnamese_name": 0, "out_of_stock": 0, "bad_id": 0}
+        for o in rows:
+            oid = pad_id(o.get("id", ""))
+            if oid is None:
+                skipped["bad_id"] += 1
+                continue
+            if not self.allowed_sector(o):
+                skipped["other_sector"] += 1
+                continue
+            if str(o.get("type", "Obj")) not in LIVE_TYPES:
+                skipped["other_type"] += 1
+                continue
+            if str(o.get("status", "ACTIVE")) != "ACTIVE":
+                skipped["inactive"] += 1
+                continue
+            vi = str(o.get("vi") or "").strip()
+            if not vi:
+                skipped["no_vietnamese_name"] += 1
+                continue
+            stock = o.get("avail")
+            if stock is None:
+                stock = o.get("qty")
+            try:
+                stock = int(stock)
+            except (TypeError, ValueError):
+                stock = 0
+            if stock <= 0:
+                skipped["out_of_stock"] += 1
+                continue
+            name = str(o.get("name") or "").strip()
+            cat = self._cat_of.get(oid, UNCATEGORISED)
+            items[oid] = Item(oid, name, vi, cat, str(o.get("loc") or "").strip(), stock, fold(f"{name} {vi} {cat}"))
+        self._live = items
+        self._live_info = {"synced_at": synced_at, "received": len(rows), "skipped": skipped}
+        return {**self._live_info, "usable": len(items)}
+
+    def allowed_sector(self, o: dict) -> bool:
+        """Rows from other sectors, or with no sector at all, are dropped (when a sector filter is set)."""
+        return not self.sectors or str(o.get("sector") or "") in self.sectors
+
+    def info(self) -> dict:
+        n = len(self.items())
+        if self._live is None:
+            return {"source": "csv", "usable": n, "synced_at": None}
+        return {"source": "live", "usable": n, **self._live_info}
 
     def get(self, oid: str) -> Item | None:
         return self.items().get(oid)

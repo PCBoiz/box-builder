@@ -30,7 +30,7 @@ def taken_ids(conn) -> set[str]:
 def get_box(conn, box_id: int) -> object:
     row = conn.execute("SELECT * FROM boxes WHERE id=?", (box_id,)).fetchone()
     if row is None:
-        raise NotFound(f"box {box_id} does not exist (it may have been discarded)")
+        raise NotFound(f"Hộp {box_id} không tồn tại (có thể đã bị huỷ).")
     return row
 
 
@@ -45,13 +45,15 @@ def owner_of(conn, oid: str) -> str:
     if r:
         return f"{r['module']} / {r['label']}"
     if conn.execute("SELECT 1 FROM external_used WHERE object_id=?", (oid,)).fetchone():
-        return "the workbook (imported list)"
+        return "danh sách đã dùng trong bảng tính"
     return ""
 
 
 def state(conn, catalog: Catalog) -> dict:
     cat = catalog.items()
     boxes = []
+    pushed = {r["box_id"]: {"sm_box_id": r["sm_box_id"], "at": r["pushed_at"]}
+              for r in conn.execute("SELECT * FROM sm_push")}
     for b in conn.execute("SELECT * FROM boxes ORDER BY module, label, id").fetchall():
         items = []
         for it in box_items(conn, b["id"]):
@@ -59,7 +61,7 @@ def state(conn, catalog: Catalog) -> dict:
             items.append({
                 "pos": it["pos"], "id": it["object_id"], "qty": it["qty"],
                 "locked": bool(it["locked"]), "source": it["source"],
-                "name": c.name if c else "(not in catalog any more)",
+                "name": c.name if c else "(không còn trong kho)",
                 "vi": c.vi if c else "", "category": c.category if c else "",
                 "slot": c.slot if c else "", "stock": c.stock if c else 0,
             })
@@ -68,16 +70,20 @@ def state(conn, catalog: Catalog) -> dict:
             "code": b["code"], "anchor": b["anchor"], "title": taskbox_title(b["code"] or b["module"], b["anchor"], b["label"]),
             "categories": json.loads(b["categories"]), "count": b["count"], "status": b["status"],
             "message": b["message"], "owner": b["owner"], "updated_at": b["updated_at"], "items": items,
+            "pushed": pushed.get(b["id"]),
         })
     in_boxes = conn.execute("SELECT COUNT(*) FROM box_items").fetchone()[0]
     ext_ids = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
     external = len(ext_ids & set(cat))            # only IDs that are usable objects change the free count
     used = [{"id": r["object_id"], "note": r["note"]}
             for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
+    claimed = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
     return {
         "rev": rev(conn),
+        "catalog": catalog.info(),
         "stats": {"catalog": len(cat), "in_boxes": in_boxes, "external": external,
-                  "free": max(0, len(cat) - len(taken_ids(conn) & set(cat))), "boxes": len(boxes)},
+                  "free": max(0, len(cat) - len(taken_ids(conn) & set(cat))), "boxes": len(boxes),
+                  "gone": len(claimed - set(cat))},     # claimed objects SM no longer lists as available
         "boxes": boxes,
         "used": used,
     }
@@ -104,11 +110,13 @@ def taskbox_title(code: str, anchor: str, label: str) -> str:
     return f"{code} - {lo_name} - {stage}" if lo_name else f"{code} - {stage}"
 
 
-def taskboxes(conn, catalog: Catalog, statuses=("approved",)) -> list[dict]:
+def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool = False) -> list[dict]:
     """Boxes in exactly the shape the userscript's sheet parser produces, so it can use them directly."""
     out = []
     for b in state(conn, catalog)["boxes"]:
         if b["status"] not in statuses or not b["items"]:
+            continue
+        if pending_only and b["pushed"]:
             continue
         code = b["code"] or b["module"]
         anchor_id, lo_name = split_anchor(b["anchor"])
@@ -121,7 +129,7 @@ def taskboxes(conn, catalog: Catalog, statuses=("approved",)) -> list[dict]:
             "itemsDetail": [{"object_id": i["id"], "name": display_name(i["name"], i["vi"]), "floor": "",
                              "location": i["slot"], "quantity": i["qty"]} for i in b["items"]],
             "builder": {"box_id": b["id"], "module": b["module"], "label": b["label"], "owner": b["owner"],
-                        "status": b["status"]},
+                        "status": b["status"], "pushed": b["pushed"]},
         })
     return out
 
@@ -140,7 +148,7 @@ def expire(conn, ttl_hours: int) -> int:
     with tx(conn):
         conn.execute(
             "UPDATE boxes SET status='error', message=?, updated_at=? WHERE status='generating' AND updated_at < ?",
-            ("Generation did not finish (the server restarted?). Press Regenerate.", now, stale_gen))
+            ("Việc chọn đồ chưa hoàn tất (máy chủ vừa khởi động lại?). Bấm Chọn lại.", now, stale_gen))
         cur = conn.execute(
             "DELETE FROM boxes WHERE status IN ('draft','error') AND updated_at < ?", (stale_draft,))
         return cur.rowcount
@@ -151,9 +159,9 @@ def create_box(conn, module: str, label: str, theme: str, categories: list[str],
                code: str = "", anchor: str = "") -> int:
     module, label = module.strip(), label.strip()
     if not module or not label:
-        raise Invalid("Module and box name are required (for example M8 and Box A1).")
+        raise Invalid("Cần nhập Module và tên hộp (ví dụ M8 và Box A1).")
     if not 1 <= count <= 60:
-        raise Invalid("Number of objects must be between 1 and 60.")
+        raise Invalid("Số đồ trong hộp phải từ 1 đến 60.")
     now = time.time()
     try:
         with tx(conn):
@@ -164,7 +172,7 @@ def create_box(conn, module: str, label: str, theme: str, categories: list[str],
                  owner.strip(), now, now))
             return cur.fetchone()[0]
     except IntegrityError:
-        raise Conflict(f"{module} / {label} already exists. Open it below, or pick another name.")
+        raise Conflict(f"{module} / {label} đã tồn tại. Hãy mở hộp đó bên dưới hoặc đặt tên khác.")
 
 
 def set_status(conn, box_id: int, status: str, message: str = "") -> None:
@@ -173,34 +181,62 @@ def set_status(conn, box_id: int, status: str, message: str = "") -> None:
                      (status, message, time.time(), box_id))
 
 
+def _not_pushed(conn, box_id: int) -> None:
+    r = conn.execute("SELECT sm_box_id FROM sm_push WHERE box_id=?", (box_id,)).fetchone()
+    if r:
+        raise Conflict(f"Hộp này đã được đẩy lên SM (Box ID {r['sm_box_id']}). Hãy sửa trong SM, "
+                       "hoặc nhờ quản trị viên gỡ dấu \"đã đẩy\" nếu thật sự cần làm lại.")
+
+
 def delete_box(conn, box_id: int) -> None:
     with tx(conn):
+        _not_pushed(conn, box_id)
         conn.execute("DELETE FROM boxes WHERE id=?", (box_id,))
+
+
+def mark_pushed(conn, box_id: int, sm_box_id: str) -> None:
+    """Record that an approved box now exists in SM. Idempotent; refuses boxes that are not approved."""
+    sm_box_id = str(sm_box_id).strip()
+    if not sm_box_id:
+        raise Invalid("Thiếu Box ID của SM.")
+    with tx(conn):
+        b = get_box(conn, box_id)
+        if b["status"] != "approved":
+            raise Conflict("Chỉ hộp đã duyệt mới được đánh dấu là đã đẩy lên SM.")
+        conn.execute("DELETE FROM sm_push WHERE box_id=?", (box_id,))
+        conn.execute("INSERT INTO sm_push(box_id, sm_box_id, pushed_at) VALUES(?,?,?)", (box_id, sm_box_id, time.time()))
+
+
+def unmark_pushed(conn, box_id: int) -> None:
+    with tx(conn):
+        get_box(conn, box_id)
+        conn.execute("DELETE FROM sm_push WHERE box_id=?", (box_id,))
 
 
 def approve(conn, box_id: int) -> None:
     with tx(conn):
         b = get_box(conn, box_id)
         if b["status"] == "generating":
-            raise Conflict("This box is still being generated.")
+            raise Conflict("Hộp này vẫn đang được chọn đồ.")
         n = conn.execute("SELECT COUNT(*) FROM box_items WHERE box_id=?", (box_id,)).fetchone()[0]
         if n != b["count"]:
-            raise Invalid(f"Box has {n} of {b['count']} objects. Fill it before approving.")
+            raise Invalid(f"Hộp mới có {n}/{b['count']} món. Hãy điền đủ trước khi duyệt.")
         conn.execute("UPDATE boxes SET status='approved', message='', updated_at=? WHERE id=?", (time.time(), box_id))
 
 
 def reopen(conn, box_id: int) -> None:
     with tx(conn):
         get_box(conn, box_id)
+        _not_pushed(conn, box_id)
         conn.execute("UPDATE boxes SET status='draft', updated_at=? WHERE id=?", (time.time(), box_id))
 
 
 def _editable(conn, box_id: int) -> object:
     b = get_box(conn, box_id)
     if b["status"] == "approved":
-        raise Conflict("This box is approved. Press Reopen first if you need to change it.")
+        raise Conflict("Hộp này đã duyệt. Bấm Mở lại nếu cần sửa.")
     if b["status"] == "generating":
-        raise Conflict("This box is still being generated.")
+        raise Conflict("Hộp này vẫn đang được chọn đồ.")
     return b
 
 
@@ -244,7 +280,7 @@ def set_locked(conn, box_id: int, pos: int, locked: bool) -> None:
         _editable(conn, box_id)
         cur = conn.execute("UPDATE box_items SET locked=? WHERE box_id=? AND pos=?", (int(locked), box_id, pos))
         if cur.rowcount == 0:
-            raise NotFound("That slot is empty.")
+            raise NotFound("Ô này đang trống.")
 
 
 def set_qty(conn, box_id: int, pos: int, qty: int, catalog: Catalog, max_qty: int) -> None:
@@ -252,7 +288,7 @@ def set_qty(conn, box_id: int, pos: int, qty: int, catalog: Catalog, max_qty: in
         _editable(conn, box_id)
         row = conn.execute("SELECT object_id FROM box_items WHERE box_id=? AND pos=?", (box_id, pos)).fetchone()
         if row is None:
-            raise NotFound("That slot is empty.")
+            raise NotFound("Ô này đang trống.")
         it = catalog.get(row["object_id"])
         cap = min(max_qty, it.stock) if it else max_qty
         conn.execute("UPDATE box_items SET qty=? WHERE box_id=? AND pos=?", (max(1, min(cap, qty)), box_id, pos))
@@ -269,20 +305,20 @@ def add_item(conn, box_id: int, object_id: str, qty: int, catalog: Catalog, max_
     oid = pad_id(object_id)
     item = catalog.get(oid) if oid else None
     if item is None:
-        raise Invalid(f"'{object_id}' is not a usable object in the catalog.")
+        raise Invalid(f"'{object_id}' không phải là đồ có thể dùng trong kho.")
     with tx(conn):
         b = _editable(conn, box_id)
         taken_by = owner_of(conn, item.id)
         if taken_by:
-            raise Conflict(f"{item.id} ({item.name}) is already used in {taken_by}.")
+            raise Conflict(f"{item.id} ({item.name}) đã nằm trong {taken_by}.")
         used = {r["pos"] for r in box_items(conn, box_id)}
         if pos is None:
             free = [p for p in range(1, b["count"] + 1) if p not in used]
             if not free:
-                raise Conflict("The box is full. Remove an object first.")
+                raise Conflict("Hộp đã đầy. Hãy bỏ bớt một món trước.")
             pos = free[0]
         elif pos in used or not 1 <= pos <= b["count"]:
-            raise Conflict("That slot is not free.")
+            raise Conflict("Ô này không còn trống.")
         q = max(1, min(max_qty, item.stock, qty))
         conn.execute("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,1,'manual')",
                      (box_id, pos, item.id, q))
@@ -315,3 +351,19 @@ def import_used(conn, text: str, note: str, catalog: Catalog) -> dict:
 def remove_used(conn, oid: str) -> None:
     with tx(conn):
         conn.execute("DELETE FROM external_used WHERE object_id=?", (oid,))
+
+
+# ----------------------------------------------------------------------------- live catalog snapshot (pushed from Scenario Manager)
+def save_snapshot(conn, rows: list[dict], synced_at: float) -> None:
+    blob = json.dumps({"synced_at": synced_at, "rows": rows}, ensure_ascii=False, separators=(",", ":"))
+    with tx(conn):
+        conn.execute("INSERT INTO catalog_snapshot(k, v) VALUES('live', ?) "
+                     "ON CONFLICT (k) DO UPDATE SET v = excluded.v", (blob,))
+
+
+def load_snapshot(conn) -> tuple[list[dict], float] | None:
+    r = conn.execute("SELECT v FROM catalog_snapshot WHERE k='live'").fetchone()
+    if r is None:
+        return None
+    d = json.loads(r[0])
+    return d["rows"], d["synced_at"]

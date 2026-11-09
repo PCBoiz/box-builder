@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,65 +12,66 @@
 <header class="top">
   <h1 class="brand">Box builder</h1>
   <div class="top-right">
+    <span id="kho" class="chip" hidden></span>
     <span id="llm" class="chip" hidden></span>
-    <label class="who"><span>Your name</span><input id="who" maxlength="40" autocomplete="name" placeholder="Name shown on your boxes"></label>
-    <a id="export" class="link" href="/api/export.csv" download>Export CSV</a>
-    <span id="live" class="live" role="status"><i></i><b>Connecting</b></span>
+    <label class="who"><span>Tên của bạn</span><input id="who" maxlength="40" autocomplete="name" placeholder="Tên hiện trên các hộp của bạn"></label>
+    <a id="export" class="link" href="/api/export.csv" download>Xuất CSV</a>
+    <span id="live" class="live" role="status"><i></i><b>Đang kết nối</b></span>
   </div>
 </header>
 
 <main class="app">
   <section class="ledger" aria-labelledby="ledger-h">
     <div class="ledger-head">
-      <h2 id="ledger-h"><strong id="free-n">0</strong> <span>objects still free</span></h2>
+      <h2 id="ledger-h"><strong id="free-n">0</strong> <span>món còn trống</span></h2>
       <p id="ledger-sub"></p>
     </div>
-    <div id="bar" class="bar" role="img" aria-label="Who holds the catalog objects"></div>
+    <div id="bar" class="bar" role="img" aria-label="Ai đang giữ các món trong kho"></div>
     <ul id="legend" class="legend"></ul>
   </section>
 
   <aside class="rail">
     <form id="new" class="panel" autocomplete="off">
-      <h2>New box</h2>
+      <h2>Hộp mới</h2>
       <div class="row2">
         <label>Module
           <input id="f-module" required maxlength="20" placeholder="M8" inputmode="text">
         </label>
-        <label>Box name
+        <label>Tên hộp
           <input id="f-label" required maxlength="40" value="Box A1">
         </label>
       </div>
       <div class="row2">
-        <label>Section code
+        <label>Mã section
           <input id="f-code" maxlength="40" placeholder="M8-01">
         </label>
-        <label>Large object
-          <input id="f-anchor" maxlength="120" placeholder="Name or 5-6 digit ID (optional)">
+        <label>Đồ lớn (anchor)
+          <input id="f-anchor" maxlength="120" placeholder="Tên hoặc ID 5-6 số (không bắt buộc)">
         </label>
       </div>
-      <label>Setting
-        <textarea id="f-theme" rows="3" maxlength="300" placeholder="Describe the everyday scene, for example a kitchen and dining table. Leave empty to let the model choose."></textarea>
+      <label>Bối cảnh
+        <textarea id="f-theme" rows="3" maxlength="300" placeholder="Mô tả cảnh sinh hoạt hằng ngày, ví dụ bàn bếp và bàn ăn. Để trống nếu muốn mô hình tự chọn."></textarea>
       </label>
-      <div id="presets" class="presets" role="group" aria-label="Example settings"></div>
-      <label class="narrow">Objects in the box
+      <div id="presets" class="presets" role="group" aria-label="Bối cảnh mẫu"></div>
+      <label class="narrow">Số món trong hộp
         <input id="f-count" type="number" min="1" max="60" step="1">
       </label>
       <details id="cats" class="cats">
-        <summary><span>Categories</span><em id="cats-sum">All categories</em></summary>
-        <input id="cats-q" type="search" placeholder="Filter categories" aria-label="Filter categories">
+        <summary><span>Nhóm đồ</span><em id="cats-sum">Tất cả nhóm</em></summary>
+        <input id="cats-q" type="search" placeholder="Lọc nhóm đồ" aria-label="Lọc nhóm đồ">
         <div id="cats-list" class="cats-list"></div>
-        <button type="button" id="cats-clear" class="btn small ghost">Use all categories</button>
+        <button type="button" id="cats-clear" class="btn small ghost">Dùng tất cả nhóm</button>
       </details>
-      <button class="btn primary wide" id="f-go" type="submit">Generate box</button>
-      <p class="hint">Takes about 15 seconds. Objects held by any other box, or marked as used below, are never offered.</p>
+      <button class="btn primary wide" id="f-go" type="submit">Tạo hộp</button>
+      <p class="hint">Mất khoảng 15 giây. Món đã nằm trong hộp khác, hoặc đã đánh dấu "đã dùng" bên dưới, sẽ không bao giờ được chọn.</p>
     </form>
 
     <form id="used" class="panel" autocomplete="off">
-      <h2>Already used in the sheet</h2>
-      <p class="hint">Paste Object IDs that are already in your workbook so no new box picks them.</p>
-      <textarea id="u-text" rows="3" placeholder="004702&#10;004700&#10;004699" aria-label="Object IDs already used"></textarea>
-      <input id="u-note" maxlength="60" placeholder="Where from, for example M17 Box A1" aria-label="Note">
-      <button class="btn wide" type="submit">Mark as used</button>
+      <h2>Đã dùng trong bảng tính</h2>
+      <p class="hint">Dán các Object ID đã có trong bảng tính để các hộp mới không chọn trùng.</p>
+      <textarea id="u-text" rows="3" placeholder="004702&#10;004700&#10;004699" aria-label="Object ID đã dùng"></textarea>
+      <input id="u-note" maxlength="60" placeholder="Lấy từ đâu, ví dụ M17 Box A1" aria-label="Ghi chú">
+      <button class="btn wide" type="submit">Đánh dấu đã dùng</button>
       <details id="u-list-wrap" class="u-list" hidden>
         <summary><span id="u-count"></span></summary>
         <ul id="u-list"></ul>
@@ -85,15 +86,15 @@
 
 <div id="gate" class="gate" hidden>
   <form id="gate-form" class="panel">
-    <h2>Access code</h2>
-    <p class="hint">Ask the person who set up this page for the code.</p>
-    <input id="gate-code" type="password" autocomplete="current-password" aria-label="Access code" required>
-    <p id="gate-err" class="err" hidden>That code was not accepted.</p>
-    <button class="btn primary wide" type="submit">Open</button>
+    <h2>Mã truy cập</h2>
+    <p class="hint">Hãy hỏi người cài đặt trang này để lấy mã.</p>
+    <input id="gate-code" type="password" autocomplete="current-password" aria-label="Mã truy cập" required>
+    <p id="gate-err" class="err" hidden>Mã này không đúng.</p>
+    <button class="btn primary wide" type="submit">Mở</button>
   </form>
 </div>
 
-<noscript><p style="padding:24px">This page needs JavaScript.</p></noscript>
+<noscript><p style="padding:24px">Trang này cần bật JavaScript.</p></noscript>
 <script src="/static/app.js"></script>
 </body>
 </html>

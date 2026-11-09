@@ -81,11 +81,11 @@ class DeepSeekLLM:
                     data = json.load(r)
                 return data["choices"][0]["message"]["content"] or ""
             except urllib.error.HTTPError as e:
-                last = LLMError(f"DeepSeek HTTP {e.code}: {e.read()[:200].decode(errors='replace')}")
+                last = LLMError(f"Lỗi DeepSeek HTTP {e.code}: {e.read()[:200].decode(errors='replace')}")
                 if e.code in (400, 401, 402, 403, 422):   # retrying will not help
                     break
             except Exception as e:                           # timeouts, resets, bad JSON
-                last = LLMError(f"DeepSeek call failed: {e}")
+                last = LLMError(f"Gọi DeepSeek thất bại: {e}")
         raise last
 
 
@@ -218,7 +218,7 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
             # all but one pay for an LLM call that gets thrown away.
             if not sem.acquire(blocking=False):
                 with _db(s) as conn:
-                    service.set_status(conn, box_id, "generating", "Waiting for another box to finish picking...")
+                    service.set_status(conn, box_id, "generating", "Đang chờ hộp khác chọn xong...")
                 sem.acquire()
             try:
                 with _db(s) as conn:
@@ -229,8 +229,8 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                     pool = available_pool(conn, catalog, cats, avoid)
                 if len(pool) < len(free):
                     raise service.Invalid(
-                        f"Only {len(pool)} free objects match your filters but {len(free)} are needed. "
-                        "Widen the categories or release some boxes.")
+                        f"Chỉ còn {len(pool)} món trống khớp bộ lọc nhưng cần {len(free)} món. "
+                        "Hãy mở rộng nhóm đồ hoặc giải phóng bớt hộp.")
                 rng = random.Random(box_id * 1000 + attempt)
                 sample = pool if len(pool) <= POOL_LIMIT else rng.sample(pool, POOL_LIMIT)
                 current = [catalog.get(r["object_id"]) for r in have if catalog.get(r["object_id"])]
@@ -242,7 +242,7 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                 with _db(s) as conn:
                     filled = service.claim(conn, box_id, [(pos, it, q, "llm") for pos, (it, q) in zip(free, good)])
                     service.get_box(conn, box_id)          # raises NotFound if someone discarded the box meanwhile
-                info.append(f"{llm.name} call {attempt}: {len(filled)}/{len(free)} accepted")
+                info.append(f"{llm.name} lần {attempt}: nhận {len(filled)}/{len(free)} món")
             finally:
                 sem.release()
 
@@ -258,10 +258,10 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                 pool.sort(key=lambda it: 0 if it.category in cur_cats else 1)
                 picks = [(it, 1) for it in pool[:len(free)]]
                 service.claim(conn, box_id, [(pos, it, q, "fill") for pos, (it, q) in zip(free, picks)])
-                info.append(f"{len(picks)} filled automatically (model gave too few valid objects)")
+                info.append(f"{len(picks)} món do hệ thống tự điền (mô hình trả về thiếu món hợp lệ)")
             left = box["count"] - len(service.box_items(conn, box_id))
             if left:
-                service.set_status(conn, box_id, "error", f"{left} slots could not be filled. " + "; ".join(info))
+                service.set_status(conn, box_id, "error", f"Còn {left} ô chưa điền được. " + "; ".join(info))
             else:
                 service.set_status(conn, box_id, "draft", "; ".join(info))
     except service.NotFound:

@@ -150,6 +150,7 @@ input::placeholder, textarea::placeholder { color: #7b8a86; }
 .pill { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 99px; background: #dfe5e2; color: var(--ink); }
 .pill.generating { background: #fde2cf; color: #6b2e07; }
 .pill.approved { background: #cbe9df; color: #0c4a3e; }
+.pill.pushed { background: #d8e3fb; color: #1b3a7a; }
 .pill.error { background: #f6d5d1; color: #7a1812; }
 .pill.generating::before {
   content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%;

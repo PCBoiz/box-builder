@@ -22,6 +22,12 @@ class Settings:
     draft_ttl_hours: int = 12         # abandoned drafts release their objects after this long
     max_parallel_llm: int = 1         # boxes picking at once; 1 = no wasted LLM calls on clashing picks
     access_code: str = ""             # optional shared passcode for the whole app
+    sectors: str = "Hanoi-GPI"        # only objects from these SM sectors are ever used (comma list; empty = all)
+    sync_token: str = ""              # secret the userscript sends to push the live SM catalog (empty = sync disabled)
+
+    @property
+    def sector_list(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.sectors.split(",") if x.strip())
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,4 +43,6 @@ class Settings:
             draft_ttl_hours=_int("DRAFT_TTL_HOURS", cls.draft_ttl_hours),
             max_parallel_llm=_int("MAX_PARALLEL_LLM", cls.max_parallel_llm),
             access_code=os.getenv("ACCESS_CODE", ""),
+            sync_token=os.getenv("SYNC_TOKEN", ""),
+            sectors=os.getenv("SECTORS", cls.sectors),
         )

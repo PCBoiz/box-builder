@@ -18,6 +18,8 @@ services:
         sync: false
       - key: ACCESS_CODE            # optional shared code for the team
         sync: false
+      - key: SYNC_TOKEN             # secret the SM userscript sends to push the live object list (empty = sync off)
+        sync: false
       - key: DEFAULT_COUNT
         value: "21"
       - key: MAX_QTY
