@@ -1,0 +1,9 @@
+services:
+  box-builder:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ./data:/data        # catalog.csv (replace it any time) and boxes.db (the shared ledger)
+    restart: unless-stopped

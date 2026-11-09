@@ -1,0 +1,28 @@
+# Render Blueprint: New > Blueprint > pick this repo. Render asks for the two secrets marked sync: false.
+services:
+  - type: web
+    name: box-builder
+    runtime: python
+    plan: free                      # sleeps after ~15 min idle; first visit then takes ~30-60 s. Use "starter" to keep it awake.
+    region: singapore               # closest Render region to Hanoi; pick the same region as your Neon project
+    buildCommand: pip install -r requirements.txt
+    # One worker on purpose: boxes then pick one at a time and never waste a model call on clashing picks.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/config
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL           # Neon: use the POOLED connection string (host contains "-pooler")
+        sync: false
+      - key: DEEPSEEK_API_KEY       # leave empty to run on offline test picks
+        sync: false
+      - key: ACCESS_CODE            # optional shared code for the team
+        sync: false
+      - key: DEFAULT_COUNT
+        value: "21"
+      - key: MAX_QTY
+        value: "3"
+      - key: DRAFT_TTL_HOURS
+        value: "12"
+      - key: MAX_PARALLEL_LLM
+        value: "1"
