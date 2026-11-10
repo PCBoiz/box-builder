@@ -317,6 +317,30 @@
         <tbody id="bk-body"></tbody>
       </table>
     </div>
+
+    <h3>Nhập hộp từ tệp CSV</h3>
+    <p class="hint">Dùng khi hộp đã có sẵn trong một bảng khác. Mỗi dòng là một món nằm trong một hộp. Cột bắt buộc: <b>module</b> (tên tab bảng tính, ví dụ M8),
+      <b>box</b> (tên hộp, ví dụ Box A1) và <b>object_id</b> (mã món, chỉ gồm chữ số). Cột thêm: <b>stt</b> (số thứ tự trong hộp), <b>qty</b> (số lượng),
+      <b>code</b> (mã section), <b>anchor</b> (bối cảnh). Tên cột tiếng Việt như Hộp, ID, STT, Số lượng cũng được.
+      Tệp tải từ nút "Tải danh sách hộp (CSV)" dùng được ngay. Hộp nhập vào ở trạng thái Nháp để bạn xem lại rồi duyệt.
+      Món đã nằm ở hộp khác được bỏ qua, và hộp trùng tên với hộp đã có cũng được bỏ qua.</p>
+    <div class="field">
+      <label for="csv-file">Chọn tệp CSV</label>
+      <input id="csv-file" type="file" accept=".csv,text/csv">
+    </div>
+    <div class="actions">
+      <button type="button" id="csv-preview" class="btn" disabled>Xem trước</button>
+      <button type="button" id="csv-import" class="btn primary" disabled>Nhập các hộp này</button>
+    </div>
+    <p id="csv-summary" class="hint" role="status" hidden></p>
+    <ul id="csv-bad" class="alerts" aria-label="Các dòng không đọc được" hidden></ul>
+    <div class="table-wrap" id="csv-table-wrap" hidden>
+      <table class="otable">
+        <caption class="sr-only">Kết quả nhập từng hộp từ tệp CSV</caption>
+        <thead><tr><th scope="col">Hộp</th><th scope="col">Kết quả</th><th scope="col" class="num">Món</th><th scope="col">Ghi chú</th></tr></thead>
+        <tbody id="csv-body"></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="panel">

@@ -66,8 +66,8 @@ async function api(path, opts = {}) {
   try {
     res = await fetch(path, {
       method: opts.method || "GET",
-      headers: { "Content-Type": "application/json", "X-Access-Code": code },
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      headers: { "Content-Type": opts.raw !== undefined ? "text/csv" : "application/json", "X-Access-Code": code },
+      body: opts.raw !== undefined ? opts.raw : opts.body ? JSON.stringify(opts.body) : undefined,
     });
   } catch {
     throw Object.assign(new Error("Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại."), { status: 0 });
@@ -997,6 +997,75 @@ function setupBackup() {
   });
 }
 
+function setupCsvImport() {
+  const file = $("#csv-file"), prev = $("#csv-preview"), imp = $("#csv-import"), sum = $("#csv-summary");
+  let gen = 0;                                          // bumped when another file is chosen, so a late answer for the old file is ignored
+  const say = (text, bad) => {
+    sum.hidden = !text;
+    sum.textContent = text || "";
+    sum.className = bad ? "hint warnline" : "hint";
+    if (text) $("#sr-live").textContent = text;
+  };
+  const clear = () => { $("#csv-table-wrap").hidden = true; $("#csv-bad").hidden = true; say(""); imp.disabled = true; };
+  const bytes = async () => {                           // read when the button is pressed, so a file fixed and saved again is read again
+    const f = file.files && file.files[0];
+    if (!f) throw Object.assign(new Error("Chưa chọn tệp. Hãy chọn tệp CSV ở trên."), { status: 0 });
+    try { return await f.arrayBuffer(); }
+    catch { throw Object.assign(new Error("Không đọc được tệp. Hãy chọn lại tệp CSV."), { status: 0 }); }
+  };
+  file.addEventListener("change", () => {
+    gen += 1;
+    clear();
+    prev.disabled = !(file.files && file.files[0]);
+    const f = file.files && file.files[0];
+    if (f && f.size > 5 * 1024 * 1024) { prev.disabled = true; say("Tệp lớn hơn 5 MB nên không dùng được. Hãy tách thành các tệp nhỏ hơn.", true); }
+  });
+  const show = (r) => {
+    const t = r.totals;
+    say(`${r.dry_run ? "Sẽ thêm" : "Đã thêm"} ${t.boxes_added} hộp nháp (${t.items_added} món), bỏ qua ${t.boxes_skipped} hộp và ${t.items_skipped} món. ` +
+      `Đọc ${r.csv.rows} dòng, ${r.csv.bad_total} dòng không đọc được.`);
+    $("#csv-body").replaceChildren(...r.boxes.map((b) => {
+      const skipped = b.items_skipped.slice(0, 3).map((i) => `${i.object_id} (${i.reason})`).join("; ") + (b.items_skipped.length > 3 ? `; và ${b.items_skipped.length - 3} món khác` : "");
+      const note = [b.reason, skipped].filter(Boolean).join(". ");
+      return h("tr", {}, h("td", {}, `${b.module} ${b.label}`), h("td", {}, h("span", { class: "pill " + (b.result === "added" ? "st-free" : "st-external") }, b.result === "added" ? "Thêm" : "Bỏ qua")),
+        h("td", { class: "num" }, `${b.items_added}/${b.items_total}`), h("td", {}, note));
+    }));
+    $("#csv-table-wrap").hidden = !r.boxes.length;
+    const bad = r.csv.bad_rows.slice(0, 10).map((x) => h("li", { class: "warn" }, `Dòng ${x.line}${x.object_id ? " (" + x.object_id + ")" : ""}: ${x.reason}`));
+    if (r.csv.bad_total > 10) bad.push(h("li", { class: "warn" }, `Và ${r.csv.bad_total - 10} dòng khác không đọc được.`));
+    $("#csv-bad").replaceChildren(...bad);
+    $("#csv-bad").hidden = !bad.length;
+  };
+  const send = async (dry) => {
+    const mine = gen;
+    prev.disabled = imp.disabled = true;
+    try {
+      const r = await api(`/api/import/boxes.csv?dry_run=${dry}`, { method: "POST", raw: await bytes() });
+      if (mine !== gen) return null;                    // another file was chosen meanwhile: this answer belongs to the old one
+      show(r);
+      return r;
+    } catch (e) {
+      if (mine === gen) { clear(); say(e.message, true); }
+      fail(e);
+      return null;
+    } finally {
+      if (mine === gen) prev.disabled = !(file.files && file.files[0]);
+    }
+  };
+  prev.addEventListener("click", async () => {
+    const r = await send(true);
+    imp.disabled = !(r && r.totals.boxes_added);
+  });
+  imp.addEventListener("click", async () => {
+    const r = await send(false);
+    if (!r) return;
+    imp.disabled = true;                                // the same file would add nothing now
+    toast(r.totals.boxes_added ? `Đã nhập ${r.totals.boxes_added} hộp nháp. Mở tab Hộp để xem lại và duyệt.` : "Không có hộp nào được thêm. Xem lý do trong bảng bên dưới.");
+    await poll(true);
+    await refreshAuto();
+  });
+}
+
 /* ------------------------------------------------------------------ help for people who are new to the tool */
 const normModule = (v) => { const t = v.trim(); return /^m\d+$/i.test(t) ? t.toUpperCase() : t; };   // m8 -> M8, other tab names as typed
 
@@ -1084,7 +1153,7 @@ async function init() {
   chip.hidden = false;
   chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
-  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall();
+  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall(); setupCsvImport();
   updateExport();
   await poll(true);
   if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });

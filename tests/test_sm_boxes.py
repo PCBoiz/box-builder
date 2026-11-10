@@ -1,7 +1,8 @@
 """The snapshot of boxes that SM holds: objects in them are never picked, added or pushed again, and no person is stored."""
+import pytest
 from fastapi.testclient import TestClient
 
-from app import picker, service
+from app import db, picker, service
 from app.main import create_app
 from tests.test_automation import make_client, wait_all_settled, wait_status
 from tests.test_backend import _approved_box, conn_of, env, wait_settled  # noqa: F401  (env is a fixture)
@@ -137,3 +138,48 @@ def test_no_person_is_ever_stored(env):
     assert cols == {("sm_box_id", "title", "status", "status_label", "created_at", "seen_at")}      # nothing else exists to hold a person
     assert tuple(conn.execute("SELECT * FROM sm_box_items").fetchone().keys()) == ("sm_box_id", "object_id", "qty")
     assert who not in client.get("/api/sync/check", headers=TOK).text
+
+
+# ----------------------------------------------------------------------------- big snapshots must not need thousands of round trips
+def test_saving_hundreds_of_sm_boxes_takes_a_handful_of_statements(env, monkeypatch):
+    """On a hosted database every statement is a network round trip. 329 boxes of about 13 objects once took one INSERT per row (over a
+    minute, longer than the sync tool waits); the rows now go in batches, so the number of statements does not grow with the boxes."""
+    s, cat = env
+    ids = usable_ids(cat)
+    boxes = [sm_box(str(2000 + n), f"A1 Tabletop {n}", [ids[(n * 7 + k) % len(ids)] for k in range(13)]) for n in range(329)]
+    calls = []
+    real_execute, real_many = db.Conn.execute, db.Conn.executemany
+    monkeypatch.setattr(db.Conn, "execute", lambda self, sql, params=(): (calls.append(sql), real_execute(self, sql, params))[1])
+    monkeypatch.setattr(db.Conn, "executemany", lambda self, sql, rows: (calls.append(sql), real_many(self, sql, rows))[1])
+    info = service.save_sm_boxes(conn_of(s), boxes, 1000.0)
+    assert info["active"] == 329 and info["received"] == 329
+    assert len(calls) <= 12, calls                                                      # begin, lock, delete x2, insert x2, snapshot, rev, commit
+    c = conn_of(s)
+    assert c.execute("SELECT COUNT(*) FROM sm_boxes").fetchone()[0] == 329
+    assert c.execute("SELECT COUNT(*) FROM sm_box_items").fetchone()[0] == sum(len({ids[(n * 7 + k) % len(ids)] for k in range(13)}) for n in range(329))
+    again = service.save_sm_boxes(conn_of(s), boxes[:5], 2000.0)                         # a later snapshot replaces the whole thing
+    assert again["active"] == 5 and c.execute("SELECT COUNT(*) FROM sm_boxes").fetchone()[0] == 5
+
+
+def test_executemany_batches_rows_maps_integrity_errors_and_accepts_nothing(env):
+    s, _ = env
+    c = conn_of(s)
+    c.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?)", [])        # an empty batch is not an error
+    c.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?)", ((f"{n:06d}", "x") for n in range(1, 501)))   # any iterable
+    assert c.execute("SELECT COUNT(*) FROM external_used").fetchone()[0] == 500
+    with pytest.raises(db.IntegrityError):
+        c.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?)", [("000001", "again")])
+    c.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", [("000001", "again"), ("000777", "new")])
+    assert c.execute("SELECT COUNT(*) FROM external_used").fetchone()[0] == 501
+    assert c.execute("SELECT note FROM external_used WHERE object_id='000001'").fetchone()[0] == "x"          # nothing overwritten
+    c.executemany("DELETE FROM external_used WHERE object_id=?", [("000001",), ("000777",)])
+    assert c.execute("SELECT COUNT(*) FROM external_used").fetchone()[0] == 499
+
+
+def test_pasting_many_used_ids_still_counts_added_and_skips_boxes_and_repeats(env):
+    client, s, cat = make_client(env)
+    ids = usable_ids(cat)
+    r = client.post("/api/used", json={"text": " ".join(ids[:300] + ids[:50] + ["abc"]), "note": "bảng"}).json()
+    assert r["added"] == 300 and r["unreadable"] == ["abc"] and r["already_in_a_box"] == []
+    again = client.post("/api/used", json={"text": " ".join(ids[:320])}).json()
+    assert again["added"] == 20                                                          # the first 300 were listed already

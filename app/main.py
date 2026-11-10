@@ -460,6 +460,8 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     @app.post("/api/backup/import", dependencies=[Depends(auth)])
     async def backup_import(request: Request, dry_run: bool = True, c=Depends(conn_dep)):
         """Merge a backup in. dry_run (the default) only reports what would happen. Nothing is overwritten."""
+        if int(request.headers.get("content-length") or 0) > BACKUP_MAX:
+            raise HTTPException(413, "Tệp sao lưu lớn hơn 10 MB nên bị từ chối.")
         raw = await request.body()
         if len(raw) > BACKUP_MAX:
             raise HTTPException(413, "Tệp sao lưu lớn hơn 10 MB nên bị từ chối.")
@@ -470,6 +472,27 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         report = await run_in_threadpool(service.import_backup, c, data, cat, s.max_qty, dry_run)
         if not dry_run:
             automation.log(c, "backup", f"Khôi phục: thêm {report['totals']['boxes_added']} hộp, bỏ qua {report['totals']['boxes_skipped']} hộp")
+        return report
+
+    CSV_IMPORT_MAX = 5 * 1024 * 1024
+
+    @app.post("/api/import/boxes.csv", dependencies=[Depends(auth)])
+    async def import_boxes_csv(request: Request, dry_run: bool = True, c=Depends(conn_dep)):
+        """Create draft boxes from a CSV with the columns of /api/export.csv (module, box, stt, object_id, qty; optional code, anchor).
+        dry_run (the default) only reports. Same rules as a restore: nothing is overwritten, taken objects are skipped and listed."""
+        if int(request.headers.get("content-length") or 0) > CSV_IMPORT_MAX:                 # refused before the body is read into memory
+            raise HTTPException(413, "Tệp CSV lớn hơn 5 MB nên bị từ chối. Hãy tách thành các tệp nhỏ hơn.")
+        raw = await request.body()
+        if len(raw) > CSV_IMPORT_MAX:
+            raise HTTPException(413, "Tệp CSV lớn hơn 5 MB nên bị từ chối. Hãy tách thành các tệp nhỏ hơn.")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise service.Invalid("Không đọc được tệp. Hãy lưu tệp CSV dạng UTF-8 (trong Google Sheets: Tệp > Tải xuống > CSV).")
+        report = await run_in_threadpool(service.import_boxes_csv, c, text, cat, s.max_qty, count_for, dry_run)
+        if not dry_run:
+            automation.log(c, "import", f"Nhập CSV: thêm {report['totals']['boxes_added']} hộp nháp, bỏ qua {report['totals']['boxes_skipped']} hộp, "
+                                        f"{report['csv']['bad_total']} dòng không đọc được")
         return report
 
     @app.get("/print/boxes", dependencies=[Depends(auth)])
@@ -639,7 +662,8 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
             if approved_only and b["status"] != "approved":
                 continue
             for it in b["items"]:
-                w.writerow([b["module"], b["label"], b["status"], it["pos"], it["id"], it["qty"], it["name"], it["vi"], it["category"]])
+                w.writerow([csv_safe(b["module"]), csv_safe(b["label"]), b["status"], it["pos"], it["id"], it["qty"],
+                            csv_safe(it["name"]), csv_safe(it["vi"]), csv_safe(it["category"])])
         return Response("﻿" + out.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": "attachment; filename=boxes.csv"})
 

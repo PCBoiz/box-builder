@@ -30,6 +30,9 @@ the whole flow for free. The picks are not meaningful. Add the key for real sele
    and SL columns. Set the Object ID cells to *Plain text* first so `004702` keeps its zeros.
 5. **Already used in the sheet**: paste IDs that are already in your workbook so new boxes avoid them.
 6. **Export CSV** (top right) lists every box and object.
+7. **Import boxes from a CSV** (Automations tab, under Backup): columns `module`, `box`, `object_id`, optionally `stt`, `qty`, `code`, `anchor`
+   (the file from **Export CSV** works as is). Boxes come in as drafts, objects held elsewhere are skipped and named, bad rows are listed
+   with their line number, and **Preview** shows all of it before anything is written.
 
 ## How duplicates are prevented
 

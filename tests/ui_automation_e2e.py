@@ -245,6 +245,35 @@ try:
         dl = pg.locator("#bk-download").get_attribute("href")
         check(dl == "/api/backup.json", "backup: the download link points at the export")
 
+        # --- import boxes from a CSV: bad rows are listed, a preview writes nothing, the box comes in as a draft, a second import adds nothing
+        csv_ids = [o["id"] for o in json.load(urllib.request.urlopen(BASE + "/api/objects?status=free&per=3"))["items"]]
+        csv_path = os.path.join(bk_dir, "boxes.csv")
+        with open(csv_path, "w", encoding="utf-8-sig") as fh:
+            fh.write("module,box,stt,object_id,qty\n" + "".join(f"M6,Box A1,{n + 1},{oid},1\n" for n, oid in enumerate(csv_ids)) + "M6,Box A1,4,abc,1\n")
+        check(pg.is_disabled("#csv-preview") and pg.is_disabled("#csv-import"), "csv import: preview and import start switched off")
+        pg.set_input_files("#csv-file", csv_path); pg.wait_for_function("!document.querySelector('#csv-preview').disabled"); pg.click("#csv-preview")
+        pg.wait_for_function("document.querySelector('#csv-summary').innerText.includes('Sẽ thêm')", timeout=8000)
+        check("Sẽ thêm 1 hộp nháp (3 món)" in pg.inner_text("#csv-summary") and "1 dòng không đọc được" in pg.inner_text("#csv-summary"), f"csv import: the preview counts boxes and bad rows: {pg.inner_text('#csv-summary')!r}")
+        check("Dòng 5" in pg.inner_text("#csv-bad") and "M6 Box A1" in pg.inner_text("#csv-body"), "csv import: the bad row is named by its line")
+        check(not any(b["module"] == "M6" for b in json.load(urllib.request.urlopen(BASE + "/api/state"))["boxes"]), "csv import: a preview writes nothing")
+        pg.click("#csv-import")
+        pg.wait_for_selector(".toast:has-text('Đã nhập 1 hộp nháp')", timeout=15000)
+        got6 = next((b for b in json.load(urllib.request.urlopen(BASE + "/api/state"))["boxes"] if b["module"] == "M6"), None)
+        check(got6 is not None and got6["status"] == "draft" and [i["id"] for i in got6["items"]] == csv_ids and {i["source"] for i in got6["items"]} == {"import"}, "csv import: the box came in as a draft with its items")
+        pg.click("#csv-preview")
+        pg.wait_for_function("document.querySelector('#csv-body').innerText.includes('đã có hộp cùng tên')", timeout=8000)
+        check(pg.is_disabled("#csv-import"), "csv import: importing the same file again would add nothing, so the button stays off")
+        # a file that is not UTF-8 reaches the server as it is, so the person is told to save it as UTF-8 (the page must not silently garble it)
+        latin = os.path.join(bk_dir, "latin1.csv")
+        open(latin, "wb").write(b"module,box,object_id\nM6,Box \xe9,000001\n")
+        pg.set_input_files("#csv-file", latin)
+        check(pg.locator("#csv-body").is_hidden() and pg.is_disabled("#csv-import"), "csv import: choosing another file clears the old result and keeps import off")
+        pg.click("#csv-preview")
+        pg.wait_for_function("document.querySelector('#csv-summary').innerText.includes('UTF-8')", timeout=8000)
+        check(pg.is_disabled("#csv-import") and pg.locator("#csv-summary").is_visible(), "csv import: a file that is not UTF-8 is refused with a message that stays on the page")
+        check("UTF-8" in pg.inner_text("#sr-live"), "csv import: the message is announced to screen readers")
+        urllib.request.urlopen(urllib.request.Request(f"{BASE}/api/boxes/{got6['id']}", method="DELETE"))      # leave the later checks as they were
+
         # --- AI batch plan -> edit -> create
         pg.click("#b-section")
         check(pg.input_value("#b-labels") == "Box B2, Box B3, Box A1", "section preset fills the three box names")

@@ -92,11 +92,10 @@ def save_sm_boxes(conn, boxes: list, now: float, allow_empty: bool = False) -> d
     with tx(conn):
         conn.execute("DELETE FROM sm_box_items")
         conn.execute("DELETE FROM sm_boxes")
-        for bid, (meta, items) in keep.items():
-            conn.execute("INSERT INTO sm_boxes(sm_box_id, title, status, status_label, created_at, seen_at) VALUES(?,?,?,?,?,?)",
-                         (bid, meta["title"], meta["status"], meta["label"], meta["created"], now))
-            for oid, q in items.items():
-                conn.execute("INSERT INTO sm_box_items(sm_box_id, object_id, qty) VALUES(?,?,?)", (bid, oid, q))
+        conn.executemany("INSERT INTO sm_boxes(sm_box_id, title, status, status_label, created_at, seen_at) VALUES(?,?,?,?,?,?)",
+                         [(bid, meta["title"], meta["status"], meta["label"], meta["created"], now) for bid, (meta, _) in keep.items()])
+        conn.executemany("INSERT INTO sm_box_items(sm_box_id, object_id, qty) VALUES(?,?,?)",
+                         [(bid, oid, q) for bid, (_, items) in keep.items() for oid, q in items.items()])
         info = {"synced_at": now, "received": len(boxes), "active": len(keep), "objects_held": len(held),
                 "ignored_ended": ignored_ended, "skipped_invalid": invalid}
         conn.execute("INSERT INTO catalog_snapshot(k, v) VALUES('sm_boxes', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
@@ -600,13 +599,15 @@ def import_used(conn, text: str, note: str, catalog: Catalog) -> dict:
     added, in_box = 0, []
     with tx(conn):
         in_boxes = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
+        listed = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
+        new = []
         for oid in dict.fromkeys(ids):
             if oid in in_boxes:
                 in_box.append(oid)
-                continue
-            cur = conn.execute("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING",
-                               (oid, note.strip()))
-            added += cur.rowcount
+            elif oid not in listed:
+                new.append((oid, note.strip()))
+        conn.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", new)
+        added = len(new)
     unknown = [o for o in ids if catalog.get(o) is None]
     return {"added": added, "already_in_a_box": in_box, "not_in_catalog": unknown, "unreadable": bad}
 
@@ -658,10 +659,10 @@ def export_backup(conn) -> dict:
 
 
 def _text(v, limit: int) -> str:
-    return str(v).strip()[:limit] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
+    return str(v).replace("\x00", "").strip()[:limit] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
 
 
-def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = True) -> dict:
+def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = True, note: str = "Khôi phục từ bản sao lưu") -> dict:
     """Merge a backup into this app. Nothing is overwritten: a box whose module and name exist is skipped, an object that is already
     taken (another box, the sheet list, an SM box) or no longer in the kho is skipped, and a pushed record is restored only for a box
     that came in complete. Each box is written atomically. With dry_run nothing is written: the report is what would happen."""
@@ -699,12 +700,12 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 60:
             entry["reason"] = "số món phải từ 1 đến 60"
             continue
+        raw_items = raw.get("items") if isinstance(raw.get("items"), list) else []
+        entry["items_total"] = len(raw_items)
         if (module, label) in existing:
             entry["reason"] = "đã có hộp cùng tên"
             continue
-        rows, seen_pos = [], set()
-        raw_items = raw.get("items") if isinstance(raw.get("items"), list) else []
-        entry["items_total"] = len(raw_items)
+        rows, seen_pos, qty_cut = [], set(), 0
         for it in raw_items[:60]:
             oid = pad_id(it.get("object_id", "")) if isinstance(it, dict) else None
             pos = it.get("pos") if isinstance(it, dict) else None
@@ -721,7 +722,9 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
             holders[oid] = f"{module} / {label}"                      # later boxes in this same file cannot take it again
             taken_now.add(oid)
             q = it.get("qty")
-            q = max(1, min(max_qty, live[oid].stock, q if isinstance(q, int) and not isinstance(q, bool) else 1))
+            want = q if isinstance(q, int) and not isinstance(q, bool) else 1
+            q = max(1, min(max_qty, live[oid].stock, want))
+            qty_cut += q != want
             src = it.get("source") if it.get("source") in _SOURCES else "import"
             rows.append((pos, oid, q, 1 if it.get("locked") is True else 0, src))
         entry["items_added"] = len(rows)
@@ -735,7 +738,10 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
         cats = raw.get("categories") if isinstance(raw.get("categories"), list) else []
         cats = [_text(c, 60) for c in cats[:200] if _text(c, 60)]
         entry["result"] = "added"
-        entry["reason"] = "" if complete else f"mới có {len(rows)}/{count} món nên vào ở trạng thái Nháp"
+        notes = [] if complete else [f"mới có {len(rows)}/{count} món nên vào ở trạng thái Nháp"]
+        if qty_cut:
+            notes.append(f"{qty_cut} món đổi số lượng cho vừa tồn kho hoặc mức tối đa")
+        entry["reason"] = "; ".join(notes)
         existing.add((module, label))
         if dry_run:
             continue
@@ -746,10 +752,10 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
                     "INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,message,owner,created_at,updated_at) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                     (module, label, _text(raw.get("theme"), 300), json.dumps(cats), _text(raw.get("code"), 40), _text(raw.get("anchor"), 120),
-                     count, status, "Khôi phục từ bản sao lưu" if status == "draft" else "", _text(raw.get("owner"), 40), now, now))
+                     count, status, note if status == "draft" else "", _text(raw.get("owner"), 40), now, now))
                 bid = cur.fetchone()[0]
-                for pos, oid, q, locked, src in rows:
-                    conn.execute("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,?,?)", (bid, pos, oid, q, locked, src))
+                conn.executemany("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,?,?)",
+                                 [(bid, pos, oid, q, locked, src) for pos, oid, q, locked, src in rows])
                 if restore_push:
                     conn.execute("INSERT INTO sm_push(box_id, sm_box_id, pushed_at) VALUES(?,?,?)", (bid, sm_id, now))
         except IntegrityError:                                         # someone took an object a moment ago: this box is left out whole
@@ -767,8 +773,7 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
         fresh.append((oid, _text(u.get("note"), 60)))
     if not dry_run and fresh:
         with tx(conn):
-            for oid, note in fresh:
-                conn.execute("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", (oid, note))
+            conn.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", fresh)
     # automation switches: only those that were never changed here, so a restore does not undo someone's choice
     stored = {r[0] for r in conn.execute("SELECT k FROM automations")}
     applied, kept = [], []
@@ -790,6 +795,156 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
                        "items_added": sum(e["items_added"] for e in out), "items_skipped": sum(len(e["items_skipped"]) for e in out)},
             "used": {"added": len(fresh), "skipped": skipped}, "automations": {"applied": applied, "kept": kept}}
 
+
+# ----------------------------------------------------------------------------- import boxes from a CSV
+CSV_MAX_ROWS = 20000
+CSV_MAX_BOXES = 500
+CSV_BOX_MAX_ITEMS = 60
+_CSV_HEADERS = {                        # header names that mean each column (compared lower case, spaces, dashes and underscores as one space)
+    "module": ("module", "tab", "mo dun", "mô đun"),
+    "box": ("box", "hop", "hộp", "box name", "label"),
+    "object_id": ("object id", "id", "ma do", "mã đồ"),                   # the exact name "object_id" is taken first, see _csv_columns
+    "stt": ("stt", "pos", "position", "#"),
+    "qty": ("qty", "quantity", "so luong", "số lượng"),
+    "code": ("code", "section", "ma section", "mã section"),
+    "anchor": ("anchor", "boi canh", "bối cảnh", "large object"),
+}
+_CSV_DIGITS = re.compile(r"[0-9]{1,9}")                                  # ASCII only: str.isdigit() also accepts characters int() cannot read
+_CSV_ID = re.compile(r"[0-9]{1,6}")                                      # an object ID is plain digits; "4702.0" or "12 34" is not one
+
+
+def _csv_norm(name: str) -> str:
+    return re.sub(r"[\s_-]+", " ", name.replace("\ufeff", "").replace("\x00", "").strip().lower())
+
+
+def _csv_columns(header: list[str]) -> dict[str, int]:
+    """Column of each field. The exact field name wins over looser spellings, so a file that has both "id" and "object_id" uses object_id."""
+    names = [_csv_norm(h) for h in header]
+    cols: dict[str, int] = {}
+    for key, aliases in _CSV_HEADERS.items():
+        exact = _csv_norm(key)
+        if exact in names:
+            cols[key] = names.index(exact)
+            continue
+        for alias in aliases:
+            if _csv_norm(alias) in names:
+                cols[key] = names.index(_csv_norm(alias))
+                break
+    return cols
+
+
+def _csv_module(v: str) -> str:
+    return v.upper() if re.fullmatch(r"m\d+", v, re.IGNORECASE) else v          # m8 -> M8, like the new-box form; other tab names as typed
+
+
+def boxes_from_csv(text: str, size_for) -> tuple[dict, list[dict], int]:
+    """Read /api/export.csv (or a hand-made file with the same columns) into the structure import_backup takes. Every box comes in as a
+    draft with its items marked 'import'. Returns (data, bad_rows, rows_read). size_for(label) is the box size for that stage.
+    Rows that cannot be used are listed with the line they start on; a box with no usable row is not created."""
+    import csv
+    import io
+    text = text.lstrip("\ufeff").replace("\x00", "")
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
+    if not first:
+        raise Invalid("Tệp CSV trống. Hãy chọn một tệp có dữ liệu.")
+    delim = max(",;\t", key=first.count)                             # the sheet may save with ; or a tab
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delim)    # newline="" lets the reader see CR, LF and CRLF endings itself
+    too_long = Invalid("Có ô trong tệp CSV dài quá mức hoặc tệp bị lỗi định dạng. Hãy mở tệp, kiểm tra các ô rồi chọn lại.")
+    last = 0
+    try:
+        header = None
+        for r in reader:
+            last = reader.line_num
+            if any(c.strip() for c in r):
+                header = r
+                break
+        if header is None:
+            raise Invalid("Tệp CSV trống. Hãy chọn một tệp có dữ liệu.")
+        cols = _csv_columns(header)
+        missing = [k for k in ("module", "box", "object_id") if k not in cols]
+        if missing:
+            raise Invalid("Tệp CSV cần có các cột module, box và object_id (có thể thêm stt, qty, code, anchor). "
+                          f"Chưa thấy cột: {', '.join(missing)}. Hãy thêm cột đó vào dòng đầu tiên rồi chọn lại tệp.")
+        cell = lambda row, key: row[cols[key]].strip() if key in cols and cols[key] < len(row) else ""
+        boxes: dict[tuple[str, str], dict] = {}
+        bad: list[dict] = []
+        rows_read = 0
+
+        def refuse(line: int, why: str, oid: str = "") -> None:
+            bad.append({"line": line, "object_id": oid, "reason": why})
+
+        while True:
+            try:
+                row = next(reader)
+            except StopIteration:
+                break
+            line, last = last + 1, reader.line_num                   # the line this record starts on (a quoted cell may span several lines)
+            if not any(c.strip() for c in row):
+                continue
+            rows_read += 1
+            if rows_read > CSV_MAX_ROWS:
+                raise Invalid(f"Tệp CSV có hơn {CSV_MAX_ROWS} dòng. Hãy tách thành các tệp nhỏ hơn.")
+            module, label = _csv_module(cell(row, "module")), cell(row, "box")
+            if not module or not label:
+                refuse(line, "thiếu Module hoặc tên hộp")
+                continue
+            raw_id = cell(row, "object_id")
+            if not _CSV_ID.fullmatch(raw_id):
+                refuse(line, "ID không hợp lệ (cần 1 đến 6 chữ số)", raw_id[:20])
+                continue
+            oid = raw_id.zfill(6)
+            box = boxes.get((module, label)) or {"module": module, "label": label, "status": "draft", "code": "", "anchor": "", "items": [],
+                                                  "_ids": set(), "_pos": set(), "_next": 1}
+            stt_raw = cell(row, "stt")
+            if stt_raw:
+                if not _CSV_DIGITS.fullmatch(stt_raw) or not 1 <= int(stt_raw) <= CSV_BOX_MAX_ITEMS:
+                    refuse(line, f"STT phải từ 1 đến {CSV_BOX_MAX_ITEMS}", oid)
+                    continue
+                pos = int(stt_raw)
+            else:
+                pos = box["_next"]
+                while pos in box["_pos"]:
+                    pos += 1
+                if pos > CSV_BOX_MAX_ITEMS:
+                    refuse(line, f"hộp này đã đủ {CSV_BOX_MAX_ITEMS} món", oid)
+                    continue
+            qty_raw = cell(row, "qty")
+            if qty_raw and (not _CSV_DIGITS.fullmatch(qty_raw) or int(qty_raw) < 1):
+                refuse(line, "số lượng phải là số nguyên từ 1 trở lên", oid)
+                continue
+            if pos in box["_pos"]:
+                refuse(line, f"STT {pos} bị lặp trong hộp này", oid)
+                continue
+            if oid in box["_ids"]:
+                refuse(line, "ID bị lặp trong hộp này", oid)
+                continue
+            box["_ids"].add(oid)
+            box["_pos"].add(pos)
+            box["_next"] = max(box["_next"], pos + 1)
+            box["items"].append({"pos": pos, "object_id": oid, "qty": int(qty_raw) if qty_raw else 1, "source": "import"})
+            box["code"] = box["code"] or cell(row, "code")
+            box["anchor"] = box["anchor"] or cell(row, "anchor")
+            boxes[(module, label)] = box                                # only a box with at least one usable row is kept
+    except csv.Error:
+        raise too_long
+    if len(boxes) > CSV_MAX_BOXES:
+        raise Invalid(f"Tệp CSV có hơn {CSV_MAX_BOXES} hộp. Hãy tách thành các tệp nhỏ hơn.")
+    out = []
+    for box in boxes.values():
+        for k in ("_ids", "_pos", "_next"):
+            box.pop(k)
+        box["count"] = min(60, max([size_for(box["label"])] + [i["pos"] for i in box["items"]]))
+        out.append(box)
+    return {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "boxes": out, "used": [], "automations": []}, bad, rows_read
+
+
+def import_boxes_csv(conn, text: str, catalog: Catalog, max_qty: int, size_for, dry_run: bool = True) -> dict:
+    """Same rules as a backup restore (nothing overwritten, taken or unknown objects skipped, one write per box) but every box
+    comes in as a draft to be checked and approved by a person. Rows that could not be read are listed with their line number."""
+    data, bad, rows = boxes_from_csv(text, size_for)
+    report = import_backup(conn, data, catalog, max_qty, dry_run, note="Nhập từ tệp CSV, hãy xem lại rồi duyệt")
+    report["csv"] = {"rows": rows, "bad_rows": bad[:200], "bad_total": len(bad)}
+    return report
 
 def sm_report(conn, catalog: Catalog) -> dict:
     """What the last read of SM says, for the people who plan boxes: how many boxes and objects SM holds, this app's own unpushed

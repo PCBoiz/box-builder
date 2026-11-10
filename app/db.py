@@ -88,6 +88,21 @@ class Conn:
         except self._integrity as e:
             raise IntegrityError(str(e)) from e
 
+    def executemany(self, sql: str, rows) -> None:
+        """Many rows in one go. On Postgres the rows travel in one pipeline instead of one network round trip each,
+        which matters when the database is hosted far away (thousands of single INSERTs took longer than the sync tool waits)."""
+        rows = list(rows)
+        if not rows:
+            return
+        try:
+            if self.pg:
+                with self.raw.cursor() as cur:
+                    cur.executemany(_to_pg(sql), rows)
+            else:
+                self.raw.executemany(sql, rows)
+        except self._integrity as e:
+            raise IntegrityError(str(e)) from e
+
     def close(self):
         if self.raw is None:                       # closing twice is harmless
             return
