@@ -55,23 +55,31 @@ let rev = -1;
 let data = null;
 let categories = [];
 const chosenCats = new Set();
+const batchCats = new Set();
 const ui = {};                          // per box: {q, results, confirm}
 const cache = new Map();                // box id -> {el, sig}
 const uiOf = (id) => (ui[id] ||= { q: "", results: null, confirm: false });
 
 /* ------------------------------------------------------------------ talking to the server */
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    method: opts.method || "GET",
-    headers: { "Content-Type": "application/json", "X-Access-Code": code },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method: opts.method || "GET",
+      headers: { "Content-Type": "application/json", "X-Access-Code": code },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch {
+    throw Object.assign(new Error("Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại."), { status: 0 });
+  }
   if (res.status === 401) throw Object.assign(new Error("Cần nhập mã truy cập"), { status: 401 });
   let json = null;
   try { json = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
     const d = json && json.detail;
-    const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg).join("; ") : `Yêu cầu thất bại (${res.status})`;
+    const msg = typeof d === "string" ? d
+      : Array.isArray(d) ? "Thông tin nhập chưa đúng. Hãy kiểm tra lại các ô đã điền."
+      : `Có lỗi xảy ra (mã ${res.status}). Hãy thử lại. Nếu vẫn lỗi, báo cho người quản lý.`;
     throw Object.assign(new Error(msg), { status: res.status });
   }
   return json;
@@ -157,18 +165,40 @@ function renderUsed(d) {
 
 const colorOf = (b) => PALETTE[(b.id - 1) % PALETTE.length];
 
+/* Trays are grouped by module and SM section code (M8, M8-02, ...). Headers show only when there is more than one group. */
+const secOf = (b) => (b.code && b.code !== b.module ? b.code : "");
+const groupKey = (b) => b.module + "\u0001" + secOf(b);
+const heads = new Map();                // group key -> header element, reused so reordering does not rebuild it
+
+function groupHead(key, b, n) {
+  let el = heads.get(key);
+  if (!el) { el = h("h3", { class: "group-head" }, h("span"), h("small")); heads.set(key, el); }
+  el.firstChild.textContent = secOf(b) ? `${b.module} · ${secOf(b)}` : b.module;
+  el.lastChild.textContent = `${n} hộp`;
+  return el;
+}
+
 function renderBoxes(d) {
   const root = $("#boxes");
-  const sorted = [...d.boxes].sort((a, b) => natural(a.module, b.module) || natural(a.label, b.label));
+  const sorted = [...d.boxes].sort((a, b) => natural(a.module, b.module) || natural(secOf(a), secOf(b)) || natural(a.label, b.label));
   const alive = new Set(sorted.map((b) => b.id));
   for (const [id, c] of cache) if (!alive.has(id)) { c.el.remove(); cache.delete(id); }
   $(".empty-state", root)?.remove();
 
   for (const box of sorted) mountBox(box);
 
-  const want = sorted.map((b) => String(b.id));
-  const have = [...root.querySelectorAll(":scope > .tray")].map((e) => e.dataset.id);
-  if (want.join() !== have.join()) for (const b of sorted) root.append(cache.get(b.id).el);
+  const counts = new Map();
+  for (const b of sorted) counts.set(groupKey(b), (counts.get(groupKey(b)) || 0) + 1);
+  const nodes = [];
+  let last = null;
+  for (const b of sorted) {
+    const k = groupKey(b);
+    if (counts.size > 1 && k !== last) nodes.push(groupHead(k, b, counts.get(k)));
+    last = k;
+    nodes.push(cache.get(b.id).el);
+  }
+  const have = [...root.children];
+  if (nodes.length !== have.length || nodes.some((n, i) => n !== have[i])) root.replaceChildren(...nodes);
 
   if (!sorted.length) root.append(emptyState());
 }
@@ -218,6 +248,7 @@ function buildBox(box, u) {
     h("header", { class: "tray-head" },
       h("div", { class: "tray-title" },
         h("span", { class: "mod" }, box.module),
+        secOf(box) ? h("span", { class: "sec", title: "Mã section trong SM" }, secOf(box)) : null,
         h("h2", {}, box.label),
         h("span", { class: "pill " + box.status }, STATUS[box.status]),
         box.pushed ? h("span", { class: "pill pushed", title: "Box ID trong SM: " + box.pushed.sm_box_id }, "Đã đẩy lên SM") : null,
@@ -239,8 +270,9 @@ function slotEl(box, pos, it, editable) {
   const tip = [it.name, it.vi, it.category, `Tồn ${it.stock}, vị trí ${it.slot}`].filter(Boolean).join("\n");
   const act = (fn) => () => fn().then(() => poll(true)).catch(fail);
   const base = `/api/boxes/${box.id}/items/${pos}`;
-  return h("div", { class: "slot" + (it.locked ? " locked" : "") + (it.source === "fill" ? " fill" : ""), title: tip },
+  return h("div", { class: "slot pic" + (it.locked ? " locked" : "") + (it.source === "fill" ? " fill" : ""), title: tip },
     h("span", { class: "stt", title: it.source === "fill" ? "Do hệ thống tự điền, không phải do mô hình chọn" : null }, pos),
+    h("div", { class: "pic" }, BBThumbs.thumb(it, { size: "sm" })),
     h("div", { class: "body" },
       h("div", { class: "l1" },
         h("span", { class: "oid" }, it.id),
@@ -322,7 +354,7 @@ function findEl(box, u) {
   if (u.q.trim().length >= 2 && u.results) {
     list = h("div", { class: "results" }, u.results.length
       ? u.results.map((r) => h("button", { type: "button", onclick: () => addObject(box, r) },
-          h("b", {}, r.id), h("span", {}, r.name), h("small", {}, `${r.vi} (${r.category || "chưa phân loại"})`)))
+          BBThumbs.thumb(r, { size: "sm" }), h("b", {}, r.id), h("span", {}, r.name), h("small", {}, `${r.vi} (${r.category || "chưa phân loại"})`)))
       : h("p", {}, "Không có món trống nào khớp. Có thể món đó đã nằm trong hộp khác."));
   }
   return h("div", { class: "find" }, input, list);
@@ -366,6 +398,10 @@ async function poll(force) {
     renderLedger(d);
     renderUsed(d);
     renderBoxes(d);
+    renderNextStep(d);
+    checkDup();
+    if (view === "objects") loadObjectsSoon();
+    if (view === "auto") refreshAuto();
   } catch (e) {
     if (e.status === 401) showGate(); else setLive(false);
   }
@@ -398,7 +434,7 @@ function setupNewBox() {
     e.preventDefault();
     const go = $("#f-go");
     const body = {
-      module: $("#f-module").value.trim(), label: $("#f-label").value.trim(), theme: theme.value.trim(),
+      module: normModule($("#f-module").value), label: $("#f-label").value.trim(), theme: theme.value.trim(),
       categories: [...chosenCats], count: parseInt($("#f-count").value, 10) || cfg.default_count, owner: $("#who").value.trim(),
       code: $("#f-code").value.trim(), anchor: $("#f-anchor").value.trim(),
     };
@@ -408,7 +444,7 @@ function setupNewBox() {
       await api("/api/boxes", { method: "POST", body });
       toast(`Đang chọn ${body.count} món cho ${body.module} ${body.label}.`);
       await poll(true);
-    } catch (err) { fail(err); } finally { go.disabled = false; }
+    } catch (err) { fail(err); } finally { go.disabled = false; checkDup(); }
   });
 }
 
@@ -430,18 +466,420 @@ function setupUsed() {
   });
 }
 
-function setupCategories() {
-  const list = $("#cats-list"), q = $("#cats-q");
+/* One category picker, used by the new-box form and the batch form. Returns a function that redraws it. */
+function bindCategoryPicker(chosen, ids) {
+  const list = $(ids.list), q = $(ids.q);
+  const sum = () => { $(ids.sum).textContent = chosen.size ? `đã chọn ${chosen.size}` : "Tất cả nhóm"; };
   const draw = () => {
     const needle = q.value.trim().toLowerCase();
     list.replaceChildren(...categories.filter((c) => c.name.toLowerCase().includes(needle)).map((c) =>
-      h("label", {}, h("input", { type: "checkbox", checked: chosenCats.has(c.name), onchange: (e) => {
-        e.target.checked ? chosenCats.add(c.name) : chosenCats.delete(c.name); sum(); } }), c.name, h("small", {}, c.count))));
+      h("label", {}, h("input", { type: "checkbox", checked: chosen.has(c.name), onchange: (e) => {
+        e.target.checked ? chosen.add(c.name) : chosen.delete(c.name); sum(); } }), c.name, h("small", {}, c.count))));
   };
-  const sum = () => { $("#cats-sum").textContent = chosenCats.size ? `đã chọn ${chosenCats.size}` : "Tất cả nhóm"; };
   q.addEventListener("input", draw);
-  $("#cats-clear").addEventListener("click", () => { chosenCats.clear(); draw(); sum(); });
-  api("/api/categories").then((c) => { categories = c; draw(); }).catch(() => {});
+  $(ids.clear).addEventListener("click", () => { chosen.clear(); draw(); sum(); });
+  return () => { draw(); sum(); };
+}
+
+function setupCategories() {
+  const redraw = [
+    bindCategoryPicker(chosenCats, { list: "#cats-list", q: "#cats-q", sum: "#cats-sum", clear: "#cats-clear" }),
+    bindCategoryPicker(batchCats, { list: "#b-cats-list", q: "#b-cats-q", sum: "#b-cats-sum", clear: "#b-cats-clear" }),
+  ];
+  api("/api/categories").then((c) => { categories = c; redraw.forEach((f) => f()); }).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ tabs */
+const VIEWS = { boxes: "hop", objects: "kho", auto: "tudong" };
+let view = "boxes";
+
+function showView(name) {
+  view = VIEWS[name] ? name : "boxes";
+  for (const v of Object.keys(VIEWS)) $("#view-" + v).hidden = v !== view;
+  for (const b of document.querySelectorAll(".tab")) {
+    const on = b.dataset.view === view;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;                                // one tab stop; arrow keys move between tabs
+  }
+  try { history.replaceState(null, "", "#" + VIEWS[view]); } catch { /* file:// or sandbox */ }
+  if (view === "objects") loadObjects(true);
+  if (view === "auto") refreshAuto();
+}
+function setupTabs() {
+  const tabs = [...document.querySelectorAll(".tab")];
+  tabs.forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
+  $(".tablist").addEventListener("keydown", (e) => {
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const to = { ArrowRight: (i + 1) % tabs.length, ArrowLeft: (i + tabs.length - 1) % tabs.length, Home: 0, End: tabs.length - 1 }[e.key];
+    if (to === undefined) return;
+    e.preventDefault();
+    showView(tabs[to].dataset.view);
+    tabs[to].focus();
+  });
+  const fromHash = () => Object.keys(VIEWS).find((k) => "#" + VIEWS[k] === location.hash) || "boxes";
+  window.addEventListener("hashchange", () => { if (fromHash() !== view) showView(fromHash()); });   // links and the back button
+  showView(fromHash());
+}
+
+/* ------------------------------------------------------------------ object browser */
+const OBJ_STATUS = { free: "Còn trống", draft: "Trong hộp nháp", approved: "Đã duyệt", pushed: "Đã đẩy lên SM", external: "Đã dùng (bảng tính)" };
+const ov = { q: "", status: "", category: "", sort: "id", page: 1, sel: new Set(), res: null, cov: [], covAll: false, seq: 0 };
+const MAX_PICK = 60;
+
+async function loadObjects(withCoverage) {
+  const my = ++ov.seq;
+  const qs = new URLSearchParams({ q: ov.q, category: ov.category, status: ov.status, sort: ov.sort, page: ov.page, per: 50 });
+  try {
+    if (withCoverage) ov.cov = await api("/api/objects/coverage");
+    const res = await api("/api/objects?" + qs);
+    if (my !== ov.seq) return;                           // a newer request is already on its way
+    ov.res = res;
+  } catch (e) { return fail(e); }
+  if (ov.page > ov.res.pages) { ov.page = ov.res.pages; return loadObjects(false); }
+  if (withCoverage) { renderCoverage(); fillCategories(); }
+  renderObjects();
+}
+const loadObjectsSoon = debounce(() => { if (view === "objects") loadObjects(true); }, 400);
+
+function renderCoverage() {
+  const root = $("#cov");
+  const rows = ov.covAll ? ov.cov : ov.cov.slice(0, 12);
+  root.replaceChildren(...rows.map((c) => {
+    const pct = c.total ? Math.round((c.free / c.total) * 100) : 0;
+    return h("button", { type: "button", class: "cov-row" + (ov.category === c.name ? " on" : ""),
+      title: `${c.name}: ${c.free} còn trống, ${c.used} đã dùng, ${c.total} tổng`, onclick: () => { ov.category = ov.category === c.name ? "" : c.name; ov.page = 1; $("#o-cat").value = ov.category; loadObjects(false); } },
+      h("span", { class: "cov-name" }, c.name),
+      h("span", { class: "cov-bar", "aria-hidden": "true" }, h("i", { style: `width:${pct}%` })),
+      h("span", { class: "cov-n" }, `${fmt(c.free)}/${fmt(c.total)}`));
+  }));
+  const more = $("#cov-more");
+  more.hidden = ov.cov.length <= 12;
+  more.textContent = ov.covAll ? "Thu gọn" : `Hiện thêm ${ov.cov.length - 12} nhóm`;
+}
+function fillCategories() {
+  const sel = $("#o-cat");
+  sel.replaceChildren(h("option", { value: "" }, "Tất cả nhóm"),
+    ...ov.cov.map((c) => h("option", { value: c.name }, `${c.name} (${fmt(c.total)})`)));
+  sel.value = ov.category;
+}
+
+function renderObjects() {
+  const r = ov.res;
+  if (!r) return;
+  const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
+  const chips = [["", "Tất cả", total], ...Object.keys(OBJ_STATUS).map((k) => [k, OBJ_STATUS[k], r.counts[k]])];
+  $("#o-chips").replaceChildren(...chips.map(([k, label, n]) =>
+    h("button", { type: "button", class: "fchip" + (ov.status === k ? " on" : ""), "aria-pressed": String(ov.status === k),
+      onclick: () => { ov.status = k; ov.page = 1; loadObjects(false); } }, label, h("small", {}, fmt(n)))));
+
+  $("#o-body").replaceChildren(...(r.items.length ? r.items.map(objRow)
+    : [h("tr", {}, h("td", { colspan: 8, class: "none" }, "Không có món nào khớp bộ lọc này."))]));
+  const freeHere = r.items.filter((o) => o.status === "free");
+  const all = $("#o-all");
+  all.disabled = !freeHere.length;
+  all.checked = freeHere.length > 0 && freeHere.every((o) => ov.sel.has(o.id));
+  $("#o-page").textContent = `Trang ${r.page}/${r.pages} · ${fmt(r.total)} món`;
+  const csvQuery = new URLSearchParams({ q: ov.q, category: ov.category, status: ov.status, sort: ov.sort });
+  if (code) csvQuery.set("access_code", code);
+  $("#o-csv").href = "/api/objects.csv?" + csvQuery;
+  $("#o-prev").disabled = r.page <= 1;
+  $("#o-next").disabled = r.page >= r.pages;
+  renderPickBar();
+}
+function objRow(o) {
+  const free = o.status === "free";
+  return h("tr", { class: ov.sel.has(o.id) ? "sel" : "" },
+    h("td", { class: "c-sel" }, free ? h("input", { type: "checkbox", checked: ov.sel.has(o.id), "aria-label": `Chọn ${o.id} ${o.name}`,
+      onchange: (e) => togglePick(o.id, e.target.checked, e.target) }) : null),
+    h("td", { class: "c-img" }, BBThumbs.thumb(o, { size: "sm" })),
+    h("td", { class: "oid" }, o.id), h("td", {}, o.name), h("td", {}, o.vi), h("td", {}, o.category),
+    h("td", { class: "num" }, fmt(o.stock)),
+    h("td", {}, h("span", { class: "pill st-" + o.status }, OBJ_STATUS[o.status]), o.holder ? h("small", { class: "holder" }, o.holder) : null));
+}
+function togglePick(id, on, box) {
+  if (on && ov.sel.size >= MAX_PICK) { box.checked = false; return toast(`Chỉ chọn được tối đa ${MAX_PICK} món một lần.`, "bad"); }
+  on ? ov.sel.add(id) : ov.sel.delete(id);
+  box.closest("tr").classList.toggle("sel", on);
+  const freeHere = ov.res.items.filter((o) => o.status === "free");
+  $("#o-all").checked = freeHere.length > 0 && freeHere.every((o) => ov.sel.has(o.id));
+  renderPickBar();
+}
+function pickTargets() {
+  return (data ? data.boxes : []).filter((b) => (b.status === "draft" || b.status === "error") && b.items.length < b.count)
+    .sort((a, b) => natural(a.module, b.module) || natural(a.label, b.label));
+}
+function renderPickBar() {
+  const bar = $("#o-bar");
+  bar.hidden = ov.sel.size === 0;
+  if (bar.hidden) return;
+  $("#o-sel").textContent = `Đã chọn ${ov.sel.size} món`;
+  const sel = $("#o-target"), keep = sel.value;
+  const targets = pickTargets();
+  sel.replaceChildren(...(targets.length ? targets.map((b) => h("option", { value: b.id }, `${b.module} ${b.label} (${b.items.length}/${b.count})`))
+    : [h("option", { value: "" }, "Chưa có hộp nháp còn chỗ")]));
+  if (keep && targets.some((b) => String(b.id) === keep)) sel.value = keep;
+  $("#o-add").disabled = !targets.length;
+}
+function setupObjects() {
+  $("#o-q").addEventListener("input", debounce((e) => { ov.q = e.target.value.trim(); ov.page = 1; loadObjects(false); }, 250));
+  $("#o-cat").addEventListener("change", (e) => { ov.category = e.target.value; ov.page = 1; renderCoverage(); loadObjects(false); });
+  $("#o-sort").addEventListener("change", (e) => { ov.sort = e.target.value; ov.page = 1; loadObjects(false); });
+  $("#o-prev").addEventListener("click", () => { ov.page = Math.max(1, ov.page - 1); loadObjects(false); });
+  $("#o-next").addEventListener("click", () => { ov.page += 1; loadObjects(false); });
+  $("#cov-more").addEventListener("click", () => { ov.covAll = !ov.covAll; renderCoverage(); });
+  $("#o-all").addEventListener("change", (e) => {
+    for (const o of ov.res.items) if (o.status === "free") {
+      if (e.target.checked && ov.sel.size < MAX_PICK) ov.sel.add(o.id); else if (!e.target.checked) ov.sel.delete(o.id);
+    }
+    renderObjects();
+  });
+  $("#o-clear").addEventListener("click", () => { ov.sel.clear(); renderObjects(); });
+  $("#o-add").addEventListener("click", async () => {
+    const target = $("#o-target").value;
+    if (!target || !ov.sel.size) return;
+    const btn = $("#o-add");
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/boxes/${target}/items/bulk`, { method: "POST", body: { object_ids: [...ov.sel] } });
+      for (const a of r.added) ov.sel.delete(a.id);
+      for (const f of r.failed) ov.sel.delete(f.id);
+      const bits = [];
+      if (r.added.length) bits.push(`Đã thêm ${r.added.length} món và khoá lại.`);
+      if (r.failed.length) bits.push(`${r.failed.length} món không thêm được: ${r.failed[0].reason}`);
+      toast(bits.join(" "), r.added.length ? "" : "bad");
+      await poll(true);
+      await loadObjects(true);
+      $("#o-q").focus();                          // the selection bar is gone now, so keep the keyboard in the list
+    } catch (e) { fail(e); } finally { btn.disabled = false; }
+  });
+}
+
+/* ------------------------------------------------------------------ automations */
+let auto = null, queue = null, plan = null;
+
+let lastAnnounced = null;
+
+async function refreshAuto() {
+  try {
+    const [a, q] = await Promise.all([api("/api/automations"), api("/api/queue")]);
+    auto = a; queue = q;
+  } catch (e) { if (e.status === 401) showGate(); return; }
+  const n = auto.alerts.length + auto.todo.length, badge = $("#alert-badge");
+  badge.hidden = n === 0;
+  badge.textContent = String(n);
+  const sig = `${auto.todo.length}/${auto.alerts.length}`;
+  if (lastAnnounced !== null && sig !== lastAnnounced) {      // say it once when it changes, not on every refresh
+    $("#sr-live").textContent = `Có ${auto.todo.length} việc cần làm và ${auto.alerts.length} cảnh báo.`;
+  }
+  lastAnnounced = sig;
+  if (view === "auto") renderAuto();
+}
+
+function renderAuto() {
+  if (!auto) return;
+  $("#a-todo").replaceChildren(...(auto.todo.length
+    ? auto.todo.map((t) => h("li", { class: t.level }, h("b", { class: "where" }, t.where), t.msg))
+    : [h("li", { class: "ok" }, "Không có bước nào đang chờ bạn.")]));
+  $("#a-alerts-panel").hidden = false;
+  $("#a-alerts").replaceChildren(...(auto.alerts.length
+    ? auto.alerts.map((a) => h("li", { class: a.level }, a.msg))
+    : [h("li", { class: "ok" }, "Không có cảnh báo nào.")]));
+  if (!$("#a-switches").contains(document.activeElement)) $("#a-switches").replaceChildren(...auto.switches.map(switchRow));
+
+  const batchOn = auto.switches.find((s) => s.key === "ai_batch").enabled;
+  $("#b-plan").disabled = !batchOn;
+  $("#b-create").disabled = !batchOn;
+  $("#b-who").textContent = batchOn ? (auto.planner === "deepseek" ? "Kế hoạch do DeepSeek đề xuất."
+    : "Chế độ thử: chưa nối mô hình nên kế hoạch chỉ chia theo từng dòng bạn gõ.") : "Tính năng này đang tắt ở công tắc phía trên.";
+
+  const q = queue;
+  const queueEls = [];
+  if (!q.enabled) queueEls.push(h("p", { class: "hint" }, "Hàng chờ đang tắt: công cụ đồng bộ trong SM sẽ không thấy hộp nào để đưa lên SM."));
+  else {
+    queueEls.push(h("p", { class: "hint" }, "Các hộp đã duyệt, chưa có trong SM. Hộp đạt kiểm tra sẽ hiện ở khung Box builder trong SM. Việc tạo TaskBox vẫn do bạn bấm xác nhận ở SM."));
+    queueEls.push(h("h3", {}, `Sẵn sàng (${q.ready.length})`));
+    queueEls.push(q.ready.length ? h("ul", { class: "qlist" }, q.ready.map((b) => h("li", {}, h("b", {}, b.title), ` · ${b.items} món`)))
+      : h("p", { class: "hint" }, "Chưa có hộp nào sẵn sàng."));
+    if (q.blocked.length) {
+      queueEls.push(h("h3", {}, `Bị chặn (${q.blocked.length})`));
+      queueEls.push(h("ul", { class: "qlist bad" }, q.blocked.map((b) => h("li", {}, h("b", {}, b.title || `Hộp ${b.box_id}`),
+        h("ul", {}, b.reasons.slice(0, 4).map((r) => h("li", {}, r)), b.reasons.length > 4 ? h("li", {}, `... và ${b.reasons.length - 4} lý do khác`) : null)))));
+    }
+  }
+  $("#a-queue").replaceChildren(...queueEls);
+
+  const sheetOn = auto.switches.find((s) => s.key === "sheet_export").enabled;
+  const approved = data ? data.boxes.filter((b) => b.status === "approved").length : 0;
+  $("#a-sheet").replaceChildren(
+    h("p", {}, sheetOn ? `${approved} hộp đã duyệt đang chờ script của bảng tính lấy về.` : "Công tắc đang tắt: script của bảng tính nhận danh sách rỗng."),
+    h("p", { class: "hint" }, "Script nằm ở integrations/google_sheets_apps_script.gs. Nó chỉ ghi vào ô còn trống và luôn hỏi xem trước khi ghi (trừ khi bạn bật chạy tự động 30 phút)."));
+
+  $("#a-log").replaceChildren(...(auto.log.length ? auto.log.map((e) =>
+    h("li", {}, h("time", {}, new Date(e.at * 1000).toLocaleString("vi-VN")), e.msg)) : [h("li", { class: "none" }, "Chưa có hoạt động nào.")]));
+}
+
+const CFG_LABEL = { stale_hours: "Cảnh báo khi kho cũ hơn (giờ)", low_stock: "Cảnh báo khi một nhóm còn dưới (món)" };
+
+function switchRow(sw) {
+  const id = "sw-" + sw.key;
+  const state = h("span", { class: "sw-state", "aria-hidden": "true" }, sw.enabled ? "Bật" : "Tắt");
+  const toggle = h("input", { type: "checkbox", id, role: "switch", class: "sw-input", checked: sw.enabled,
+    onchange: async (e) => {
+      const want = e.target.checked;
+      if (e.target.dataset.busy) { e.target.checked = !want; return; }      // a save is already running
+      e.target.dataset.busy = "1";
+      e.target.setAttribute("aria-busy", "true");
+      try {
+        await api("/api/automations/" + sw.key, { method: "PUT", body: { enabled: want } });
+        toast(`${sw.title}: ${want ? "đã bật" : "đã tắt"}.`);
+        e.target.closest(".sw-row").classList.toggle("on", want);          // update this row where it stands: no rebuild, so
+        state.textContent = want ? "Bật" : "Tắt";                          // keyboard focus never moves
+      } catch (err) { e.target.checked = !want; fail(err); }
+      finally { delete e.target.dataset.busy; e.target.removeAttribute("aria-busy"); }
+      await refreshAuto();
+    } });
+  const cfgs = Object.entries(sw.config).map(([k, v]) => {
+    const [lo, hi] = sw.limits[k] || [1, 9999];
+    return h("label", { class: "cfg" }, CFG_LABEL[k] || k,
+      h("input", { type: "number", min: lo, max: hi, value: v, onchange: async (e) => {
+        try { await api("/api/automations/" + sw.key, { method: "PUT", body: { config: { [k]: parseInt(e.target.value, 10) } } }); toast("Đã lưu."); }
+        catch (err) { fail(err); }
+        await refreshAuto();
+      } }));
+  });
+  return h("div", { class: "sw-row" + (sw.enabled ? " on" : "") },
+    h("div", { class: "sw-text" }, h("label", { for: id, class: "sw-title" }, sw.title), h("p", { class: "hint" }, sw.desc), cfgs.length ? h("div", { class: "cfgs" }, cfgs) : null),
+    h("label", { class: "sw", for: id }, toggle, h("span", { class: "sw-track", "aria-hidden": "true" }, h("i")), state));
+}
+
+function renderPlan() {
+  $("#b-result").hidden = !plan;
+  if (!plan) return;
+  const rows = plan.boxes.map((b, i) => h("tr", {},
+    h("td", {}, h("input", { value: b.label, maxlength: 40, "aria-label": `Tên hộp ${i + 1}`, oninput: (e) => { b.label = e.target.value; } })),
+    h("td", {}, h("input", { value: b.theme, maxlength: 300, "aria-label": `Bối cảnh hộp ${i + 1}`, oninput: (e) => { b.theme = e.target.value; } })),
+    h("td", { class: "num" }, h("input", { type: "number", min: 1, max: 60, value: b.count, class: "n", "aria-label": `Số món hộp ${i + 1}`,
+      oninput: (e) => { b.count = parseInt(e.target.value, 10) || cfg.default_count; } })),
+    h("td", {}, h("button", { type: "button", class: "tool", title: "Bỏ hộp này khỏi kế hoạch", "aria-label": `Bỏ hộp ${b.label}`,
+      onclick: () => { plan.boxes.splice(i, 1); plan.boxes.length ? renderPlan() : (plan = null, renderPlan()); } }, icon("x")))));
+  $("#b-body").replaceChildren(...rows);
+  const cats = plan.boxes[0].categories || [];
+  const note = $("#b-cats-note");
+  note.hidden = !cats.length;
+  note.textContent = cats.length ? `Mọi hộp chỉ chọn đồ trong ${cats.length} nhóm: ${cats.slice(0, 4).join(", ")}${cats.length > 4 ? "..." : ""}.` : "";
+  $("#b-create").textContent = `Tạo ${plan.boxes.length} hộp này`;
+}
+
+function setupBatch() {
+  $("#a-batch").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#b-plan");
+    btn.disabled = true;
+    btn.textContent = "Đang lên kế hoạch…";
+    try {
+      plan = await api("/api/batches/plan", { method: "POST", body: {
+        brief: $("#b-brief").value.trim(), module: $("#b-module").value.trim(), start_label: $("#b-start").value.trim() || "Box A1",
+        boxes: parseInt($("#b-n").value, 10) || 4, count: cfg.default_count,
+        labels: $("#b-labels").value.split(",").map((x) => x.trim()).filter(Boolean), code: $("#b-code").value.trim(),
+        categories: [...batchCats] } });
+      store.set("bb_module", $("#b-module").value.trim());
+      renderPlan();
+      $("#b-result").focus();                     // screen readers read the plan, keyboard users start at it
+    } catch (err) { fail(err); } finally { btn.disabled = false; btn.textContent = "AI lên kế hoạch"; }
+  });
+  $("#b-section").addEventListener("click", () => { $("#b-labels").value = "Box B2, Box B3, Box A1"; $("#b-code").focus(); });
+  $("#b-cancel").addEventListener("click", () => { plan = null; renderPlan(); });
+  $("#b-create").addEventListener("click", async () => {
+    if (!plan || !plan.boxes.length) return;
+    const btn = $("#b-create");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/batches", { method: "POST", body: { boxes: plan.boxes, owner: $("#who").value.trim(), approve: $("#b-approve").checked } });
+      toast(`Đang chọn đồ cho ${r.ids.length} hộp, lần lượt từng hộp để không trùng món.`);
+      plan = null; renderPlan();
+      showView("boxes");
+      $("#view-boxes").focus();
+      await poll(true);
+    } catch (err) { fail(err); } finally { btn.disabled = false; }
+  });
+  $("#b-module").value = store.get("bb_module");
+}
+
+/* ------------------------------------------------------------------ help for people who are new to the tool */
+const normModule = (v) => { const t = v.trim(); return /^m\d+$/i.test(t) ? t.toUpperCase() : t; };   // m8 -> M8, other tab names as typed
+
+function renderNextStep(d) {
+  const boxes = d.boxes, n = (st) => boxes.filter((b) => b.status === st).length;
+  let text;
+  if (!boxes.length) text = "Tạo hộp đầu tiên ở khung bên trái: gõ Module và tên hộp, rồi bấm Tạo hộp.";
+  else if (n("generating")) text = `Đang chọn đồ cho ${n("generating")} hộp. Chờ khoảng 15 giây.`;
+  else if (n("error")) text = `${n("error")} hộp bị lỗi. Mở hộp đó và bấm Chọn lại.`;
+  else if (n("draft")) text = `Có ${n("draft")} hộp nháp. Xem từng hộp, sửa nếu cần, rồi bấm Duyệt.`;
+  else {
+    const waiting = boxes.filter((b) => b.status === "approved" && !b.pushed).length;
+    text = waiting
+      ? `${waiting} hộp đã duyệt. Điền vào bảng tính (menu Box builder) hoặc đưa lên SM. Tab Tự động hoá chỉ từng bước.`
+      : "Tất cả hộp đã lên SM. Tạo hộp mới nếu cần.";
+  }
+  $("#nextstep span").textContent = text;
+}
+
+function setupGuide() {
+  const guide = $("#guide");
+  guide.hidden = store.get("bb_guide") === "hidden";
+  $("#guide-close").addEventListener("click", () => { guide.hidden = true; store.set("bb_guide", "hidden"); $("#guide-open").focus(); });
+  $("#guide-open").addEventListener("click", () => {
+    showView("boxes");
+    guide.hidden = false;
+    store.set("bb_guide", "shown");
+    guide.scrollIntoView({ block: "start" });
+  });
+}
+
+const ZOOMS = [100, 115, 130];
+function setupTextSize() {
+  const apply = (i) => {
+    document.body.style.zoom = String(ZOOMS[i] / 100);
+    $("#fs-down").disabled = i === 0;
+    $("#fs-up").disabled = i === ZOOMS.length - 1;
+    store.set("bb_zoom", String(i));
+  };
+  let i = Math.min(ZOOMS.length - 1, Math.max(0, parseInt(store.get("bb_zoom"), 10) || 0));
+  apply(i);
+  $("#fs-down").addEventListener("click", () => apply((i = Math.max(0, i - 1))));
+  $("#fs-up").addEventListener("click", () => apply((i = Math.min(ZOOMS.length - 1, i + 1))));
+}
+
+/* A box name can be used once per module. Say so before the person presses the button, not after. */
+function checkDup() {
+  const warn = $("#f-warn"), go = $("#f-go");
+  const m = normModule($("#f-module").value), l = $("#f-label").value.trim().toLowerCase();
+  const dup = !!(data && m && l && data.boxes.some((b) => b.module === m && b.label.toLowerCase() === l));
+  warn.hidden = !dup;
+  warn.textContent = dup ? `Hộp ${m} ${$("#f-label").value.trim()} đã có. Đặt tên khác, hoặc mở hộp đó ở bên phải.` : "";
+  go.disabled = dup;
+}
+
+/* The number of objects follows the box name (A1 12, B2 and B3 21) until the person types their own number. */
+function followStageSize() {
+  const count = $("#f-count");
+  if (count.dataset.touched === "1") return;
+  const stage = ($("#f-label").value.match(/(?:^|[\s_-])([A-Za-z]\d+)\s*$/) || [])[1];
+  count.value = (cfg.stage_counts || {})[(stage || "").toUpperCase()] || cfg.default_count;
+}
+
+function setupFormHelp() {
+  $("#f-count").addEventListener("input", () => { $("#f-count").dataset.touched = "1"; });
+  $("#f-label").addEventListener("input", followStageSize);
+  followStageSize();
+  for (const [sel, msg] of [["#f-module", "Hãy nhập Module, ví dụ M8."], ["#f-label", "Hãy nhập tên hộp, ví dụ Box A1."]]) {
+    const el = $(sel);
+    el.addEventListener("invalid", () => el.setCustomValidity(msg));     // the browser's own text may not be Vietnamese
+    el.addEventListener("input", () => el.setCustomValidity(""));
+    el.addEventListener("input", checkDup);
+  }
+  $("#f-module").addEventListener("blur", (e) => { e.target.value = normModule(e.target.value); checkDup(); });
 }
 
 /* ------------------------------------------------------------------ start */
@@ -455,13 +893,16 @@ async function init() {
   chip.hidden = false;
   chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
-  setupGate(); setupNewBox(); setupUsed();
+  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp();
   updateExport();
   await poll(true);
   if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });
   setupCategories();
+  setupTabs();
+  refreshAuto();
   schedule();
   setInterval(renderKho, 30000);
+  setInterval(refreshAuto, 60000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(true); });
 }
 init();

@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2318232B'/%3E%3Crect x='6' y='7' width='9' height='8' rx='2' fill='%23F0691A'/%3E%3Crect x='17' y='7' width='9' height='8' rx='2' fill='%23F8FAF9'/%3E%3Crect x='6' y='17' width='9' height='8' rx='2' fill='%23F8FAF9'/%3E%3Crect x='17' y='17' width='9' height='8' rx='2' fill='%23F8FAF9'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/fonts.css">
 <link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/thumbs.css">
 </head>
 <body>
 <header class="top">
@@ -15,12 +16,41 @@
     <span id="kho" class="chip" hidden></span>
     <span id="llm" class="chip" hidden></span>
     <label class="who"><span>Tên của bạn</span><input id="who" maxlength="40" autocomplete="name" placeholder="Tên hiện trên các hộp của bạn"></label>
-    <a id="export" class="link" href="/api/export.csv" download>Xuất CSV</a>
+    <button type="button" id="guide-open" class="linkbtn">Hướng dẫn</button>
+    <span class="textsize" role="group" aria-label="Cỡ chữ">
+      <button type="button" id="fs-down" aria-label="Chữ nhỏ hơn" title="Chữ nhỏ hơn">A−</button>
+      <button type="button" id="fs-up" aria-label="Chữ lớn hơn" title="Chữ lớn hơn">A+</button>
+    </span>
+    <a id="export" class="link" href="/api/export.csv" download title="Tải danh sách mọi hộp và món về máy">Tải danh sách hộp (CSV)</a>
     <span id="live" class="live" role="status"><i></i><b>Đang kết nối</b></span>
   </div>
 </header>
 
-<main class="app">
+<nav class="tabs" aria-label="Chọn màn hình">
+  <div class="tablist" role="tablist">
+    <button type="button" class="tab" role="tab" id="tab-boxes" data-view="boxes" aria-selected="true" aria-controls="view-boxes">Hộp</button>
+    <button type="button" class="tab" role="tab" id="tab-objects" data-view="objects" aria-selected="false" aria-controls="view-objects" tabindex="-1">Kho đồ</button>
+    <button type="button" class="tab" role="tab" id="tab-auto" data-view="auto" aria-selected="false" aria-controls="view-auto" tabindex="-1">Tự động hoá <span id="alert-badge" class="badge" hidden></span></button>
+  </div>
+</nav>
+
+<main id="content">
+<div id="sr-live" class="sr-only" role="status" aria-live="polite"></div>
+<div class="app" id="view-boxes" role="tabpanel" aria-labelledby="tab-boxes" tabindex="-1">
+  <section id="guide" class="guide" aria-labelledby="guide-h">
+    <div class="guide-head">
+      <h2 id="guide-h">Làm quen trong một phút</h2>
+      <button type="button" id="guide-close" class="btn small ghost">Ẩn hướng dẫn</button>
+    </div>
+    <ol class="steps">
+      <li><b>Tạo hộp.</b> Gõ Module và tên hộp ở khung bên trái, rồi bấm Tạo hộp.</li>
+      <li><b>Xem và sửa.</b> Trang chọn sẵn các món. Khoá món muốn giữ, thay hoặc bỏ món chưa ưng.</li>
+      <li><b>Duyệt.</b> Hộp ổn thì bấm Duyệt. Các món được giữ chỗ, hộp khác sẽ không lấy trùng.</li>
+      <li><b>Đưa đi.</b> Điền vào bảng tính, hoặc đưa lên SM (xem tab Tự động hoá).</li>
+    </ol>
+  </section>
+  <p id="nextstep" class="nextstep"><strong>Bước tiếp theo:</strong> <span>Đang tải...</span></p>
+
   <section class="ledger" aria-labelledby="ledger-h">
     <div class="ledger-head">
       <h2 id="ledger-h"><strong id="free-n">0</strong> <span>món còn trống</span></h2>
@@ -32,38 +62,55 @@
 
   <aside class="rail">
     <form id="new" class="panel" autocomplete="off">
-      <h2>Hộp mới</h2>
+      <h2>Tạo hộp mới</h2>
+      <p class="hint">Một hộp là một khay đồ cho một cảnh. Trang tự chọn món và không chọn trùng món với hộp khác.</p>
       <div class="row2">
-        <label>Module
-          <input id="f-module" required maxlength="20" placeholder="M8" inputmode="text">
-        </label>
-        <label>Tên hộp
-          <input id="f-label" required maxlength="40" value="Box A1">
-        </label>
+        <div class="field">
+          <label for="f-module">Module</label>
+          <input id="f-module" required maxlength="20" placeholder="M8" inputmode="text" aria-describedby="h-module">
+          <small id="h-module" class="help">Tên tab trong bảng tính, ví dụ M8.</small>
+        </div>
+        <div class="field">
+          <label for="f-label">Tên hộp</label>
+          <input id="f-label" required maxlength="40" value="Box A1" aria-describedby="h-label">
+          <small id="h-label" class="help">Ví dụ Box A1. A1 mặc định 12 món, B2 và B3 mặc định 21.</small>
+        </div>
       </div>
-      <div class="row2">
-        <label>Mã section
-          <input id="f-code" maxlength="40" placeholder="M8-01">
-        </label>
-        <label>Đồ lớn (anchor)
-          <input id="f-anchor" maxlength="120" placeholder="Tên hoặc ID 5-6 số (không bắt buộc)">
-        </label>
+      <p id="f-warn" class="warnline" role="status" hidden></p>
+      <div class="field">
+        <label for="f-theme">Bối cảnh (không bắt buộc)</label>
+        <textarea id="f-theme" rows="3" maxlength="300" placeholder="Ví dụ: bàn bếp và bàn ăn" aria-describedby="h-theme"></textarea>
+        <small id="h-theme" class="help">Gõ vài từ về cảnh, hoặc bấm một gợi ý dưới đây. Để trống thì máy tự chọn.</small>
       </div>
-      <label>Bối cảnh
-        <textarea id="f-theme" rows="3" maxlength="300" placeholder="Mô tả cảnh sinh hoạt hằng ngày, ví dụ bàn bếp và bàn ăn. Để trống nếu muốn mô hình tự chọn."></textarea>
-      </label>
       <div id="presets" class="presets" role="group" aria-label="Bối cảnh mẫu"></div>
-      <label class="narrow">Số món trong hộp
-        <input id="f-count" type="number" min="1" max="60" step="1">
-      </label>
-      <details id="cats" class="cats">
-        <summary><span>Nhóm đồ</span><em id="cats-sum">Tất cả nhóm</em></summary>
-        <input id="cats-q" type="search" placeholder="Lọc nhóm đồ" aria-label="Lọc nhóm đồ">
-        <div id="cats-list" class="cats-list"></div>
-        <button type="button" id="cats-clear" class="btn small ghost">Dùng tất cả nhóm</button>
+      <details id="adv" class="cats adv">
+        <summary><span>Tuỳ chọn thêm</span><em>mã section, đồ lớn, số món, nhóm đồ</em></summary>
+        <div class="row2">
+          <div class="field">
+            <label for="f-code">Mã section</label>
+            <input id="f-code" maxlength="40" placeholder="M8-01">
+            <small class="help">Mã trong SM, ví dụ M8-02. Để trống thì dùng Module.</small>
+          </div>
+          <div class="field">
+            <label for="f-anchor">Đồ lớn</label>
+            <input id="f-anchor" maxlength="120" placeholder="Tên hoặc ID 5-6 số">
+            <small class="help">Không bắt buộc.</small>
+          </div>
+        </div>
+        <div class="field narrow">
+          <label for="f-count">Số món trong hộp</label>
+          <input id="f-count" type="number" min="1" max="60" step="1">
+          <small class="help">Tự điền theo tên hộp. Sửa nếu cần một số khác.</small>
+        </div>
+        <details id="cats" class="cats">
+          <summary><span>Nhóm đồ</span><em id="cats-sum">Tất cả nhóm</em></summary>
+          <input id="cats-q" type="search" placeholder="Lọc nhóm đồ" aria-label="Lọc nhóm đồ">
+          <div id="cats-list" class="cats-list"></div>
+          <button type="button" id="cats-clear" class="btn small ghost">Dùng tất cả nhóm</button>
+        </details>
       </details>
       <button class="btn primary wide" id="f-go" type="submit">Tạo hộp</button>
-      <p class="hint">Mất khoảng 15 giây. Món đã nằm trong hộp khác, hoặc đã đánh dấu "đã dùng" bên dưới, sẽ không bao giờ được chọn.</p>
+      <p class="hint">Mất khoảng 15 giây. Món đã nằm trong hộp khác, hoặc đã đánh dấu "đã dùng" bên dưới, sẽ không được chọn.</p>
     </form>
 
     <form id="used" class="panel" autocomplete="off">
@@ -80,6 +127,118 @@
   </aside>
 
   <section id="boxes" class="boxes" aria-live="polite"></section>
+</div>
+
+<div class="wide" id="view-objects" role="tabpanel" aria-labelledby="tab-objects" tabindex="-1" hidden>
+  <section class="panel">
+    <h2>Mức còn trống theo nhóm đồ</h2>
+    <p class="hint">Thanh xanh là món còn trống, thanh xám là món đã nằm trong hộp hoặc đã đánh dấu đã dùng. Bấm vào một nhóm để xem các món của nhóm đó.</p>
+    <div id="cov" class="cov"></div>
+    <button type="button" id="cov-more" class="btn small ghost" hidden>Hiện thêm nhóm</button>
+  </section>
+
+  <section class="panel">
+    <h2>Danh sách đồ trong kho</h2>
+    <div class="o-tools">
+      <input id="o-q" type="search" placeholder="Tìm theo tên hoặc ID" aria-label="Tìm đồ theo tên hoặc ID" autocomplete="off">
+      <select id="o-cat" aria-label="Lọc theo nhóm đồ"><option value="">Tất cả nhóm</option></select>
+      <select id="o-sort" aria-label="Sắp xếp">
+        <option value="id">Sắp theo ID</option>
+        <option value="name">Sắp theo tên</option>
+        <option value="category">Sắp theo nhóm</option>
+        <option value="-stock">Tồn kho nhiều trước</option>
+        <option value="stock">Tồn kho ít trước</option>
+      </select>
+    </div>
+    <div id="o-chips" class="o-chips" role="group" aria-label="Lọc theo trạng thái"></div>
+    <div class="table-wrap">
+      <table class="otable">
+        <thead><tr>
+          <th scope="col" class="c-sel"><input type="checkbox" id="o-all" aria-label="Chọn mọi món còn trống ở trang này"></th>
+          <th scope="col" class="c-img">Ảnh</th><th scope="col">ID</th><th scope="col">Tên</th><th scope="col">Tiếng Việt</th><th scope="col">Nhóm</th><th scope="col" class="num">Tồn</th><th scope="col">Trạng thái</th>
+        </tr></thead>
+        <tbody id="o-body"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <button type="button" class="btn small" id="o-prev">Trước</button>
+      <span id="o-page" role="status"></span>
+      <button type="button" class="btn small" id="o-next">Sau</button>
+      <a class="btn small" id="o-csv" href="/api/objects.csv" download="objects.csv" title="Tải mọi món khớp bộ lọc hiện tại, không chỉ trang này">Xuất CSV</a>
+    </div>
+  </section>
+
+  <div id="o-bar" class="o-bar" hidden>
+    <strong id="o-sel"></strong>
+    <label>Thêm vào <select id="o-target" aria-label="Hộp nhận các món đã chọn"></select></label>
+    <button type="button" class="btn primary" id="o-add">Thêm vào hộp</button>
+    <button type="button" class="btn ghost" id="o-clear">Bỏ chọn</button>
+  </div>
+</div>
+
+<div class="wide" id="view-auto" role="tabpanel" aria-labelledby="tab-auto" tabindex="-1" hidden>
+  <section class="panel" id="a-todo-panel">
+    <h2>Việc cần làm</h2>
+    <p class="hint">Các bước còn cần một người. Trang này không tự ghi vào SM hay bảng tính, nên nó chỉ cho biết bước nào đang chờ bạn.</p>
+    <ul id="a-todo" class="alerts"></ul>
+  </section>
+
+  <section class="panel" id="a-alerts-panel">
+    <h2>Cảnh báo kho</h2>
+    <ul id="a-alerts" class="alerts"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>Công tắc tự động hoá</h2>
+    <p class="hint">Phần này dành cho người quản lý: bạn không cần dùng nó để tạo hộp. Mọi công tắc được lưu và áp dụng cho cả nhóm. Trang này không tự ghi gì vào SM: việc tạo TaskBox trong SM luôn do bạn bấm xác nhận.</p>
+    <div id="a-switches" class="switches"></div>
+  </section>
+
+  <form class="panel" id="a-batch" autocomplete="off">
+    <h2>Tạo nhiều hộp bằng AI</h2>
+    <p class="hint">Gõ mô tả chung (hoặc mỗi dòng một bối cảnh). AI đề xuất danh sách hộp để bạn xem và sửa. Chưa có hộp nào được tạo cho đến khi bạn bấm "Tạo".</p>
+    <div class="row3">
+      <label>Module<input id="b-module" required maxlength="20" placeholder="M8"></label>
+      <label>Hộp đầu tiên<input id="b-start" maxlength="40" value="Box A1"></label>
+      <label>Số hộp<input id="b-n" type="number" min="1" max="12" value="4"></label>
+    </div>
+    <div class="row3 sect">
+      <label>Mã section<input id="b-code" maxlength="40" placeholder="M8-02 (không bắt buộc)"></label>
+      <label>Tên các hộp (để trống thì đếm từ "Hộp đầu tiên")<input id="b-labels" maxlength="200" placeholder="Box B2, Box B3, Box A1"></label>
+    </div>
+    <div class="presets"><button type="button" id="b-section">Một section: B2, B3, A1</button></div>
+    <details id="b-cats" class="cats">
+      <summary><span>Nhóm đồ cho mọi hộp</span><em id="b-cats-sum">Tất cả nhóm</em></summary>
+      <input id="b-cats-q" type="search" placeholder="Lọc nhóm đồ" aria-label="Lọc nhóm đồ cho các hộp">
+      <div id="b-cats-list" class="cats-list"></div>
+      <button type="button" id="b-cats-clear" class="btn small ghost">Dùng tất cả nhóm</button>
+    </details>
+    <label>Mô tả chung<textarea id="b-brief" rows="3" maxlength="2000" required placeholder="Ví dụ: các cảnh sinh hoạt trong một căn hộ nhỏ: bếp, phòng khách, phòng tắm, bàn làm việc"></textarea></label>
+    <label class="check"><input type="checkbox" id="b-approve"><span>Duyệt luôn các hộp mà mô hình điền đủ món, để chúng vào hàng chờ đẩy lên SM. Hộp có món do hệ thống tự điền vẫn chờ bạn xem.</span></label>
+    <div class="actions"><button type="submit" class="btn" id="b-plan">AI lên kế hoạch</button><span id="b-who" class="hint"></span></div>
+    <div id="b-result" role="region" aria-label="Kế hoạch các hộp" tabindex="-1" hidden>
+      <p id="b-cats-note" class="hint" hidden></p>
+      <div class="table-wrap"><table class="otable plan"><thead><tr><th scope="col">Tên hộp</th><th scope="col">Bối cảnh</th><th scope="col" class="num">Số món</th><th scope="col"></th></tr></thead><tbody id="b-body"></tbody></table></div>
+      <div class="actions"><button type="button" class="btn primary" id="b-create">Tạo các hộp này</button><button type="button" class="btn ghost" id="b-cancel">Bỏ kế hoạch</button></div>
+    </div>
+  </form>
+
+  <section class="panel">
+    <h2>Hàng chờ đẩy lên SM</h2>
+    <div id="a-queue"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Bảng tính Google</h2>
+    <div id="a-sheet"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Nhật ký tự động hoá</h2>
+    <ul id="a-log" class="log"></ul>
+  </section>
+</div>
+
 </main>
 
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
@@ -95,6 +254,7 @@
 </div>
 
 <noscript><p style="padding:24px">Trang này cần bật JavaScript.</p></noscript>
+<script src="/static/thumbs.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

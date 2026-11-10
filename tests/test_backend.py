@@ -24,7 +24,7 @@ def env(request, tmp_path):
     target = str(tmp_path / "t.db") if request.param == "sqlite" else PG_URL
     if request.param == "postgres":
         c = db.connect(target)
-        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push CASCADE")
+        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push, automations, automation_log CASCADE")
         c.close()
     s = Settings(db_path=target, catalog_path=str(tmp_path / "catalog.csv"), llm_mode="mock")
     shutil.copy(REAL_CSV, s.catalog_path)
@@ -214,7 +214,7 @@ def wait_settled(client, box_id, timeout=30):
 def test_http_flow_lock_regenerate_replace_approve_export(env):
     s, cat = env
     client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    r = client.post("/api/boxes", json={"module": "M8", "label": "Box A1", "theme": "kitchen cup bowl", "owner": "An"})
+    r = client.post("/api/boxes", json={"module": "M8", "label": "Box A1", "theme": "kitchen cup bowl", "owner": "An", "count": 21})
     assert r.status_code == 201
     box = wait_settled(client, r.json()["id"])
     bid = box["id"]
@@ -243,7 +243,7 @@ def test_http_flow_lock_regenerate_replace_approve_export(env):
     assert client.post(f"/api/boxes/{bid}/items/1/replace").status_code == 409
 
     # manual add: remove one, put in something taken by another box -> 409 naming the box
-    other = client.post("/api/boxes", json={"module": "M17", "label": "Box A1", "theme": "desk pen paper"}).json()["id"]
+    other = client.post("/api/boxes", json={"module": "M17", "label": "Box A1", "theme": "desk pen paper", "count": 21}).json()["id"]
     ob = wait_settled(client, other)
     taken_by_other = ob["items"][0]["id"]
     assert client.delete(f"/api/boxes/{bid}/items/21").status_code == 200
@@ -432,7 +432,7 @@ def test_live_catalog_drives_picks_survives_restart_and_flags_gone_items(env):
     st = client.get("/api/state").json()
     assert st["stats"]["catalog"] == 120 and st["catalog"]["source"] == "live"
 
-    bid = client.post("/api/boxes", json={"module": "M8", "label": "Box A1", "theme": "test"}).json()["id"]
+    bid = client.post("/api/boxes", json={"module": "M8", "label": "Box A1", "theme": "test", "count": 21}).json()["id"]
     box = wait_settled(client, bid)
     assert len(box["items"]) == 21 and all(i["id"].startswith("009") for i in box["items"])    # only live objects
 
@@ -452,7 +452,7 @@ def test_live_catalog_drives_picks_survives_restart_and_flags_gone_items(env):
 
 
 def _approved_box(client, label="Box A1", module="M8"):
-    bid = client.post("/api/boxes", json={"module": module, "label": label, "theme": "test"}).json()["id"]
+    bid = client.post("/api/boxes", json={"module": module, "label": label, "theme": "test", "count": 21}).json()["id"]
     wait_settled(client, bid)
     assert client.post(f"/api/boxes/{bid}/approve").status_code == 200
     return bid

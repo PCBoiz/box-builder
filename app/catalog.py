@@ -5,6 +5,8 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
+from . import images
+
 
 def fold(s: str) -> str:
     """Lower-case and strip accents so 'Đồ nhà bếp' matches 'do nha bep'."""
@@ -37,6 +39,7 @@ class Item:
     slot: str
     stock: int
     blob: str      # folded text used for search
+    img: str = ""  # cleaned image URL pushed by the userscript (empty when SM sent none or it failed the checks)
 
 
 UNCATEGORISED = "Chưa phân loại"
@@ -57,6 +60,7 @@ class Catalog:
         self._cat_of: dict[str, str] = {}
         self._live: dict[str, Item] | None = None
         self.sectors: tuple[str, ...] = ()        # empty = every sector; the app sets it from SECTORS
+        self.image_hosts: tuple[str, ...] = images.DEFAULT_HOSTS
         self._live_info: dict = {}
         self._load()
 
@@ -130,7 +134,8 @@ class Catalog:
                 continue
             name = str(o.get("name") or "").strip()
             cat = self._cat_of.get(oid, UNCATEGORISED)
-            items[oid] = Item(oid, name, vi, cat, str(o.get("loc") or "").strip(), stock, fold(f"{name} {vi} {cat}"))
+            items[oid] = Item(oid, name, vi, cat, str(o.get("loc") or "").strip(), stock, fold(f"{name} {vi} {cat}"),
+                              images.pick_image(o, hosts=self.image_hosts) or "")
         self._live = items
         self._live_info = {"synced_at": synced_at, "received": len(rows), "skipped": skipped}
         return {**self._live_info, "usable": len(items)}

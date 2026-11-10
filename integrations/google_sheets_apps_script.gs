@@ -20,11 +20,21 @@ const CONFIG = {
   APP_URL: 'https://box-builder-guwc.onrender.com',   // no trailing slash
   ACCESS_CODE: '',                                     // leave empty if the app has no access code
   // Where each box stage lives on the tab. firstRow..firstRow+count-1 in idCol / qtyCol.
-  // Box A1 matches the layout used so far (Object IDs in S4:S24, quantity in V4:V24). Add other stages here
-  // only when you know their columns, e.g.  B1: { idCol: 'W', qtyCol: 'Z', firstRow: 4 }
+  // Read from the sheet itself (tab M8, row 2 block titles, row 3 sub-headers, data rows 4-24):
+  //   Box B2 = columns C:I   (Object ID in E, SL in H)
+  //   Box B3 = columns J:P   (Object ID in L, SL in O)
+  //   Box A1 = columns Q:W   (Object ID in S, SL in V)
+  // The same layout holds on M8 and M17. Add other stages here only when you know their columns.
   STAGES: {
+    B2: { idCol: 'E', qtyCol: 'H', firstRow: 4 },
+    B3: { idCol: 'L', qtyCol: 'O', firstRow: 4 },
     A1: { idCol: 'S', qtyCol: 'V', firstRow: 4 },
   },
+  // A tab holds several sections one under another (M8-01, M8-02, ...), each 25 rows tall, with its own B2, B3 and A1 blocks.
+  // The box's section code (for example M8-02) picks the section: rows start at firstRow + SECTION_STRIDE * (n - 1).
+  // Before writing, the script also checks that the block title ("Box B2 - 21 Objects") really sits above those rows, so a
+  // tab with a different spacing is skipped instead of written to the wrong place.
+  SECTION_STRIDE: 25,
   MAX_QTY: 3,                                          // same cap as the earlier Make scenario
 };
 
@@ -69,7 +79,8 @@ function removeTimer() {
 // ------------------------------------------------------------------ app access (read only)
 function fetchBoxes_() {
   const headers = CONFIG.ACCESS_CODE ? { 'X-Access-Code': CONFIG.ACCESS_CODE } : {};
-  const res = UrlFetchApp.fetch(CONFIG.APP_URL + '/api/taskboxes?status=approved', { headers: headers, muteHttpExceptions: true });
+  // /api/sheet-boxes answers with an empty list when the "Cấp danh sách cho bảng tính" switch is off in the app
+  const res = UrlFetchApp.fetch(CONFIG.APP_URL + '/api/sheet-boxes', { headers: headers, muteHttpExceptions: true });
   if (res.getResponseCode() === 401) throw new Error('Box builder cần mã truy cập: điền ACCESS_CODE trong CONFIG.');
   if (res.getResponseCode() !== 200) throw new Error('Không tải được Box builder (HTTP ' + res.getResponseCode() + '). Máy chủ miễn phí có thể đang thức dậy, thử lại sau 1 phút.');
   return JSON.parse(res.getContentText()).boxes || [];
@@ -91,28 +102,57 @@ function buildPlan_(boxes, read) {
     const cfg = CONFIG.STAGES[stage];
     if (!cfg) { plan.skipped.push(name + ': chưa cấu hình cột cho ' + stage); return; }
     const n = b.contents.length;
-    const first = cfg.firstRow, last = first + n - 1;
+    const sec = sectionOf_(b.module, tab);               // b.module is the SM section code, e.g. M8-02
+    if (sec === null) { plan.skipped.push(name + ': mã section "' + b.module + '" không khớp tab ' + tab); return; }
+    const first = cfg.firstRow + CONFIG.SECTION_STRIDE * (sec - 1), last = first + n - 1;
+    const label = name + (sec > 1 ? ' (section ' + sec + ')' : '');
     const idRange = cfg.idCol + first + ':' + cfg.idCol + last;
     const qtyRange = cfg.qtyCol + first + ':' + cfg.qtyCol + last;
     const ids = read(tab, idRange), qtys = read(tab, qtyRange);
     if (!ids || !qtys) { plan.skipped.push(name + ': không có tab "' + tab + '"'); return; }
+    const titleCell = colShift_(cfg.idCol, -1) + (first - 2);
+    const title = read(tab, titleCell);
+    const titleText = title && title[0] ? String(title[0][0]).toLowerCase() : '';
+    if (titleText.indexOf('box ' + String(stage).toLowerCase()) < 0) {
+      plan.skipped.push(label + ': không thấy khối "Box ' + stage + '" ở ' + titleCell + ' nên không ghi'); return;
+    }
     const flat = function (v) { return v.map(function (r) { return String(r[0]).trim(); }); };
     const curIds = flat(ids), curQty = flat(qtys);
     const want = b.contents.map(function (c) { return pad6_(c.object_id); });
     const empty = curIds.every(function (x) { return x === ''; }) && curQty.every(function (x) { return x === ''; });
     if (empty) {
       plan.writes.push({
-        name: name, tab: tab, idRange: idRange, qtyRange: qtyRange,
+        name: label, tab: tab, idRange: idRange, qtyRange: qtyRange,
         ids: want.map(function (x) { return [x]; }),
         qtys: b.contents.map(function (c) { return [Math.min(CONFIG.MAX_QTY, Math.max(1, Number(c.quantity) || 1))]; }),
       });
     } else if (curIds.map(pad6_).join(',') === want.join(',')) {
-      plan.same.push(name + ': đã có sẵn đúng ' + n + ' món');
+      plan.same.push(label + ': đã có sẵn đúng ' + n + ' món');
     } else {
-      plan.skipped.push(name + ': ' + idRange + ' đã có dữ liệu khác, không ghi đè');
+      plan.skipped.push(label + ': ' + idRange + ' đã có dữ liệu khác, không ghi đè');
     }
   });
   return plan;
+}
+
+/** 'M8-02' on tab 'M8' -> 2. No code, or the code equals the tab -> 1. A code for another tab -> null (never guess). */
+function sectionOf_(code, tab) {
+  code = String(code || '').trim();
+  if (!code || code === tab) return 1;
+  const m = /^(.*)-(\d{1,2})$/.exec(code);
+  if (!m || m[1] !== tab) return null;
+  const n = parseInt(m[2], 10);
+  return n >= 1 ? n : null;
+}
+
+/** Column letter shifted by delta: ('E', -1) -> 'D'. Works for A..ZZ. */
+function colShift_(col, delta) {
+  let n = 0;
+  for (let i = 0; i < col.length; i++) n = n * 26 + (col.charCodeAt(i) - 64);
+  n += delta;
+  let out = '';
+  while (n > 0) { const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); }
+  return out;
 }
 
 function pad6_(x) { x = String(x).trim(); return /^\d+$/.test(x) ? ('000000' + x).slice(-6) : x; }

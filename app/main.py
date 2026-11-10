@@ -1,17 +1,20 @@
 """FastAPI app: JSON API + the single static page. Run: uvicorn app.main:app --host 0.0.0.0 --port 8080"""
 import contextlib
 import csv
+import hashlib
 import hmac
 import io
 import os
+import re
 import time
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, picker, service
+from . import automation, db, images, picker, planner, service
 from .catalog import Catalog
 from .settings import Settings
 
@@ -55,12 +58,48 @@ class UsedIds(BaseModel):
     note: str = ""
 
 
+class PlanBody(BaseModel):
+    brief: str = Field(min_length=3, max_length=2000)
+    module: str = Field(min_length=1, max_length=20)
+    start_label: str = Field(default="Box A1", max_length=40)
+    boxes: int = Field(default=4, ge=1, le=12)
+    count: int | None = None
+    labels: list[str] = Field(default=[], max_length=12)   # exact box names, e.g. Box B2, Box B3, Box A1 (replaces start_label and boxes)
+    code: str = Field(default="", max_length=40)           # SM section code shared by the boxes, e.g. M8-02
+    categories: list[str] = []                             # object categories every box may use (empty = all)
+
+
+class BatchSpec(BaseModel):
+    module: str = Field(min_length=1, max_length=20)
+    label: str = Field(min_length=1, max_length=40)
+    theme: str = Field(default="", max_length=300)
+    count: int | None = None
+    categories: list[str] = []
+    code: str = Field(default="", max_length=40)
+
+
+class BatchBody(BaseModel):
+    boxes: list[BatchSpec] = Field(max_length=12)
+    owner: str = Field(default="", max_length=40)
+    approve: bool = False             # approve each box as soon as the model has filled it (this batch only)
+
+
+class SwitchBody(BaseModel):
+    enabled: bool | None = None
+    config: dict | None = None
+
+
+class BulkItems(BaseModel):
+    object_ids: list[str] = Field(max_length=60)
+
+
 def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | None = None) -> FastAPI:
     s = settings or Settings.from_env()
     db.init(s.db_path)
     cat = catalog or Catalog(s.catalog_path)
     engine = llm or picker.make_llm(s)
     cat.sectors = s.sector_list
+    cat.image_hosts = images.hosts_from_env(s.image_hosts)
     boot = db.connect(s.db_path)                  # a live snapshot saved earlier survives restarts (it lives in the database)
     try:
         snap = service.load_snapshot(boot)
@@ -84,9 +123,32 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
             c.close()
 
     def auth(x_access_code: str = Header(default=""), access_code: str = ""):
-        # header for the page's fetch calls, query string for plain download links
-        if s.access_code and s.access_code not in (x_access_code, access_code):
+        # header for the page's fetch calls, query string for plain download links (compared in constant time, like the sync token)
+        if not s.access_code:
+            return
+        want = s.access_code.encode("utf-8", "replace")
+        if not any(hmac.compare_digest(got.encode("utf-8", "replace"), want) for got in (x_access_code, access_code)):
             raise HTTPException(401, "Cần nhập mã truy cập")
+
+    # A browser sends a plain form POST from any web page without asking first. With no access code set, that would let a page the
+    # visitor opens approve, regenerate or reopen boxes here. Refuse unsafe requests that a browser marks as coming from another
+    # site. The two token routes are exempt: the userscript calls them from the SM page and they carry their own secret.
+    TOKEN_ROUTES = ("/api/catalog/sync",)
+
+    @app.middleware("http")
+    async def refuse_cross_site_writes(request: Request, call_next):
+        path = request.url.path
+        if request.method not in ("GET", "HEAD", "OPTIONS") and path not in TOKEN_ROUTES and not (
+                path.startswith("/api/boxes/") and path.endswith("/pushed")):
+            site = request.headers.get("sec-fetch-site", "")
+            origin = request.headers.get("origin")
+            if site:                    # every current browser sends this, and it cannot be forged by a web page
+                foreign = site not in ("same-origin", "none")
+            else:                       # older browsers: compare the Origin the browser sent with the Host it asked for
+                foreign = origin is not None and urlsplit(origin).netloc != request.headers.get("host", "")
+            if foreign:
+                return JSONResponse({"detail": "Yêu cầu từ một trang khác bị chặn."}, status_code=403)
+        return await call_next(request)
 
     @app.exception_handler(service.Conflict)
     async def _conflict(_: Request, e):
@@ -96,6 +158,10 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     async def _invalid(_: Request, e):
         return JSONResponse({"detail": str(e)}, status_code=422)
 
+    @app.exception_handler(automation.BadSetting)
+    async def _badsetting(_: Request, e):
+        return JSONResponse({"detail": str(e)}, status_code=422)
+
     @app.exception_handler(service.NotFound)
     async def _notfound(_: Request, e):
         return JSONResponse({"detail": str(e)}, status_code=404)
@@ -103,14 +169,30 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     # ------------------------------------------------------------------ public bits
+    def static_stamp() -> str:
+        """Changes whenever a script or style file changes, so a browser never mixes a new page with cached old scripts."""
+        h = hashlib.sha1()
+        for name in sorted(os.listdir(STATIC)):
+            if name.endswith((".js", ".css")):
+                st = os.stat(os.path.join(STATIC, name))
+                h.update(f"{name}:{st.st_mtime_ns}:{st.st_size}".encode())
+        return h.hexdigest()[:10]
+
     @app.get("/")
     def index():
-        return FileResponse(os.path.join(STATIC, "index.html"))
+        with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        html = re.sub(r'(/static/[A-Za-z0-9_.-]+\.(?:js|css))"', rf'\1?v={static_stamp()}"', html)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})   # the page is always checked; its assets are named by stamp
+
+    def count_for(label: str, explicit: int | None = None) -> int:
+        """How many objects a box gets: what was asked for, else the size of its stage (A1, B2, B3), else the default."""
+        return explicit or s.stage_counts.get(service.stage_of(label), s.default_count)
 
     @app.get("/api/config")
     def config():
         return {"llm": engine.name, "model": s.deepseek_model if engine.name == "deepseek" else "mock",
-                "default_count": s.default_count, "max_qty": s.max_qty,
+                "default_count": s.default_count, "stage_counts": s.stage_counts, "max_qty": s.max_qty,
                 "needs_code": bool(s.access_code), "draft_ttl_hours": s.draft_ttl_hours}
 
     # ------------------------------------------------------------------ everything below needs the access code (if set)
@@ -131,16 +213,32 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
             raise HTTPException(401, "Sai mã đồng bộ.")
         if len(body.objects) < 50:                # a short list means the fetch half-failed; never wipe the catalog with it
             raise service.Invalid(f"Danh sách chỉ có {len(body.objects)} món, quá ngắn nên bị bỏ qua.")
+        # Only a cleaned picture URL is kept (see app/images.py). Anything else in the row is dropped.
         rows = [{"id": o.get("id"), "name": o.get("name"), "vi": o.get("vi"), "type": o.get("type"),
                  "status": o.get("status"), "avail": o.get("avail"), "qty": o.get("qty"), "loc": o.get("loc"),
-                 "sector": o.get("sector")} for o in body.objects]
+                 "sector": o.get("sector"), "img": images.pick_image(o, hosts=cat.image_hosts)} for o in body.objects]
         now = time.time()
         summary = cat.set_live(rows, now)
         # Only keep what this app is allowed to use. Objects from other sectors are counted, then dropped, never stored.
         service.save_snapshot(c, [r for r in rows if cat.allowed_sector(r)], now)
         claimed = {r[0] for r in c.execute("SELECT object_id FROM box_items")}
         summary["claimed_now_unavailable"] = sorted(claimed - set(cat.items()))
+        summary["healed_boxes"] = heal_boxes(c) if automation.is_on(c, "auto_heal") else []
         return summary
+
+    def heal_boxes(c) -> list[dict]:
+        """Auto-heal: swap out objects SM no longer lists, in boxes that are not in SM yet. Pushed boxes are never touched."""
+        done = []
+        for r in c.execute("SELECT id, module, label FROM boxes ORDER BY id").fetchall():
+            gone = {i["object_id"] for i in service.box_items(c, r["id"])} - set(cat.items())
+            if not gone:
+                continue
+            positions = service.heal_box(c, r["id"], cat)
+            if positions:
+                picker.start_generation(s, cat, engine, r["id"], positions=set(positions), auto=True)
+                automation.log(c, "heal", f"{r['module']} / {r['label']}: thay {len(positions)} món SM không còn ({', '.join(sorted(gone)[:4])})")
+                done.append({"box_id": r["id"], "replaced": len(positions)})
+        return done
 
     @app.get("/api/catalog", dependencies=[Depends(auth)])
     def catalog_info():
@@ -153,8 +251,8 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     @app.get("/api/search", dependencies=[Depends(auth)])
     def search(q: str, c=Depends(conn_dep)):
         taken = service.taken_ids(c)
-        return [{"id": i.id, "name": i.name, "vi": i.vi, "category": i.category, "stock": i.stock}
-                for i in cat.search(q, exclude=taken, limit=15)]
+        return [{"id": i.id, "name": i.name, "vi": i.vi, "category": i.category, "stock": i.stock, "img": i.img,
+                 "detail": images.detail_url(i.id)} for i in cat.search(q, exclude=taken, limit=15)]
 
     @app.post("/api/boxes", dependencies=[Depends(auth)], status_code=201)
     def create_box(b: NewBox, c=Depends(conn_dep)):
@@ -162,9 +260,9 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         bad = [x for x in b.categories if x not in known]
         if bad:
             raise service.Invalid(f"Nhóm không tồn tại: {', '.join(bad)}")
-        box_id = service.create_box(c, b.module, b.label, b.theme, b.categories, b.count or s.default_count, b.owner,
+        box_id = service.create_box(c, b.module, b.label, b.theme, b.categories, count_for(b.label, b.count), b.owner,
                                     b.code, b.anchor)
-        picker.start_generation(s, cat, engine, box_id)
+        picker.start_generation(s, cat, engine, box_id, auto=True)
         return {"id": box_id}
 
     @app.post("/api/boxes/{box_id}/regenerate", dependencies=[Depends(auth)])
@@ -237,7 +335,104 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         """Boxes in the SM TaskBox userscript's own format. Default: approved boxes only.
         pending=true hides boxes that were already pushed to SM (what a Google Sheet script wants)."""
         wanted = tuple(x.strip() for x in status.split(",") if x.strip()) or ("approved",)
+        if pending and wanted == ("approved",):
+            # what the SM userscript asks for: only boxes that passed the checks, and nothing when the queue is switched off
+            if not automation.is_on(c, "sm_queue"):
+                return {"boxes": [], "disabled": True}
+            return {"boxes": service.sm_queue(c, cat, s.max_qty)["ready"]}
         return {"boxes": service.taskboxes(c, cat, wanted, pending_only=pending)}
+
+    @app.get("/api/sheet-boxes", dependencies=[Depends(auth)])
+    def sheet_boxes(c=Depends(conn_dep)):
+        """What the Google Sheet script reads. Same shape as /api/taskboxes; empty when its switch is off."""
+        if not automation.is_on(c, "sheet_export"):
+            return {"boxes": [], "disabled": True}
+        return {"boxes": service.taskboxes(c, cat, ("approved",))}
+
+    # ------------------------------------------------------------------ object browser
+    @app.get("/api/objects", dependencies=[Depends(auth)])
+    def objects(q: str = "", category: str = "", status: str = "", sort: str = "id", page: int = 1, per: int = 50,
+                c=Depends(conn_dep)):
+        if status and status not in service.OBJECT_STATUSES:
+            raise service.Invalid("Trạng thái không hợp lệ.")
+        return service.objects_view(c, cat, q, category, status, sort, page, per)
+
+    def csv_safe(v) -> str:
+        """Text from SM goes into a spreadsheet: a cell that starts with = + - or @ would run as a formula, so mark it as text."""
+        v = "" if v is None else str(v)
+        return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+    @app.get("/api/objects.csv", dependencies=[Depends(auth)])
+    def objects_csv(q: str = "", category: str = "", status: str = "", sort: str = "id", c=Depends(conn_dep)):
+        """The same list and filters as /api/objects, all pages, as a UTF-8 CSV (with BOM so Excel reads the accents)."""
+        if status and status not in service.OBJECT_STATUSES:
+            raise service.Invalid("Trạng thái không hợp lệ.")
+        rows, _ = service.object_rows(c, cat, q, category, status, sort)
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["id", "name", "vietnamese_name", "category", "stock", "status", "holder", "img"])
+        for r in rows:
+            w.writerow([r["id"], csv_safe(r["name"]), csv_safe(r["vi"]), csv_safe(r["category"]), r["stock"], r["status"],
+                        csv_safe(r["holder"]), csv_safe(r["img"])])
+        return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": "attachment; filename=objects.csv"})
+
+    @app.get("/api/objects/coverage", dependencies=[Depends(auth)])
+    def objects_coverage(c=Depends(conn_dep)):
+        return service.coverage(c, cat)
+
+    @app.post("/api/boxes/{box_id}/items/bulk", dependencies=[Depends(auth)])
+    def add_items(box_id: int, body: BulkItems, c=Depends(conn_dep)):
+        return service.add_items(c, box_id, body.object_ids, cat, s.max_qty)
+
+    # ------------------------------------------------------------------ automations
+    @app.get("/api/automations", dependencies=[Depends(auth)])
+    def get_automations(c=Depends(conn_dep)):
+        sw = automation.switches(c)
+        return {"switches": list(sw.values()), "alerts": automation.alerts(c, cat, service.taken_ids(c)),
+                "todo": automation.todo(c, cat, s.max_qty),
+                "log": automation.recent_log(c), "planner": "deepseek" if engine.name == "deepseek" else "lines"}
+
+    @app.put("/api/automations/{key}", dependencies=[Depends(auth)])
+    def put_automation(key: str, body: SwitchBody, c=Depends(conn_dep)):
+        return automation.set_switch(c, key, body.enabled, body.config)
+
+    @app.get("/api/queue", dependencies=[Depends(auth)])
+    def queue(c=Depends(conn_dep)):
+        """Approved boxes waiting for the userscript: ready ones and blocked ones (with the reason)."""
+        q = service.sm_queue(c, cat, s.max_qty)
+        brief = lambda b: {"box_id": b["builder"]["box_id"], "title": b["title"], "items": b["item_count"]}
+        return {"enabled": automation.is_on(c, "sm_queue"), "ready": [brief(b) for b in q["ready"]], "blocked": q["blocked"]}
+
+    @app.post("/api/batches/plan", dependencies=[Depends(auth)])
+    def batch_plan(b: PlanBody, c=Depends(conn_dep)):
+        """AI (or, offline, plain line splitting) proposes several boxes from one brief. Creates nothing."""
+        if not automation.is_on(c, "ai_batch"):
+            raise service.Conflict("Tính năng tạo nhiều hộp bằng AI đang tắt. Bật lại ở mục Tự động hoá.")
+        known = {n for n, _ in cat.categories()}
+        bad = [x for x in b.categories if x not in known]
+        if bad:
+            raise service.Invalid(f"Nhóm không tồn tại: {', '.join(bad)}")
+        taken = {r["label"] for r in c.execute("SELECT label FROM boxes WHERE module=?", (b.module.strip(),))}
+        return planner.plan(engine, b.brief, b.module, b.start_label, b.boxes, lambda label: count_for(label, b.count), taken,
+                            labels=b.labels, code=b.code, categories=b.categories)
+
+    @app.post("/api/batches", dependencies=[Depends(auth)], status_code=201)
+    def batch_create(b: BatchBody, c=Depends(conn_dep)):
+        """Create the reviewed boxes and start picking for each. All-or-nothing on validation."""
+        if not automation.is_on(c, "ai_batch"):
+            raise service.Conflict("Tính năng tạo nhiều hộp bằng AI đang tắt. Bật lại ở mục Tự động hoá.")
+        known = {n for n, _ in cat.categories()}
+        for sp in b.boxes:
+            bad = [x for x in sp.categories if x not in known]
+            if bad:
+                raise service.Invalid(f"Nhóm không tồn tại: {', '.join(bad)}")
+        specs = [{**sp.model_dump(), "count": count_for(sp.label, sp.count)} for sp in b.boxes]
+        ids = service.create_batch(c, specs, s.default_count, b.owner)
+        automation.log(c, "batch", f"Tạo {len(ids)} hộp: " + ", ".join(f"{sp.module}/{sp.label}" for sp in b.boxes))
+        for box_id in ids:
+            picker.start_generation(s, cat, engine, box_id, auto=True, approve=b.approve)
+        return {"ids": ids}
 
     def sync_auth(x_sync_token: str):
         if not s.sync_token:

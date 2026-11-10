@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _int(name: str, default: int) -> int:
@@ -7,6 +7,20 @@ def _int(name: str, default: int) -> int:
         return int(os.getenv(name, default))
     except ValueError:
         return default
+
+
+DEFAULT_STAGE_COUNTS = {"A1": 12, "B2": 21, "B3": 21}   # A1 is for the next morning (10 to 14 objects); B2 and B3 hold many
+
+
+def parse_stage_counts(value: str | None) -> dict[str, int]:
+    """'A1=12,B2=21' -> {'A1': 12, 'B2': 21}. Bad parts are ignored; sizes are kept between 1 and 60."""
+    out = dict(DEFAULT_STAGE_COUNTS)
+    for part in (value or "").split(","):
+        name, _, num = part.partition("=")
+        name = name.strip().upper()
+        if name and num.strip().isdigit():
+            out[name] = max(1, min(60, int(num)))
+    return out
 
 
 @dataclass
@@ -17,13 +31,15 @@ class Settings:
     deepseek_key: str = ""
     deepseek_base: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"
-    default_count: int = 21           # Box A1 = rows 4-24 = 21 objects
+    default_count: int = 21           # a block in the sheet has 21 rows (4-24); used for stages without their own size
+    stage_counts: dict = field(default_factory=lambda: dict(DEFAULT_STAGE_COUNTS))   # objects per stage when no count is given
     max_qty: int = 3                  # hard cap on quantity per object
     draft_ttl_hours: int = 12         # abandoned drafts release their objects after this long
     max_parallel_llm: int = 1         # boxes picking at once; 1 = no wasted LLM calls on clashing picks
     access_code: str = ""             # optional shared passcode for the whole app
     sectors: str = "Hanoi-GPI"        # only objects from these SM sectors are ever used (comma list; empty = all)
     sync_token: str = ""              # secret the userscript sends to push the live SM catalog (empty = sync disabled)
+    image_hosts: str = ""             # hosts an object picture may come from (comma list; empty = the default host set in images.py)
 
     @property
     def sector_list(self) -> tuple[str, ...]:
@@ -39,10 +55,12 @@ class Settings:
             deepseek_base=os.getenv("DEEPSEEK_BASE_URL", cls.deepseek_base).rstrip("/"),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", cls.deepseek_model),
             default_count=_int("DEFAULT_COUNT", cls.default_count),
+            stage_counts=parse_stage_counts(os.getenv("STAGE_COUNTS")),
             max_qty=_int("MAX_QTY", cls.max_qty),
             draft_ttl_hours=_int("DRAFT_TTL_HOURS", cls.draft_ttl_hours),
             max_parallel_llm=_int("MAX_PARALLEL_LLM", cls.max_parallel_llm),
             access_code=os.getenv("ACCESS_CODE", ""),
             sync_token=os.getenv("SYNC_TOKEN", ""),
             sectors=os.getenv("SECTORS", cls.sectors),
+            image_hosts=os.getenv("IMAGE_HOSTS", ""),
         )

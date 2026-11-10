@@ -95,6 +95,49 @@ new objects show as "Chua phan loai".
 - Quality of real selections depends on the model and the setting text; judge a few boxes before relying on it.
 - Run a single server process (the default). The database file lives in `data/`, back it up like any file.
 
+## Objects view and automations
+
+Three tabs: **Hộp** (the boxes), **Kho đồ** (the catalog) and **Tự động hoá** (switches and queues).
+
+**Kho đồ.** Search by name or ID, filter by category, sort, and see the status of every object: free, in a draft box,
+approved, pushed to SM, or already used in the workbook. Bars show how much of each category is still free. Tick free
+objects and add them to a draft box in one go (they are locked, so Regenerate keeps them).
+
+**Tự động hoá.** Each switch is stored in the database and applies to everyone:
+
+| Switch | What it does | Default |
+|---|---|---|
+| Tạo nhiều hộp bằng AI | One brief becomes several box proposals. You review and edit the plan, then they are built one at a time, no duplicates. With no `DEEPSEEK_API_KEY` the plan just splits your lines. | on |
+| Tự duyệt hộp khi đã chọn đủ | A freshly built box is approved when the model filled every slot. A box with any code-filled slot always waits for a person. Regenerate and hand edits are never auto-approved. | **off** |
+| Cấp danh sách cho bảng tính Google | `/api/sheet-boxes` serves approved boxes to the sheet script. Off = it gets an empty list. | on |
+| Theo dõi kho đồ | Alerts: catalog never synced or older than N hours, objects in boxes that SM no longer lists, categories running low. | on |
+| Tự thay món biến mất khỏi kho SM | After a catalog sync, objects SM no longer lists are swapped out of boxes that are not in SM yet. The other objects stay. An approved box goes back to Nháp for a person to approve again, unless Tự duyệt is on. Boxes already pushed are never touched. | **off** |
+| Hàng chờ đẩy lên SM | `/api/taskboxes?pending=true` (what the userscript reads) only returns approved, not-yet-pushed boxes that pass checks: every object still in stock, quantity within the cap, title not used by another box. Blocked boxes are listed with the reason. Off = the userscript sees nothing. | on |
+
+**Việc cần làm.** The top of the Tự động hoá tab lists the steps that still need a person: drafts to approve,
+the SM push to confirm, the sheet script to run, a catalog sync. The app cannot do these itself (the rules keep SM and
+the sheet out of its reach), so it says which one is waiting. The number on the tab counts these plus the alerts.
+
+**Sections.** A tab in the sheet holds several sections (M8-01, M8-02, ...), each with its own Box B2, Box B3 and Box A1.
+In the batch form, "Một section: B2, B3, A1" fills the three names and "Mã section" takes the code (for example M8-02).
+The sheet script then writes that section's rows (25 rows per section) and checks first that the block title is
+really there, so a tab with different spacing is skipped, not written to the wrong place.
+
+**One-click batch.** In "Tạo nhiều hộp bằng AI", tick "Duyệt luôn..." to approve each box as soon as the model has filled
+every slot. Only that batch is affected, and boxes with code-filled slots still wait for a person.
+
+**Pictures.** Each object row can carry a picture URL. The userscript reads it from SM's object list and sends it with the
+catalog sync (any of the keys `image_url`, `img`, `thumbnail`, `image`, `photo`, `images`...; see `app/images.py`). The server
+keeps it only if it is an https URL on an allowed host (`IMAGE_HOSTS`, default the SM host) or a path on that host. It never
+fetches the picture: the viewer's browser loads it, so a picture that needs an SM login shows only for people signed in to SM.
+A missing or broken picture shows a neutral icon. Every object also has an "Mở trong SM" link to its SM page.
+
+Safety is unchanged: the server never writes to SM and holds no SM credentials (`tests/test_safety.py` enforces it).
+The userscript still creates TaskBoxes only after your confirm click; the sheet script still writes only empty cells.
+A short activity log shows what the automations did.
+
+Browser test: `pip install playwright && python -m playwright install chromium && python tests/ui_automation_e2e.py`.
+
 ## Tests
 
 `pip install -r requirements-dev.txt && pytest` (SQLite, 17 tests; point `TEST_DATABASE_URL` at a Postgres to run the same suite there: simultaneous boxes, bad model output, stock cap,

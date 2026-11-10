@@ -8,7 +8,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from . import service
+from . import automation, service
 from .catalog import Catalog, Item, fold
 from .db import connect
 from .settings import Settings
@@ -203,7 +203,24 @@ def _free_positions(box, have, positions):
     return [p for p in range(1, box["count"] + 1) if p not in used and (positions is None or p in positions)]
 
 
-def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), positions=None) -> None:
+def _maybe_auto_approve(conn, box_id: int, forced: bool = False) -> None:
+    """Automation: approve a freshly built box when the switch is on (or the batch asked for it) and every object
+    came from the model or was added by hand. A box with code-filled objects always waits for a human. Never raises."""
+    try:
+        if not forced and not automation.is_on(conn, "auto_approve"):
+            return
+        if any(r["source"] == "fill" for r in service.box_items(conn, box_id)):
+            return
+        box = service.get_box(conn, box_id)
+        service.approve(conn, box_id)
+        automation.log(conn, "auto_approve", f"Đã tự duyệt {box['module']} / {box['label']} ({box['count']} món)"
+                       + (" theo yêu cầu của lô" if forced else ""))
+    except Exception:
+        pass
+
+
+def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), positions=None, auto: bool = False,
+                   approve: bool = False) -> None:
     """Fill the empty slots of a box (all of them, or only `positions`). Never raises: problems are
     written to the box so the page can show them."""
     try:
@@ -264,6 +281,8 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                 service.set_status(conn, box_id, "error", f"Còn {left} ô chưa điền được. " + "; ".join(info))
             else:
                 service.set_status(conn, box_id, "draft", "; ".join(info))
+                if auto or approve:
+                    _maybe_auto_approve(conn, box_id, forced=approve)
     except service.NotFound:
         pass                                    # the box was discarded while generating
     except Exception as e:                      # LLM down, bad key, filters too narrow, ...
@@ -274,7 +293,8 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
             pass
 
 
-def start_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), positions=None) -> threading.Thread:
-    t = threading.Thread(target=run_generation, args=(s, catalog, llm, box_id, avoid, positions), daemon=True)
+def start_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), positions=None, auto: bool = False,
+                     approve: bool = False) -> threading.Thread:
+    t = threading.Thread(target=run_generation, args=(s, catalog, llm, box_id, avoid, positions, auto, approve), daemon=True)
     t.start()
     return t

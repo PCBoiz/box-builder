@@ -4,6 +4,7 @@ import json
 import re
 import time
 
+from . import images
 from .catalog import Catalog, Item, display_name, pad_id
 from .db import IntegrityError, rev, tx
 
@@ -50,6 +51,10 @@ def owner_of(conn, oid: str) -> str:
 
 
 def state(conn, catalog: Catalog) -> dict:
+    # Read the revision BEFORE the data. If a write lands while we read, the page holds data that is at least as new as
+    # its revision, so the next poll sees a different number and refetches. (Reading it last could label old data with a
+    # newer revision and leave the page stale until something else changed.)
+    rev_first = rev(conn)
     cat = catalog.items()
     boxes = []
     pushed = {r["box_id"]: {"sm_box_id": r["sm_box_id"], "at": r["pushed_at"]}
@@ -64,6 +69,7 @@ def state(conn, catalog: Catalog) -> dict:
                 "name": c.name if c else "(không còn trong kho)",
                 "vi": c.vi if c else "", "category": c.category if c else "",
                 "slot": c.slot if c else "", "stock": c.stock if c else 0,
+                "img": c.img if c else "", "detail": images.detail_url(it["object_id"]),
             })
         boxes.append({
             "id": b["id"], "module": b["module"], "label": b["label"], "theme": b["theme"],
@@ -79,7 +85,7 @@ def state(conn, catalog: Catalog) -> dict:
             for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
     claimed = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
     return {
-        "rev": rev(conn),
+        "rev": rev_first,
         "catalog": catalog.info(),
         "stats": {"catalog": len(cat), "in_boxes": in_boxes, "external": external,
                   "free": max(0, len(cat) - len(taken_ids(conn) & set(cat))), "boxes": len(boxes),
@@ -110,10 +116,10 @@ def taskbox_title(code: str, anchor: str, label: str) -> str:
     return f"{code} - {lo_name} - {stage}" if lo_name else f"{code} - {stage}"
 
 
-def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool = False) -> list[dict]:
+def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool = False, st: dict | None = None) -> list[dict]:
     """Boxes in exactly the shape the userscript's sheet parser produces, so it can use them directly."""
     out = []
-    for b in state(conn, catalog)["boxes"]:
+    for b in (st or state(conn, catalog))["boxes"]:
         if b["status"] not in statuses or not b["items"]:
             continue
         if pending_only and b["pushed"]:
@@ -132,6 +138,109 @@ def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool
                         "status": b["status"], "pushed": b["pushed"]},
         })
     return out
+
+
+def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
+    """Approved boxes that are not in SM yet, split into READY and BLOCKED (with the reasons).
+    Pure read: this only decides what the userscript is shown; it never touches SM."""
+    st = state(conn, catalog)
+    pushed_titles = {b["title"] for b in st["boxes"] if b["pushed"]}
+    ready, blocked, seen = [], [], set()
+    cat = catalog.items()
+    for tb in taskboxes(conn, catalog, ("approved",), pending_only=True, st=st):
+        reasons = []
+        for c in tb["contents"]:
+            it = cat.get(c["object_id"])
+            if it is None:
+                reasons.append(f"{c['object_id']} không còn tồn kho ở SM")
+            elif c["quantity"] > min(max_qty, it.stock) or c["quantity"] < 1:
+                reasons.append(f"{c['object_id']}: số lượng {c['quantity']} vượt mức cho phép (tối đa {min(max_qty, it.stock)})")
+        if not tb["title"].strip():
+            reasons.append("thiếu tiêu đề")
+        elif tb["title"] in pushed_titles or tb["title"] in seen:
+            reasons.append(f"tiêu đề \"{tb['title']}\" trùng với một hộp khác")
+        seen.add(tb["title"])
+        if reasons:
+            blocked.append({"box_id": tb["builder"]["box_id"], "title": tb["title"], "reasons": reasons})
+        else:
+            ready.append(tb)
+    return {"ready": ready, "blocked": blocked}
+
+
+# ----------------------------------------------------------------------------- object browser
+OBJECT_STATUSES = ("free", "draft", "approved", "pushed", "external")
+
+
+def _holders(conn) -> tuple[dict, set]:
+    """object_id -> {box_id, box, status, pushed}; plus the set of IDs marked as used in the workbook."""
+    held = {}
+    pushed = {r["box_id"] for r in conn.execute("SELECT box_id FROM sm_push")}
+    for r in conn.execute("SELECT i.object_id, b.id, b.module, b.label, b.status FROM box_items i JOIN boxes b ON b.id=i.box_id"):
+        status = "pushed" if r["id"] in pushed else ("approved" if r["status"] == "approved" else "draft")
+        held[r["object_id"]] = {"box_id": r["id"], "box": f"{r['module']} / {r['label']}", "status": status}
+    external = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
+    return held, external
+
+
+def object_status(oid: str, held: dict, external: set) -> tuple[str, str]:
+    if oid in held:
+        return held[oid]["status"], held[oid]["box"]
+    if oid in external:
+        return "external", "bảng tính"
+    return "free", ""
+
+
+def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status: str = "", sort: str = "id") -> tuple[list[dict], dict]:
+    """Every catalog object that matches the filters, in the requested order, plus a count per status
+    (the counts ignore the status filter so the filter chips can show all of them)."""
+    from .catalog import fold
+    held, external = _holders(conn)
+    words = [w for w in fold(q).split() if w]
+    rows, counts = [], {s: 0 for s in OBJECT_STATUSES}
+    for it in catalog.items().values():
+        if category and (it.category or "(chưa phân loại)") != category:
+            continue
+        if words and not all(w in it.blob or w in it.id for w in words):
+            continue
+        st, holder = object_status(it.id, held, external)
+        counts[st] += 1
+        if status and st != status:
+            continue
+        rows.append({"id": it.id, "name": it.name, "vi": it.vi, "category": it.category or "(chưa phân loại)",
+                     "slot": it.slot, "stock": it.stock, "status": st, "holder": holder,
+                     "img": it.img, "detail": images.detail_url(it.id)})
+    keys = {"id": lambda r: r["id"], "name": lambda r: (r["vi"] or r["name"]).lower(), "category": lambda r: (r["category"], r["id"])}
+    if sort in ("stock", "-stock"):
+        rows.sort(key=lambda r: (r["stock"], r["id"]), reverse=sort == "-stock")
+    else:
+        rows.sort(key=keys.get(sort, keys["id"]))
+    return rows, counts
+
+
+def objects_view(conn, catalog: Catalog, q: str = "", category: str = "", status: str = "", sort: str = "id",
+                 page: int = 1, per: int = 50) -> dict:
+    """The catalog with a status per object (free / in a draft / approved / pushed to SM / used in the workbook)."""
+    rows, counts = object_rows(conn, catalog, q, category, status, sort)
+    per = max(1, min(200, per))
+    page = max(1, page)
+    total = len(rows)
+    return {"total": total, "page": page, "per": per, "pages": max(1, -(-total // per)),
+            "counts": counts, "items": rows[(page - 1) * per: page * per]}
+
+
+def coverage(conn, catalog: Catalog) -> list[dict]:
+    """Per category: how many usable objects exist, how many are still free, how many are taken."""
+    held, external = _holders(conn)
+    by: dict[str, dict] = {}
+    for it in catalog.items().values():
+        c = it.category or "(chưa phân loại)"
+        e = by.setdefault(c, {"name": c, "total": 0, "free": 0, "used": 0})
+        e["total"] += 1
+        if it.id in held or it.id in external:
+            e["used"] += 1
+        else:
+            e["free"] += 1
+    return sorted(by.values(), key=lambda e: (-e["total"], e["name"]))
 
 
 # ----------------------------------------------------------------------------- housekeeping
@@ -275,6 +384,25 @@ def release_unlocked(conn, box_id: int, positions: list[int] | None = None) -> l
         return [r["object_id"] for r in rows]
 
 
+def heal_box(conn, box_id: int, catalog: Catalog) -> list[int]:
+    """Remove the objects SM no longer lists from a box that is not in SM yet, and mark it for a refill.
+    Returns the emptied positions (none when there is nothing to fix, the box is busy, or it was already pushed)."""
+    with tx(conn):
+        b = get_box(conn, box_id)
+        if b["status"] == "generating" or conn.execute("SELECT 1 FROM sm_push WHERE box_id=?", (box_id,)).fetchone():
+            return []
+        live = catalog.items()
+        gone = [r for r in box_items(conn, box_id) if r["object_id"] not in live]
+        if not gone:
+            return []
+        for r in gone:
+            conn.execute("DELETE FROM box_items WHERE box_id=? AND pos=?", (box_id, r["pos"]))
+        ids = ", ".join(r["object_id"] for r in gone[:6])
+        conn.execute("UPDATE boxes SET status='generating', message=?, updated_at=? WHERE id=?",
+                     (f"SM không còn {len(gone)} món ({ids}). Đang thay bằng món khác.", time.time(), box_id))
+        return [r["pos"] for r in gone]
+
+
 def set_locked(conn, box_id: int, pos: int, locked: bool) -> None:
     with tx(conn):
         _editable(conn, box_id)
@@ -324,6 +452,54 @@ def add_item(conn, box_id: int, object_id: str, qty: int, catalog: Catalog, max_
                      (box_id, pos, item.id, q))
         conn.execute("UPDATE boxes SET updated_at=? WHERE id=?", (time.time(), box_id))
         return pos
+
+
+def add_items(conn, box_id: int, object_ids: list[str], catalog: Catalog, max_qty: int) -> dict:
+    """Put several hand-picked objects into one box. Each is its own atomic claim, so a clash with another
+    user skips only that object. Returns what was added and why the rest were not."""
+    added, failed = [], []
+    for raw in dict.fromkeys(object_ids):
+        try:
+            added.append({"id": pad_id(raw) or raw, "pos": add_item(conn, box_id, raw, 1, catalog, max_qty)})
+        except (Conflict, Invalid) as e:
+            failed.append({"id": raw, "reason": str(e)})
+    return {"added": added, "failed": failed}
+
+
+def create_batch(conn, specs: list[dict], default_count: int, owner: str) -> list[int]:
+    """Create several boxes in one go. All-or-nothing on validation: if any spec is bad, nothing is created."""
+    if not specs:
+        raise Invalid("Chưa có hộp nào để tạo.")
+    if len(specs) > 12:
+        raise Invalid("Mỗi lần chỉ tạo tối đa 12 hộp.")
+    problems, names = [], set()
+    existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes")}
+    for i, sp in enumerate(specs, 1):
+        module, label = str(sp.get("module", "")).strip(), str(sp.get("label", "")).strip()
+        count = sp.get("count") or default_count
+        if not module or not label:
+            problems.append(f"Hộp {i}: thiếu Module hoặc tên hộp.")
+        elif (module, label) in names:
+            problems.append(f"Hộp {i}: {module} / {label} bị trùng trong danh sách.")
+        elif (module, label) in existing:
+            problems.append(f"Hộp {i}: {module} / {label} đã tồn tại.")
+        if not isinstance(count, int) or not 1 <= count <= 60:
+            problems.append(f"Hộp {i}: số món phải từ 1 đến 60.")
+        names.add((module, label))
+    if problems:
+        raise Invalid(" ".join(problems))
+    ids = []
+    try:
+        for sp in specs:
+            ids.append(create_box(conn, str(sp["module"]), str(sp["label"]), str(sp.get("theme", ""))[:300],
+                                  list(sp.get("categories") or []), sp.get("count") or default_count, owner,
+                                  str(sp.get("code") or "")))
+    except Exception:                       # someone created the same name a moment ago: undo, so it stays all-or-nothing
+        for bid in ids:
+            with tx(conn):
+                conn.execute("DELETE FROM boxes WHERE id=?", (bid,))
+        raise
+    return ids
 
 
 # ----------------------------------------------------------------------------- IDs already used in the workbook

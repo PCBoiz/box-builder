@@ -180,6 +180,17 @@ def _schema(pg: bool) -> list[str]:
         """CREATE TABLE IF NOT EXISTS external_used(
               object_id TEXT PRIMARY KEY,
               note      TEXT NOT NULL DEFAULT '')""",
+        # on/off switches for the automations (only rows that were ever changed; defaults live in app/automation.py)
+        f"""CREATE TABLE IF NOT EXISTS automations(
+              k          TEXT PRIMARY KEY,
+              enabled    INTEGER NOT NULL,
+              config     TEXT NOT NULL DEFAULT '{{}}',
+              updated_at {real} NOT NULL)""",
+        f"""CREATE TABLE IF NOT EXISTS automation_log(
+              id    {pk},
+              at    {real} NOT NULL,
+              kind  TEXT NOT NULL,
+              msg   TEXT NOT NULL)""",
     ]
 
 

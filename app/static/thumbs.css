@@ -1,0 +1,40 @@
+/* Thumbnails and lightbox for thumbs.js. Uses the app's custom properties; the fallbacks let it work alone.
+   Lightbox buttons reuse the app's .btn look. */
+.bbt {
+  --s: 36px; --r: 6px;
+  box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: var(--s); height: var(--s); border-radius: var(--r); overflow: hidden; vertical-align: middle;
+  border: 1px dashed var(--cut-edge, #b3bdb9); background: var(--cut, #f8faf9); color: #7b8a86;
+}
+.bbt-md { --s: 64px; --r: 9px; }
+.bbt.is-img { border: 0; background: #2d363b; }          /* dark neutral, so transparent PNGs read well */
+.bbt > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.bbt-ph { width: 56%; height: 56%; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.bbt[role="button"] { cursor: zoom-in; }
+.bbt[role="button"]:hover { box-shadow: 0 0 0 2px var(--hi, #f0691a); }
+.bbt[role="button"]:focus-visible { outline: 3px solid var(--hi, #f0691a); outline-offset: 2px; border-radius: var(--r); }
+
+.bbt-dlg {
+  box-sizing: border-box; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+  padding: 0; border: 0; border-radius: var(--r-case, 14px);
+  background: var(--case, #f3f5f4); color: var(--ink, #18232b); box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+}
+.bbt-dlg::backdrop { background: rgba(24, 35, 43, .6); }
+.bbt-body { display: grid; gap: 12px; padding: 14px; }   /* all padding lives here, so a click on the dialog itself is a backdrop click */
+.bbt-fig { overflow: hidden; border-radius: 10px; background: #2d363b; }
+.bbt-big { display: block; width: 100%; height: min(60vh, 420px); object-fit: contain; }
+.bbt-vi { margin: 0; font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+.bbt-en, .bbt-id { margin: 2px 0 0; color: var(--ink2, #48575f); font-size: 13.5px; overflow-wrap: anywhere; }
+.bbt-id { font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.bbt-act { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.bbt-dlg a.btn { color: inherit; text-decoration: none; }
+.bbt-dlg [hidden] { display: none !important; }
+
+/* Motion only when the viewer has not asked to reduce it. */
+@media (prefers-reduced-motion: no-preference) {
+  .bbt { transition: box-shadow .12s; }
+  .bbt-dlg[open] { animation: bbt-in .16s ease-out; }
+  .bbt-dlg[open]::backdrop { animation: bbt-fade .16s ease-out; }
+}
+@keyframes bbt-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+@keyframes bbt-fade { from { opacity: 0; } }
