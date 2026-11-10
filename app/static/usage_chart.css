@@ -1,0 +1,105 @@
+/* Usage chart for the "Cảnh báo kho" panel (usage_chart.js). Self-contained: the colours are fixed, not read from the app,
+   because their contrast was measured on the panel colour #f3f5f4 (the app's --case). WCAG 2.2 ratios on #f3f5f4:
+     text   ink #18232b 14.59   soft #48575f 6.84   (limit 4.5)
+     graphic  blue #2f6fa0 4.91   warn #b8430a 4.99   (limit 3)   and against the grey track #dfe5e2: blue 4.21, warn 4.28, soft 5.86
+     warn on its light stripe #f6d5bf 3.95   (the hatch)
+   The brand orange #f0691a is 2.85 on the panel and fails 3:1, so it is not used here. Blue and dark orange have the same
+   lightness (1.01:1), so colour never carries the meaning alone: over the threshold a bar is hatched, outlined, and sits under a
+   labelled divider, and every bar has its number printed beside it. tests/usage_chart_test.js re-checks these numbers.
+   Sizes are in em so they follow the text size. The layout follows the width of its own box (container query), not the window;
+   the stacked layout is the default, so a browser without container queries still gets a layout that fits. No animation. */
+.bbu {
+  --bbu-ink: #18232b;
+  --bbu-soft: #48575f;
+  --bbu-blue: #2f6fa0;
+  --bbu-warn: #b8430a;
+  --bbu-stripe: #f6d5bf;
+  --bbu-track: #dfe5e2;
+  --bbu-rule: #c4cdca;
+  --bbu-halo: #f3f5f4;
+  container-type: inline-size;
+  box-sizing: border-box; width: 100%; min-width: 0;
+  color: var(--bbu-ink); line-height: 1.5;
+}
+.bbu *, .bbu *::before, .bbu *::after { box-sizing: border-box; }
+.bbu p, .bbu h3, .bbu ol { margin: 0; }
+
+.bbu-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+.bbu-lede { font-size: 1.15em; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
+.bbu-lede.is-calm { font-size: 1em; font-weight: 400; }
+.bbu-effect { margin-top: .4em; overflow-wrap: anywhere; }
+.bbu-h { margin-top: 1.5em; font-size: 1em; font-weight: 700; }
+.bbu-note { margin: .1em 0 .5em; color: var(--bbu-soft); font-size: .9em; line-height: 1.45; }
+
+/* ---------------------------------------------------------------- bars */
+.bbu-track { position: relative; display: block; height: 1.25em; background: var(--bbu-track); }
+.bbu-fill {                                   /* the width is --w, set by the script; the minimum keeps a tiny count visible */
+  display: block; height: 100%; width: var(--w, 0%); min-width: .5em;
+  border: 2px solid var(--bbu-blue); background: var(--bbu-blue);
+}
+.bbu-fill.is-over {                           /* from the threshold up: hatch + outline, not colour alone */
+  border-color: var(--bbu-warn);
+  background: repeating-linear-gradient(135deg, var(--bbu-warn) 0 4px, var(--bbu-stripe) 4px 8px);
+}
+.bbu-fill.is-unk { border-color: var(--bbu-soft); background: transparent; }   /* hollow: no borrow data, not a count of uses */
+
+/* ---------------------------------------------------------------- table of bands */
+.bbu-bands { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.bbu-bands th, .bbu-bands td { padding: .3em 0; text-align: left; vertical-align: middle; }
+.bbu-bands thead th { color: var(--bbu-soft); font-size: .9em; font-weight: 400; }
+.bbu-bands thead th:first-child { width: 38%; }
+.bbu-bands tbody th { padding-right: .6em; font-weight: 400; overflow-wrap: anywhere; }
+.bbu-bands .bbu-thr th { padding: .2em 0; border-top: 2px dashed var(--bbu-ink); border-bottom: 2px dashed var(--bbu-ink); font-weight: 700; }
+.bbu-bands .bbu-unk th, .bbu-bands .bbu-unk td { padding-top: .8em; }
+.bbu-cell { display: flex; align-items: center; gap: .5em; min-width: 0; }
+.bbu-cell .bbu-track { flex: 1 1 2em; min-width: 0; }
+.bbu-num { flex: 0 1 auto; min-width: 3.2em; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- list of the heaviest objects */
+.bbu-top { list-style: none; padding: 0; }
+.bbu-top > li {                               /* narrow: name, effect, then bar and number */
+  display: grid; grid-template-columns: minmax(0, 1fr) 8.5em; grid-template-areas: "nm nm" "fx fx" "track val";
+  align-items: center; column-gap: .5em; padding: .45em 0; border-top: 1px solid var(--bbu-rule);
+}
+.bbu-top > li:first-child { border-top: 0; }
+.bbu-nm { grid-area: nm; min-width: 0; overflow-wrap: anywhere; }
+.bbu-id { margin-right: .1em; color: var(--bbu-soft); font-size: .9em; font-variant-numeric: tabular-nums; }
+.bbu-name { font-weight: 600; }
+.bbu-fx { grid-area: fx; min-width: 0; color: var(--bbu-soft); font-size: .9em; overflow-wrap: anywhere; }
+.bbu-top .bbu-track { grid-area: track; min-width: 0; margin-top: .3em; }
+.bbu-val { grid-area: val; margin-top: .3em; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.bbu-top > li:first-child .bbu-track, .bbu-top > li:first-child .bbu-val { margin-top: 2em; }    /* room for the label of the threshold line */
+.bbu-top.has-hard > li:last-child { padding-bottom: 2.3em; }                                      /* room for the label of the line to leave out from */
+
+.bbu-top .bbu-track::before, .bbu-top.has-hard .bbu-track::after {   /* the lines, drawn in every row so they read as one line */
+  content: ""; position: absolute; top: -.35em; bottom: -.35em; width: 0;
+  box-shadow: 0 0 0 1px var(--bbu-halo);     /* a light edge keeps the line readable on top of a dark bar */
+}
+.bbu-top .bbu-track::before { left: var(--t); border-left: 2px dashed var(--bbu-ink); }
+.bbu-top.has-hard .bbu-track::after { left: var(--h); border-left: 3px solid var(--bbu-ink); }
+.bbu-tag { position: absolute; padding: 0 .3em; font-size: .85em; font-weight: 700; line-height: 1.3; white-space: nowrap; }
+.bbu-tag.is-soft { bottom: calc(100% + .4em); }
+.bbu-tag.is-hard { top: calc(100% + .4em); }
+.bbu-tag.is-soft.at-start { left: var(--t); }
+.bbu-tag.is-soft.at-end { right: calc(100% - var(--t)); }
+.bbu-tag.is-hard.at-start { left: var(--h); }
+.bbu-tag.is-hard.at-end { right: calc(100% - var(--h)); }
+
+@container (min-width: 32em) {                /* wide: name | bar | number in one line, the effect under the name */
+  .bbu-top > li { grid-template-columns: minmax(8em, 15em) minmax(0, 1fr) 8.5em; grid-template-areas: "nm track val" "fx . ."; column-gap: .75em; }
+  .bbu-top .bbu-track, .bbu-val { margin-top: 0; }
+  .bbu-top > li:first-child { padding-top: 2.5em; }
+  .bbu-top > li:first-child .bbu-track, .bbu-top > li:first-child .bbu-val { margin-top: 0; }
+  .bbu-bands thead th:first-child { width: 30%; }
+}
+
+/* Windows high contrast: the system replaces colours, so bars get system colours, a pattern and an outline */
+@media (forced-colors: active) {
+  .bbu-track { background: Canvas; border: 1px solid CanvasText; forced-color-adjust: none; }
+  .bbu-fill, .bbu-fill.is-over, .bbu-fill.is-unk { forced-color-adjust: none; border-color: CanvasText; background: CanvasText; }
+  .bbu-fill.is-over { background: repeating-linear-gradient(135deg, CanvasText 0 4px, Canvas 4px 8px); }
+  .bbu-fill.is-unk { background: Canvas; }
+  .bbu-top .bbu-track::before, .bbu-top.has-hard .bbu-track::after { forced-color-adjust: none; border-color: CanvasText; box-shadow: 0 0 0 1px Canvas; }
+  .bbu-bands .bbu-thr th { border-color: CanvasText; }
+}

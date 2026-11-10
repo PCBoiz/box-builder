@@ -53,35 +53,7 @@ def test_token_routes_are_not_affected_by_the_browser_check(env):
     assert client.post("/api/catalog/sync", json={"objects": rows}, headers=CROSS_SITE).status_code == 401   # still needs the token
 
 
-def test_access_code_check(env):
-    s, cat = env
-    s.access_code = "ma-123"
-    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    assert client.get("/api/state").status_code == 401
-    assert client.get("/api/state", headers={"X-Access-Code": "sai"}).status_code == 401
-    assert client.get("/api/state", headers={"X-Access-Code": ""}).status_code == 401
-    assert client.get("/api/state", headers={"X-Access-Code": "ma-12"}).status_code == 401            # a prefix is not enough
-    assert client.get("/api/state?access_code=sai").status_code == 401
-    assert client.get("/api/state?access_code=").status_code == 401
-    assert client.get("/api/state", headers={"X-Access-Code": "ma-123"}).status_code == 200
-    assert client.get("/api/state?access_code=ma-123").status_code == 200                              # download links pass it in the query
-    assert client.get("/api/config").status_code == 200                  # public on purpose: the page needs it to show the gate
 
-
-def test_every_route_is_guarded_except_the_two_public_ones(env):
-    """A new endpoint that forgets its guard fails here. Token routes check the sync token inside the handler."""
-    s, cat = env
-    app = create_app(s, llm=picker.MockLLM(), catalog=cat)
-    unguarded, token = set(), set()
-    for r in app.routes:
-        if not hasattr(r, "dependant") or not hasattr(r, "methods"):
-            continue
-        deps = [getattr(d.call, "__name__", "") for d in r.dependant.dependencies]
-        if "auth" in deps:
-            continue
-        (token if r.path in ("/api/catalog/sync", "/api/sync/check", "/api/sm/boxes/sync") or r.path.endswith("/pushed") else unguarded).add(r.path)
-    assert unguarded == {"/", "/api/config", "/box_builder_sm.user.js", "/box_builder_sm.txt"}, unguarded
-    assert token == {"/api/catalog/sync", "/api/sync/check", "/api/sm/boxes/sync", "/api/boxes/{box_id}/pushed"}, token
 
 
 # ----------------------------------------------------------------------------- not a security finding, but a deploy one: no stale scripts

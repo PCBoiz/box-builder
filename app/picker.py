@@ -5,10 +5,11 @@ import json
 import random
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 
-from . import automation, service
+from . import automation, service, usage
 from .catalog import Catalog, Item, fold
 from .db import connect
 from .settings import Settings
@@ -228,6 +229,37 @@ def available_pool(conn, catalog: Catalog, categories: list[str], avoid=()) -> l
     return out
 
 
+def usage_weights(conn, pool: list[Item], need: int, now: float | None = None) -> tuple[dict[str, float], int] | None:
+    """The chance weight of every object in `pool` (id -> 0 to 1) and the fewest objects that must stay in the shortlist, or None when the
+    rule changes nothing: the switch "Giảm món đã dùng nhiều" is off, no object in the pool has a borrow count, or none is past the start.
+    None means the caller must do exactly what it did before this rule existed. Objects at weight 0 come back at the floor weight when fewer
+    than min_pool (or fewer than the slots to fill) would be left, so a box can still be filled when few objects are free."""
+    cfg = service.usage_cfg(conn)
+    if cfg is None or not usage.has_data(pool):
+        return None
+    w = usage.weights_of(pool, time.time() if now is None else now, cfg)
+    if all(v >= 1.0 for v in w.values()):
+        return None
+    keep = max(cfg["min_pool"], need)
+    return usage.apply_pool_floor(pool, w, keep), keep
+
+
+def usage_shortlist(pool: list[Item], weights: dict[str, float], keep: int, limit: int, rng: random.Random) -> list[Item]:
+    """The objects the model may choose from. Weight 0 never goes in. An object with weight w goes in with chance w (weight 1 always), so a
+    heavily borrowed object is offered to the model less often. If that leaves fewer than `keep` objects, the dropped ones with the highest
+    weights come back; if more than `limit`, a weighted draw cuts it down. The catalog order is kept."""
+    alive = [it for it in pool if weights.get(it.id, 1.0) > 0]
+    kept = [it for it in alive if weights.get(it.id, 1.0) >= 1.0 or rng.random() < weights[it.id]]
+    target = min(len(alive), keep)
+    if len(kept) < target:
+        have = {it.id for it in kept}
+        kept += usage.weighted_sample([it for it in alive if it.id not in have], weights, target - len(kept), rng)
+    if len(kept) > limit:
+        kept = usage.weighted_sample(kept, weights, limit, rng)
+    ids = {it.id for it in kept}
+    return [it for it in alive if it.id in ids]
+
+
 @contextlib.contextmanager
 def _db(s: Settings):
     """A short-lived connection. Never held across a model call, so slow LLM replies cannot starve the pool."""
@@ -287,12 +319,18 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                     if not free:
                         break
                     pool = available_pool(conn, catalog, cats, avoid)
+                    heavy = usage_weights(conn, pool, len(free))          # None: nothing is reduced, pick exactly as before
                 if len(pool) < len(free):
-                    raise service.Invalid(
-                        f"Chỉ còn {len(pool)} món trống khớp bộ lọc nhưng cần {len(free)} món. "
-                        "Hãy mở rộng nhóm đồ hoặc giải phóng bớt hộp.")
+                    if cats:
+                        raise service.Invalid(
+                            f"Kho chỉ còn {len(pool)} món trống hợp nhóm đồ đã chọn, mà hộp cần {len(free)}. "
+                            "Chọn thêm nhóm đồ, hoặc xoá bớt hộp nháp để lấy món về.")
+                    raise service.Invalid(f"Kho chỉ còn {len(pool)} món trống, mà hộp cần {len(free)}. Xoá bớt hộp chưa cần để lấy món về.")
                 rng = random.Random(box_id * 1000 + attempt)
-                sample = pool if len(pool) <= POOL_LIMIT else rng.sample(pool, POOL_LIMIT)
+                if heavy is None:
+                    sample = pool if len(pool) <= POOL_LIMIT else rng.sample(pool, POOL_LIMIT)
+                else:
+                    sample = usage_shortlist(pool, heavy[0], heavy[1], POOL_LIMIT, rng)
                 current = [catalog.get(r["object_id"]) for r in have if catalog.get(r["object_id"])]
                 system, user = build_prompts(sample, current, len(free), box["count"], box["theme"], box["module"],
                                              box["label"], anchor=anchor_name)
@@ -314,12 +352,16 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
             if free:
                 pool = available_pool(conn, catalog, cats, avoid)
                 rng = random.Random(box_id)
-                rng.shuffle(pool)
+                heavy = usage_weights(conn, pool, len(free))
+                if heavy is None:
+                    rng.shuffle(pool)
+                else:                                   # weighted random order: objects at weight 0 are left out, heavily borrowed ones come later
+                    pool = usage.weighted_sample(pool, heavy[0], rng=rng)
                 cur_cats = {catalog.get(r["object_id"]).category for r in have if catalog.get(r["object_id"])}
                 pool.sort(key=lambda it: 0 if it.category in cur_cats else 1)
                 picks = [(it, 1) for it in pool[:len(free)]]
                 service.claim(conn, box_id, [(pos, it, q, "fill") for pos, (it, q) in zip(free, picks)])
-                info.append(f"{len(picks)} món do hệ thống tự điền (mô hình trả về thiếu món hợp lệ)")
+                info.append(f"{len(picks)} món app điền thêm (AI chọn thiếu món dùng được)")
             left = box["count"] - len(service.box_items(conn, box_id))
             if left:
                 service.set_status(conn, box_id, "error", f"Còn {left} ô chưa điền được. " + "; ".join(info))

@@ -2,10 +2,11 @@
 transaction, so "check it is free, then take it" can never interleave with another user."""
 import datetime
 import json
+import math
 import re
 import time
 
-from . import images
+from . import images, usage
 from .catalog import Catalog, Item, display_name, pad_id
 from .db import IntegrityError, rev, tx
 
@@ -48,11 +49,12 @@ def when_of(text) -> float | None:
     return d.timestamp()
 
 
-def reuse_cutoff(conn, now: float | None = None) -> float | None:
+def reuse_cutoff(conn, now: float | None = None, switches: dict | None = None) -> float | None:
     """Boxes made before this moment no longer keep their objects (the "Dùng lại món của hộp cũ" switch: N days back from now).
-    None when the switch is off, so nothing is ever reused."""
+    None when the switch is off, so nothing is ever reused. `switches` is the result of automation.switches(conn) when the caller
+    already has it, so a request reads the switches once."""
     from . import automation
-    sw = automation.switches(conn)["reuse_old"]
+    sw = (switches if switches is not None else automation.switches(conn))["reuse_old"]
     if not sw["enabled"]:
         return None
     return (time.time() if now is None else now) - sw["config"]["days"] * 86400
@@ -158,7 +160,7 @@ def save_sm_boxes(conn, boxes: list, now: float, allow_empty: bool = False) -> d
 def get_box(conn, box_id: int) -> object:
     row = conn.execute("SELECT * FROM boxes WHERE id=?", (box_id,)).fetchone()
     if row is None:
-        raise NotFound(f"Hộp {box_id} không tồn tại (có thể đã bị huỷ).")
+        raise NotFound("Không thấy hộp này. Có thể nó đã tự mất vì quá lâu chưa duyệt.")
     return row
 
 
@@ -189,9 +191,12 @@ def state(conn, catalog: Catalog) -> dict:
     boxes = []
     pushed = {r["box_id"]: {"sm_box_id": r["sm_box_id"], "at": r["pushed_at"]}
               for r in conn.execute("SELECT * FROM sm_push")}
+    items_of: dict[int, list] = {}                      # every box's items in one query (not one query per box: the page asks often)
+    for it in conn.execute("SELECT * FROM box_items ORDER BY box_id, pos").fetchall():
+        items_of.setdefault(it["box_id"], []).append(it)
     for b in conn.execute("SELECT * FROM boxes ORDER BY module, label, id").fetchall():
         items = []
-        for it in box_items(conn, b["id"]):
+        for it in items_of.get(b["id"], []):
             c = cat.get(it["object_id"])
             items.append({
                 "pos": it["pos"], "id": it["object_id"], "qty": it["qty"],
@@ -206,7 +211,7 @@ def state(conn, catalog: Catalog) -> dict:
             "code": b["code"], "anchor": b["anchor"], "title": taskbox_title(b["code"] or b["module"], b["anchor"], b["label"]),
             "categories": json.loads(b["categories"]), "count": b["count"], "status": b["status"],
             "message": b["message"], "owner": b["owner"], "updated_at": b["updated_at"], "items": items,
-            "pushed": pushed.get(b["id"]),
+            "pushed": pushed.get(b["id"]), "day": b["day"],
         })
     in_boxes = conn.execute("SELECT COUNT(*) FROM box_items").fetchone()[0]
     cutoff = reuse_cutoff(conn)
@@ -272,8 +277,8 @@ def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool
             "total_qty": sum(c["quantity"] for c in contents), "contents": contents,
             "itemsDetail": [{"object_id": i["id"], "name": display_name(i["name"], i["vi"]), "floor": "",
                              "location": i["slot"], "quantity": i["qty"]} for i in b["items"]],
-            "builder": {"box_id": b["id"], "module": b["module"], "label": b["label"], "owner": b["owner"],
-                        "status": b["status"], "pushed": b["pushed"]},
+            "builder": {"box_id": b["id"], "module": b["module"], "label": b["label"],       # never the owner: this route needs no login and an ID is a login
+                        "status": b["status"], "pushed": b["pushed"], "day": b["day"]},
         })
     return out
 
@@ -282,14 +287,21 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
     """Approved boxes that are not in SM yet, split into READY and BLOCKED (with the reasons).
     Pure read: this only decides what the userscript is shown; it never touches SM."""
     st = state(conn, catalog)
-    pushed_titles = {b["title"] for b in st["boxes"] if b["pushed"]}
+    pushed_titles = {(b["title"], b["day"]) for b in st["boxes"] if b["pushed"]}       # a title is used once per day (a unit has the same B2 every day)
     ready, blocked, seen = [], [], set()
     cat = catalog.items()
     cutoff = reuse_cutoff(conn)
     held = sm_held(conn, cutoff)
     sheet = external_binding(conn, cutoff)
-    for tb in taskboxes(conn, catalog, ("approved",), pending_only=True, st=st):
+    pending = taskboxes(conn, catalog, ("approved",), pending_only=True, st=st)
+    newest_day: dict[str, str] = {}
+    for tb in pending:
+        newest_day[tb["title"]] = max(newest_day.get(tb["title"], ""), tb["builder"]["day"])
+    for tb in pending:
         reasons = []
+        if tb["builder"]["day"] < newest_day[tb["title"]]:
+            reasons.append("có hộp mới hơn cùng tên")                       # yesterday's box that was never pushed must not be created instead of today's
+                                                                            # (two boxes of the same day with one title are caught by the duplicate check below)
         for c in tb["contents"]:
             it = cat.get(c["object_id"])
             if it is None:
@@ -303,9 +315,9 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
                 reasons.append(f"{c['object_id']}: số lượng {c['quantity']} vượt mức cho phép (tối đa {min(max_qty, it.stock)})")
         if not tb["title"].strip():
             reasons.append("thiếu tiêu đề")
-        elif tb["title"] in pushed_titles or tb["title"] in seen:
+        elif (tb["title"], tb["builder"]["day"]) in pushed_titles or (tb["title"], tb["builder"]["day"]) in seen:
             reasons.append(f"tiêu đề \"{tb['title']}\" trùng với một hộp khác")
-        seen.add(tb["title"])
+        seen.add((tb["title"], tb["builder"]["day"]))
         if reasons:
             blocked.append({"box_id": tb["builder"]["box_id"], "title": tb["title"], "reasons": reasons})
         else:
@@ -337,13 +349,37 @@ def object_status(oid: str, held: dict, external: set, sm: dict | None = None) -
     return "free", ""
 
 
-def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status: str = "", sort: str = "id") -> tuple[list[dict], dict]:
+BAND_FILTERS = usage.BAND_KEYS + (usage.UNKNOWN_BAND,)          # the values the band filter of the object list takes
+
+
+def usage_cfg(conn, switches: dict | None = None) -> dict | None:
+    """The settings of the "Giảm món đã dùng nhiều" switch, or None when it is off (then no object is reduced or left out).
+    `switches` is the result of automation.switches(conn) when the caller already has it."""
+    from . import automation
+    sw = (switches if switches is not None else automation.switches(conn))["usage_penalty"]
+    return usage.clean_cfg(sw["config"]) if sw["enabled"] else None
+
+
+def day_text(epoch) -> str | None:
+    """'2026-11-10' (UTC) from epoch seconds, or None when unknown."""
+    return None if epoch is None else time.strftime("%Y-%m-%d", time.gmtime(epoch))
+
+
+def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status: str = "", sort: str = "id",
+                band: str = "") -> tuple[list[dict], dict]:
     """Every catalog object that matches the filters, in the requested order, plus a count per status
-    (the counts ignore the status filter so the filter chips can show all of them)."""
+    (the counts ignore the status filter so the filter chips can show all of them; they follow the band filter, like the search and the category).
+    band: '0-99', '100-249', '250-499', '500-999', '1000+' or 'unknown' (by borrow count); empty = all. sort 'uses' is most borrowed first, '-uses' least
+    borrowed first, unknown counts last in both."""
     from .catalog import fold
-    cutoff = reuse_cutoff(conn)
+    if band and band not in BAND_FILTERS:
+        raise Invalid("Nhóm số lượt mượn không hợp lệ. Chọn một trong: " + ", ".join(BAND_FILTERS) + ".")
+    from . import automation
+    sw = automation.switches(conn)                       # read once: the reuse switch and the borrow-count switch
+    cutoff = reuse_cutoff(conn, switches=sw)
     held, external = _holders(conn, cutoff)
     sm = sm_held(conn, cutoff)
+    cfg, now = usage_cfg(conn, sw), time.time()
     words = [w for w in fold(q).split() if w]
     rows, counts = [], {s: 0 for s in OBJECT_STATUSES}
     for it in catalog.items().values():
@@ -351,25 +387,57 @@ def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status:
             continue
         if words and not all(w in it.blob or w in it.id for w in words):
             continue
+        if band and usage.band_key(it.uses) != band:
+            continue
         st, holder = object_status(it.id, held, external, sm)
         counts[st] += 1
         if status and st != status:
             continue
+        w = usage.weight(it.uses, it.created, now, cfg) if cfg is not None and it.uses is not None else None
         rows.append({"id": it.id, "name": it.name, "vi": it.vi, "category": it.category or "(chưa phân loại)",
                      "slot": it.slot, "stock": it.stock, "status": st, "holder": holder,
-                     "img": it.img, "detail": images.detail_url(it.id)})
+                     "img": it.img, "detail": images.detail_url(it.id),
+                     "uses": it.uses, "created": day_text(it.created), "age_days": usage.age_days_int(it.created, now),
+                     "weight": None if w is None else round(w, 4)})
     keys = {"id": lambda r: r["id"], "name": lambda r: (r["vi"] or r["name"]).lower(), "category": lambda r: (r["category"], r["id"])}
     if sort in ("stock", "-stock"):
         rows.sort(key=lambda r: (r["stock"], r["id"]), reverse=sort == "-stock")
+    elif sort in ("uses", "-uses"):
+        known = sorted((r for r in rows if r["uses"] is not None), key=lambda r: (-r["uses"] if sort == "uses" else r["uses"], r["id"]))
+        rows = known + sorted((r for r in rows if r["uses"] is None), key=lambda r: r["id"])
     else:
         rows.sort(key=keys.get(sort, keys["id"]))
     return rows, counts
 
 
+def usage_report(conn, catalog: Catalog, now: float | None = None) -> dict:
+    """What the borrow counts do to the catalog right now (read only). With the switch off nothing is reduced or left out, so excluded and
+    reduced are 0 and the top list carries no weights; the counts and the bands are still shown."""
+    from . import automation
+    now = time.time() if now is None else now
+    all_switches = automation.switches(conn)                    # read once for the whole report
+    sw = all_switches["usage_penalty"]
+    shown = usage.clean_cfg(sw["config"])                       # the settings as saved, also while the switch is off
+    cfg = shown if sw["enabled"] else None
+    items = list(catalog.items().values())
+    st = usage.summary(items, now, shown)
+    if cfg is None:
+        st["excluded"] = st["reduced"] = 0
+    weights = usage.weights_of(items, now, cfg) if cfg is not None else None
+    taken = taken_ids(conn, reuse_cutoff(conn, switches=all_switches))
+    band_list, unknown = usage.bands(items)
+    return {"enabled": cfg is not None, "known": st["known"], "total": st["total"],
+            "soft_start": shown["soft_start"], "hard_limit": shown["hard_limit"], "half_life": shown["half_life"],
+            "age_effect": shown["age_effect"], "min_pool": shown["min_pool"],
+            "over_start": st["over_start"], "excluded": st["excluded"], "reduced": st["reduced"],
+            "bands": band_list, "unknown": unknown, "top": usage.top(items, 15, weights, now),
+            "free_over_start": sum(1 for it in items if it.uses is not None and it.uses >= shown["soft_start"] and it.id not in taken)}
+
+
 def objects_view(conn, catalog: Catalog, q: str = "", category: str = "", status: str = "", sort: str = "id",
-                 page: int = 1, per: int = 50) -> dict:
+                 page: int = 1, per: int = 50, band: str = "") -> dict:
     """The catalog with a status per object (free / in a draft / approved / pushed to SM / used in the workbook)."""
-    rows, counts = object_rows(conn, catalog, q, category, status, sort)
+    rows, counts = object_rows(conn, catalog, q, category, status, sort, band)
     per = max(1, min(200, per))
     page = max(1, page)
     total = len(rows)
@@ -411,31 +479,232 @@ def expire(conn, ttl_hours: int) -> int:
     with tx(conn):
         conn.execute(
             "UPDATE boxes SET status='error', message=?, updated_at=? WHERE status='generating' AND updated_at < ?",
-            ("Việc chọn đồ chưa hoàn tất (máy chủ vừa khởi động lại?). Bấm Chọn lại.", now, stale_gen))
+            ("Việc chọn đồ bị dừng giữa chừng. Bấm Chọn lại.", now, stale_gen))
         cur = conn.execute(
             "DELETE FROM boxes WHERE status IN ('draft','error') AND updated_at < ?", (stale_draft,))
         return cur.rowcount
 
 
+# ----------------------------------------------------------------------------- the life of a box, and the day of the person who makes them
+VN = datetime.timezone(datetime.timedelta(hours=7))              # the team works in Vietnam time, and a "day" is a Vietnam day
+
+
+def vn_now_text() -> str:
+    """The time on the printed paper: Vietnam time, whatever the clock of the server says (Render runs on UTC)."""
+    return datetime.datetime.now(VN).strftime("%d/%m/%Y %H:%M")
+
+
+def vn_day(ts: float) -> str:
+    return datetime.datetime.fromtimestamp(ts, VN).strftime("%Y-%m-%d")
+
+
+def _day_gap(later: str, earlier: str) -> int:
+    return (datetime.date.fromisoformat(later) - datetime.date.fromisoformat(earlier)).days
+
+
+def retire_done(conn, days: int, now: float | None = None) -> int:
+    """An approved box is finished `days` days after the day it was made (Vietnam days: made on the 11th, finished on the 13th for days=2). Its
+    objects become free again and it leaves the list; what stays is a line in box_history (so the page can still say what was done on recent
+    days). Nothing is done for drafts (they expire on their own) or when days is 0. Takes the write lock only when there is something to retire."""
+    if days <= 0:
+        return 0
+    now = time.time() if now is None else now
+    limit = datetime.datetime.fromtimestamp(now, VN).date() - datetime.timedelta(days=days)
+    boundary = datetime.datetime.combine(limit + datetime.timedelta(days=1), datetime.time(0), tzinfo=VN).timestamp()       # midnight after the last day that is finished
+    if conn.execute("SELECT 1 FROM boxes WHERE status='approved' AND created_at < ? LIMIT 1", (boundary,)).fetchone() is None:
+        return 0
+    n = 0
+    with tx(conn):
+        for b in conn.execute("SELECT * FROM boxes WHERE status='approved' AND created_at < ?", (boundary,)).fetchall():
+            items = [{"id": i["object_id"], "qty": i["qty"]} for i in box_items(conn, b["id"])]
+            sm = conn.execute("SELECT sm_box_id FROM sm_push WHERE box_id=?", (b["id"],)).fetchone()
+            conn.execute(
+                "INSERT INTO box_history(box_id, module, label, code, anchor, theme, count, owner, title, sm_box_id, created_at, done_at, day, items) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (box_id) DO NOTHING",
+                (b["id"], b["module"], b["label"], b["code"], b["anchor"], b["theme"], b["count"], b["owner"],
+                 taskbox_title(b["code"] or b["module"], b["anchor"], b["label"]), str(sm[0]) if sm else "", b["created_at"], now,
+                 vn_day(b["created_at"]), json.dumps(items)))
+            conn.execute("DELETE FROM boxes WHERE id=?", (b["id"],))         # frees the name for the next day and, by cascade, the objects and the push record
+            n += 1
+    return n
+
+
+HISTORY_DAYS = 30
+
+
+def prune_history(conn, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    old = now - HISTORY_DAYS * 86400
+    if conn.execute("SELECT 1 FROM box_history WHERE done_at < ? LIMIT 1", (old,)).fetchone():
+        conn.execute("DELETE FROM box_history WHERE done_at < ?", (old,))
+
+
+def housekeeping(conn, ttl_hours: int, done_days: int) -> None:
+    """What every page poll does first: abandoned drafts go, finished boxes are retired, old history is dropped. Cheap when there is nothing to do."""
+    expire(conn, ttl_hours)
+    retire_done(conn, done_days)
+    prune_history(conn)
+
+
+def kind_of(label: str, code: str = "") -> str:
+    """'Box B2' or 'M8-02 Box B2' -> 'B2'."""
+    return stage_of(label)
+
+
+def shown_kind(label: str, code: str) -> str:
+    """The kind as the person chose it ('Box B2'): the stored name has the section code in front."""
+    return label[len(code) + 1:] if code and label.startswith(code + " ") and len(label) > len(code) + 1 else label
+
+
+def recent_boxes(conn, module: str, code: str = "", days: int = 7, now: float | None = None, limit: int = 12) -> list[dict]:
+    """What was made lately for this module (and this section, when a code is given): the theme of each box, newest first, from live boxes and from
+    the history of finished ones. Boxes without a theme are left out: the point is to avoid doing the same scene again."""
+    now = time.time() if now is None else now
+    since = now - (days + 1) * 86400
+    m, c = module.strip().lower(), code.strip().lower()
+    today = vn_day(now)
+    rows = [("đang có", r) for r in conn.execute("SELECT module, label, code, theme, created_at FROM boxes WHERE created_at >= ?", (since,)).fetchall()]
+    rows += [("đã xong", r) for r in conn.execute("SELECT module, label, code, theme, created_at FROM box_history WHERE created_at >= ?", (since,)).fetchall()]
+    out = []
+    for state, r in sorted(rows, key=lambda x: -x[1]["created_at"]):
+        if r["module"].strip().lower() != m or (c and r["code"].strip().lower() != c) or not r["theme"].strip():
+            continue
+        d = vn_day(r["created_at"])
+        if _day_gap(today, d) > days:
+            continue
+        out.append({"day": d, "days_ago": _day_gap(today, d), "kind": shown_kind(r["label"], r["code"]), "code": r["code"], "theme": r["theme"].strip(), "state": state})
+        if len(out) >= limit:
+            break
+    return out
+
+
+SHIFTS = {"full": "Cả ngày", "first": "Nửa ca đầu", "second": "Nửa ca sau", "b1b2": "Chỉ làm B1 và B2", "off": "Nghỉ"}
+# the boxes a unit needs today, by how its collector works (docs/SC_PROCESS.md): kind, optional, a note
+NEEDS = {
+    "full": [("B2", False, ""), ("B3", False, ""), ("A1", False, "")],
+    "first": [("B2", True, "Có thể bỏ B2."), ("A1", False, "")],
+    "second": [("B3", False, "")],
+    "b1b2": [("B2", False, "Dùng B2 làm B3, không làm B3 mới."), ("A1", False, "")],
+    "off": [],
+}
+MAX_UNITS = 40
+
+
+def _clean_units(units) -> list[dict]:
+    out, seen = [], set()
+    for u in units or []:
+        code = str((u.get("code") if isinstance(u, dict) else getattr(u, "code", "")) or "").strip()
+        anchor = str((u.get("anchor") if isinstance(u, dict) else getattr(u, "anchor", "")) or "").strip()
+        shift = str((u.get("shift") if isinstance(u, dict) else getattr(u, "shift", "full")) or "full").strip()
+        if not code:
+            raise Invalid("Mỗi unit cần một mã, ví dụ M8-02.")
+        if len(code) > 20 or len(anchor) > 120:
+            raise Invalid(f"Unit {code[:20]}: mã hoặc tên đồ lớn dài quá.")
+        if has_markup(code) or has_markup(anchor):
+            raise Invalid("Một unit có mã hoặc đồ lớn với ký tự không dùng được.")
+        if shift not in SHIFTS:
+            raise Invalid(f"Unit {code}: ca làm không đúng. Chọn một trong: " + ", ".join(SHIFTS.values()) + ".")
+        if code.lower() in seen:
+            raise Invalid(f"Mã unit {code} bị lặp.")
+        seen.add(code.lower())
+        out.append({"code": code, "anchor": anchor, "shift": shift})
+    if len(out) > MAX_UNITS:
+        raise Invalid(f"Tối đa {MAX_UNITS} unit.")
+    return out
+
+
+def plan_save(conn, owner: str, day: str, module: str, units) -> None:
+    module = module.strip()
+    if len(module) > 20:
+        raise Invalid("Module dài quá.")
+    data = json.dumps({"module": module, "units": _clean_units(units)}, ensure_ascii=False)
+    now = time.time()
+    conn.execute("INSERT INTO plans(owner, day, data, updated_at) VALUES(?,?,?,?) ON CONFLICT (owner, day) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+                 (owner, day, data, now))
+    conn.execute("DELETE FROM plans WHERE day < ?", (vn_day(now - 45 * 86400),))
+
+
+def build_report(day: str, module: str, units: list[dict]) -> str:
+    """The end-of-day note about the units that did not work a full day, ready to copy and send. Empty when no unit is listed."""
+    if not units:
+        return ""
+    d = datetime.date.fromisoformat(day)
+    head = f"Báo cáo ngày {d.day:02d}/{d.month:02d}" + (f", module {module}" if module else "")
+    name = lambda u: u["code"] + (f" ({u['anchor']})" if u["anchor"] else "")
+    groups = [("Unit không đi làm", "off"), ("Unit làm nửa ca đầu", "first"), ("Unit làm nửa ca sau", "second"), ("Unit chỉ làm B1 và B2", "b1b2")]
+    lines = [f"{title}: " + ", ".join(name(u) for u in units if u["shift"] == key) + "." for title, key in groups if any(u["shift"] == key for u in units)]
+    return head + (":\n" + "\n".join(lines) if lines else ": tất cả unit đều đi làm cả ngày.")
+
+
+def plan_view(conn, owner: str, today: str) -> dict:
+    """Today's plan of this person. With none saved for today it starts from the last one (same units, everyone back to a full day), because the
+    module and its units stay the same for a week. For every unit: the boxes it needs by its shift, and whether each exists yet."""
+    row = conn.execute("SELECT data FROM plans WHERE owner=? AND day=?", (owner, today)).fetchone()
+    saved = row is not None
+    if row is None:
+        row = conn.execute("SELECT data FROM plans WHERE owner=? AND day < ? ORDER BY day DESC LIMIT 1", (owner, today)).fetchone()
+    data = json.loads(row[0]) if row else {"module": "", "units": []}
+    units = [{**u, "shift": "full" if not saved else u["shift"]} for u in data.get("units", [])]
+    midnight = datetime.datetime.combine(datetime.date.fromisoformat(today), datetime.time(0), tzinfo=VN).timestamp()
+    mine = conn.execute("SELECT id, label, code, status, created_at FROM boxes WHERE owner=? AND created_at >= ?", (owner, midnight)).fetchall()
+    out = []
+    for u in units:
+        needs = []
+        for kind, optional, note in NEEDS[u["shift"]]:
+            hit = next((b for b in mine if b["code"].strip().lower() == u["code"].lower() and stage_of(b["label"]).upper() == kind), None)
+            needs.append({"kind": kind, "optional": optional, "note": note, "state": hit["status"] if hit else "none", "box_id": hit["id"] if hit else None})
+        out.append({**u, "shift_text": SHIFTS[u["shift"]], "needs": needs})
+    # no report until the day's attendance is saved: from yesterday's units it would say "everyone worked a full day" to the manager
+    return {"day": today, "module": data.get("module", ""), "saved": saved, "units": out, "report": build_report(today, data.get("module", ""), units) if saved else "",
+            "shifts": [{"key": k, "text": v} for k, v in SHIFTS.items()], "to_return": to_return(conn, owner, today)}
+
+
+def to_return(conn, owner: str, today: str) -> list[dict]:
+    """The boxes of yesterday and the day before: the ones to hand back in SM at the start of the day (the app only reminds, it never touches SM)."""
+    out = []
+    for b in conn.execute("SELECT module, label, code, anchor, created_at FROM boxes WHERE owner=? AND status='approved'", (owner,)).fetchall():
+        out.append((b["created_at"], b["module"], b["label"], b["code"], taskbox_title(b["code"] or b["module"], b["anchor"], b["label"])))
+    for b in conn.execute("SELECT module, label, code, title, created_at FROM box_history WHERE owner=?", (owner,)).fetchall():
+        out.append((b["created_at"], b["module"], b["label"], b["code"], b["title"]))
+    rows = []
+    for created, module, label, code, title in sorted(out, reverse=True):
+        gap = _day_gap(today, vn_day(created))
+        if gap in (1, 2):
+            rows.append({"day": vn_day(created), "days_ago": gap, "module": module, "kind": shown_kind(label, code), "title": title})
+    return rows
+
+
 # ----------------------------------------------------------------------------- boxes
+# Text a person types ends up in the team script's table on the SM page, which writes it as HTML. Characters that can start markup are refused here,
+# because the script is not part of this repo and the server is the one place that can close this.
+_MARKUP = re.compile("[<>\"'`\x00-\x1f\x7f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+MARKUP_TEXT = "Tên, mã hoặc đồ lớn có ký tự không dùng được: < > \" ' `. Bỏ chúng rồi làm lại."
+
+
+def has_markup(text: str) -> bool:
+    return bool(_MARKUP.search(text or ""))
+
+
 def create_box(conn, module: str, label: str, theme: str, categories: list[str], count: int, owner: str,
                code: str = "", anchor: str = "") -> int:
     module, label = module.strip(), label.strip()
     if not module or not label:
         raise Invalid("Cần nhập Module và tên hộp (ví dụ M8 và Box A1).")
     if not 1 <= count <= 60:
-        raise Invalid("Số đồ trong hộp phải từ 1 đến 60.")
+        raise Invalid("Số món trong hộp phải từ 1 đến 60.")
+    if any(has_markup(x) for x in (module, label, code, anchor)):
+        raise Invalid(MARKUP_TEXT)
     now = time.time()
     try:
         with tx(conn):
             cur = conn.execute(
-                "INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,owner,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,'generating',?,?,?) RETURNING id",
+                "INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,owner,created_at,updated_at,day) "
+                "VALUES(?,?,?,?,?,?,?,'generating',?,?,?,?) RETURNING id",
                 (module, label, theme.strip(), json.dumps(categories), code.strip(), anchor.strip(), count,
-                 owner.strip(), now, now))
+                 owner.strip(), now, now, vn_day(now)))
             return cur.fetchone()[0]
     except IntegrityError:
-        raise Conflict(f"{module} / {label} đã tồn tại. Hãy mở hộp đó bên dưới hoặc đặt tên khác.")
+        raise Conflict(f"{module} / {label} đã có. Mở hộp đó bên dưới hoặc đặt tên khác.")
 
 
 def set_status(conn, box_id: int, status: str, message: str = "") -> None:
@@ -447,8 +716,7 @@ def set_status(conn, box_id: int, status: str, message: str = "") -> None:
 def _not_pushed(conn, box_id: int) -> None:
     r = conn.execute("SELECT sm_box_id FROM sm_push WHERE box_id=?", (box_id,)).fetchone()
     if r:
-        raise Conflict(f"Hộp này đã được đẩy lên SM (Box ID {r['sm_box_id']}). Hãy sửa trong SM, "
-                       "hoặc nhờ quản trị viên gỡ dấu \"đã đẩy\" nếu thật sự cần làm lại.")
+        raise Conflict("Hộp đã lên SM nên không sửa hay xoá được ở đây. Cần đổi thì báo admin.")
 
 
 def delete_box(conn, box_id: int) -> None:
@@ -465,7 +733,7 @@ def mark_pushed(conn, box_id: int, sm_box_id: str) -> None:
     with tx(conn):
         b = get_box(conn, box_id)
         if b["status"] != "approved":
-            raise Conflict("Chỉ hộp đã duyệt mới được đánh dấu là đã đẩy lên SM.")
+            raise Conflict("Chỉ hộp đã duyệt mới được đánh dấu là đã lên SM.")
         conn.execute("DELETE FROM sm_push WHERE box_id=?", (box_id,))
         conn.execute("INSERT INTO sm_push(box_id, sm_box_id, pushed_at) VALUES(?,?,?)", (box_id, sm_box_id, time.time()))
 
@@ -483,7 +751,7 @@ def approve(conn, box_id: int) -> None:
             raise Conflict("Hộp này vẫn đang được chọn đồ.")
         n = conn.execute("SELECT COUNT(*) FROM box_items WHERE box_id=?", (box_id,)).fetchone()[0]
         if n != b["count"]:
-            raise Invalid(f"Hộp mới có {n}/{b['count']} món. Hãy điền đủ trước khi duyệt.")
+            raise Invalid(f"Hộp mới có {n}/{b['count']} món. Điền đủ món trước khi duyệt.")
         conn.execute("UPDATE boxes SET status='approved', message='', updated_at=? WHERE id=?", (time.time(), box_id))
 
 
@@ -497,7 +765,7 @@ def reopen(conn, box_id: int) -> None:
 def _editable(conn, box_id: int) -> object:
     b = get_box(conn, box_id)
     if b["status"] == "approved":
-        raise Conflict("Hộp này đã duyệt. Bấm Mở lại nếu cần sửa.")
+        raise Conflict("Hộp này đã duyệt nên chưa sửa được. Bấm Bỏ duyệt nếu cần sửa lại.")
     if b["status"] == "generating":
         raise Conflict("Hộp này vẫn đang được chọn đồ.")
     return b
@@ -587,7 +855,7 @@ def add_item(conn, box_id: int, object_id: str, qty: int, catalog: Catalog, max_
     oid = pad_id(object_id)
     item = catalog.get(oid) if oid else None
     if item is None:
-        raise Invalid(f"'{object_id}' không phải là đồ có thể dùng trong kho.")
+        raise Invalid(f"Không thấy món {object_id} trong kho.")
     with tx(conn):
         b = _editable(conn, box_id)
         taken_by = owner_of(conn, item.id)
@@ -627,7 +895,7 @@ def create_batch(conn, specs: list[dict], default_count: int, owner: str) -> lis
     if len(specs) > 12:
         raise Invalid("Mỗi lần chỉ tạo tối đa 12 hộp.")
     problems, names = [], set()
-    existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes")}
+    existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes WHERE day=?", (vn_day(time.time()),))}
     for i, sp in enumerate(specs, 1):
         module, label = str(sp.get("module", "")).strip(), str(sp.get("label", "")).strip()
         count = sp.get("count") or default_count
@@ -636,7 +904,7 @@ def create_batch(conn, specs: list[dict], default_count: int, owner: str) -> lis
         elif (module, label) in names:
             problems.append(f"Hộp {i}: {module} / {label} bị trùng trong danh sách.")
         elif (module, label) in existing:
-            problems.append(f"Hộp {i}: {module} / {label} đã tồn tại.")
+            problems.append(f"Hộp {i}: {module} / {label} đã có.")
         if not isinstance(count, int) or not 1 <= count <= 60:
             problems.append(f"Hộp {i}: số món phải từ 1 đến 60.")
         names.add((module, label))
@@ -782,7 +1050,7 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
         holders.setdefault(oid, "danh sách đã dùng trong bảng tính")
     for oid, h in sm_held(conn).items():
         holders.setdefault(oid, f"hộp SM {h['title'] or h['sm_box_id']}")
-    existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes")}
+    existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes WHERE day=?", (vn_day(time.time()),))}
     taken_now: set[str] = set()                                       # objects this file has already given to a box
     out = []
     for raw in boxes:
@@ -800,6 +1068,9 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
             continue
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 60:
             entry["reason"] = "số món phải từ 1 đến 60"
+            continue
+        if any(has_markup(_text(raw.get(k), 120)) for k in ("module", "label", "code", "anchor")):
+            entry["reason"] = "tên, mã hoặc đồ lớn có ký tự không dùng được"
             continue
         raw_items = raw.get("items") if isinstance(raw.get("items"), list) else []
         entry["items_total"] = len(raw_items)
@@ -850,10 +1121,10 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
         try:
             with tx(conn):
                 cur = conn.execute(
-                    "INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,message,owner,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                    "INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,message,owner,created_at,updated_at,day) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                     (module, label, _text(raw.get("theme"), 300), json.dumps(cats), _text(raw.get("code"), 40), _text(raw.get("anchor"), 120),
-                     count, status, note if status == "draft" else "", _text(raw.get("owner"), 40), now, now))
+                     count, status, note if status == "draft" else "", _text(raw.get("owner"), 40), now, now, vn_day(now)))
                 bid = cur.fetchone()[0]
                 conn.executemany("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,?,?)",
                                  [(bid, pos, oid, q, locked, src) for pos, oid, q, locked, src in rows])
@@ -1059,10 +1330,66 @@ def import_boxes_csv(conn, text: str, catalog: Catalog, max_qty: int, size_for, 
     report["csv"] = {"rows": rows, "bad_rows": bad[:200], "bad_total": len(bad)}
     return report
 
-def sm_report(conn, catalog: Catalog) -> dict:
+AGE_EDGES = (7, 14, 30, 60, 90)         # days: the limits of the age bands, and the day counts the "what if" table offers
+
+
+def sm_ages(conn, catalog: Catalog, now: float | None = None) -> dict:
+    """How old the SM boxes that hold objects are, and what each choice of days for the reuse switch would do, so the number can be
+    picked with the figures in sight. Boxes this app made in SM are left out (they hold nothing through SM) and so are boxes with no
+    object. A box whose date cannot be read is counted apart and never counts as old.
+
+    `bands` splits the boxes by age (older than `from` days, up to `to` days; `to` None = no upper limit). `options` has one row per
+    day count: how many boxes would stop holding (older than that many days), how many objects would be free in total, and how many
+    more than with the switch off. The rule is the same one taken_ids() applies: an object stays taken when this app's own box holds it,
+    when the sheet list holds it with no day or a day inside the limit, or when any SM box holding it is recent or has no readable date."""
+    from . import automation
+    now = time.time() if now is None else now
+    sw = automation.switches(conn)["reuse_old"]
+    ours = {str(r[0]) for r in conn.execute("SELECT sm_box_id FROM sm_push")}
+    dates: dict[str, float | None] = {}                       # each distinct date text is parsed once, not once per object row
+    box_when: dict[str, float | None] = {}
+    newest: dict[str, float] = {}                             # object id -> the newest box holding it (inf when a holder has no readable date)
+    for r in conn.execute("SELECT i.object_id, b.sm_box_id, b.created_at FROM sm_box_items i JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id"):
+        if r["sm_box_id"] in ours:
+            continue
+        if r["created_at"] not in dates:
+            dates[r["created_at"]] = when_of(r["created_at"])
+        when = dates[r["created_at"]]
+        box_when[r["sm_box_id"]] = when
+        newest[r["object_id"]] = max(newest.get(r["object_id"], -math.inf), math.inf if when is None else when)
+    app_taken = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
+    sheet = {r[0]: r[1] for r in conn.execute("SELECT object_id, added_at FROM external_used")}
+    usable = set(catalog.items())
+    free_off = len(usable - (app_taken | set(sheet) | set(newest)))               # switch off: everything ever used stays held
+
+    counts = [0] * (len(AGE_EDGES) + 1)
+    for when in box_when.values():
+        if when is None:
+            continue
+        i = 0
+        while i < len(AGE_EDGES) and when < now - AGE_EDGES[i] * 86400:             # older than this edge: look at the next band
+            i += 1
+        counts[i] += 1
+    bands = [{"from": AGE_EDGES[i - 1] if i else 0, "to": AGE_EDGES[i] if i < len(AGE_EDGES) else None, "boxes": counts[i]}
+             for i in range(len(counts))]
+
+    options = []
+    for days in sorted({*AGE_EDGES, sw["config"]["days"]}):
+        cutoff = now - days * 86400
+        taken = app_taken | {o for o, added in sheet.items() if added <= 0 or added >= cutoff} | {o for o, w in newest.items() if w >= cutoff}
+        free = len(usable - taken)
+        options.append({"days": days, "current": sw["enabled"] and days == sw["config"]["days"],
+                        "old_boxes": sum(1 for w in box_when.values() if w is not None and w < cutoff),
+                        "free_objects": free, "extra_free": free - free_off})
+    return {"boxes": len(box_when), "undated": sum(1 for w in box_when.values() if w is None), "bands": bands, "options": options,
+            "free_without_reuse": free_off}
+
+
+def sm_report(conn, catalog: Catalog, ages: bool = False) -> dict:
     """What the last read of SM says, for the people who plan boxes: how many boxes and objects SM holds, this app's own unpushed
     boxes that contain an object an SM box holds (conflicts), and objects that two or more SM boxes hold at once (doubles).
-    With the reuse switch on, boxes made before the cutoff hold nothing; `reuse` says how many boxes and objects that frees."""
+    With the reuse switch on, boxes made before the cutoff hold nothing; `reuse` says how many boxes and objects that frees.
+    `ages` adds the age bands and the "what if" table (sm_ages); it costs a few more queries, so only the page that shows it asks."""
     info = sm_boxes_info(conn)
     cutoff = reuse_cutoff(conn)
     held = sm_held(conn, cutoff)
@@ -1098,5 +1425,8 @@ def sm_report(conn, catalog: Catalog) -> dict:
     sw = automation.switches(conn)["reuse_old"]
     reuse = {"on": cutoff is not None, "days": sw["config"]["days"], "old_boxes": len(old_boxes), "undated_boxes": len(undated),
              "freed_objects": len({o for o in old_objects if o in cat} - taken_ids(conn, cutoff))}      # only objects nothing else still holds
-    return {"synced_at": info["synced_at"] if info else None, "boxes": info["active"] if info else 0, "objects_held": len(held),
-            "doubles": doubles[:200], "conflicts": conflicts, "reuse": reuse}
+    out = {"synced_at": info["synced_at"] if info else None, "boxes": info["active"] if info else 0, "objects_held": len(held),
+           "doubles": doubles[:200], "conflicts": conflicts, "reuse": reuse}
+    if ages:
+        out["ages"] = sm_ages(conn, catalog)
+    return out

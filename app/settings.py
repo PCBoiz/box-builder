@@ -36,12 +36,14 @@ class Settings:
     max_qty: int = 3                  # hard cap on quantity per object
     draft_ttl_hours: int = 12         # abandoned drafts release their objects after this long
     max_parallel_llm: int = 1         # boxes picking at once; 1 = no wasted LLM calls on clashing picks
-    access_code: str = ""             # optional shared passcode for the whole app
     sectors: str = "Hanoi-GPI"        # only objects from these SM sectors are ever used (comma list; empty = all)
     sync_token: str = ""              # secret the userscript sends to push the live SM catalog (empty = sync disabled)
     sm_push_mode: str = "off"         # off | mock. 'mock' pushes ready boxes to a fake SM held in memory. There is no real mode.
     image_hosts: str = ""             # hosts an object picture may come from (comma list; empty = the default host set in images.py)
     image_ttl_minutes: int = 55       # how long a signed SM picture link is trusted when the link does not say (SM's last about an hour)
+    admin_ids: str = ""               # company IDs of the admins (comma list). Empty = login is OFF and the app stays open as before
+    box_done_days: int = 2            # an approved box is finished this many days after the day it was made (Vietnam days); 0 = never
+    admin_code: str = ""              # optional second secret an admin types with the ID (empty = ID only)
 
     @property
     def sector_list(self) -> tuple[str, ...]:
@@ -61,10 +63,12 @@ class Settings:
             max_qty=_int("MAX_QTY", cls.max_qty),
             draft_ttl_hours=_int("DRAFT_TTL_HOURS", cls.draft_ttl_hours),
             max_parallel_llm=_int("MAX_PARALLEL_LLM", cls.max_parallel_llm),
-            access_code=os.getenv("ACCESS_CODE", ""),
             sync_token=os.getenv("SYNC_TOKEN", ""),
             sectors=os.getenv("SECTORS", cls.sectors),
             sm_push_mode="mock" if os.getenv("SM_PUSH_MODE", "").strip().lower() == "mock" else "off",
             image_hosts=os.getenv("IMAGE_HOSTS", ""),
             image_ttl_minutes=min(1440, max(1, _int("IMAGE_TTL_MINUTES", cls.image_ttl_minutes))),
+            admin_ids=os.getenv("ADMIN_IDS", ""),
+            box_done_days=min(30, max(0, _int("BOX_DONE_DAYS", cls.box_done_days))),
+            admin_code=os.getenv("ADMIN_CODE", "").strip(),
         )

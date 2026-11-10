@@ -233,8 +233,9 @@ def test_an_older_database_gets_the_date_column_and_its_rows_stay_held(env):
 def box_with(s, oids, label="Box X", module="M7", status="draft"):
     """A box of this app holding exactly these objects (put in directly, so the test decides which)."""
     c, now = conn_of(s), time.time()
-    bid = c.execute("INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,message,owner,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id", (module, label, "", "[]", "", "", len(oids), status, "", "", now, now)).fetchone()[0]
+    bid = c.execute("INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,message,owner,created_at,updated_at,day) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id", (module, label, "", "[]", "", "", len(oids), status, "", "", now, now,
+                                                                       service.vn_day(now))).fetchone()[0]
     for n, oid in enumerate(oids, 1):
         c.execute("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,0,'manual')", (bid, n, oid, 1))
     return bid
@@ -373,7 +374,7 @@ def test_a_box_made_under_the_rule_is_flagged_when_the_rule_gets_stricter(env):
     blocked = service.sm_queue(conn_of(s), cat, 3)["blocked"]
     assert len(blocked) == 1 and any("hộp SM Old SM box" in r for r in blocked[0]["reasons"]) and any("bảng tính" in r for r in blocked[0]["reasons"])
     alerts = client.get("/api/automations").json()["alerts"]
-    assert any("danh sách đã dùng ở bảng tính" in a["msg"] for a in alerts)
+    assert any("trong SM hoặc bảng tính" in a["msg"] for a in alerts)
 
 
 def test_the_switch_is_read_once_per_request_not_once_per_helper(env, monkeypatch):

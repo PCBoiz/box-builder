@@ -8,7 +8,7 @@ from app import picker
 from app.main import create_app
 from app.printview import sort_key_for_slot
 from tests.test_automation import make_client
-from tests.test_backend import _approved_box, env, wait_settled  # noqa: F401  (env is a fixture)
+from tests.test_backend import _approved_box, conn_of, env, wait_settled  # noqa: F401  (env is a fixture)
 
 
 class Cells(html.parser.HTMLParser):
@@ -73,23 +73,18 @@ def test_names_from_people_and_the_anchor_are_escaped_and_ids_are_looked_up(env)
     client, s, cat = make_client(env)
     first = sorted(cat.items())[0]
     evil = '<img src=x onerror=alert(1)>'
-    bid = client.post("/api/boxes", json={"module": "M8", "label": evil[:40], "theme": "t", "count": 3, "anchor": first}).json()["id"]
+    bid = client.post("/api/boxes", json={"module": "M8", "label": "Box B2", "theme": "t", "count": 3, "anchor": first}).json()["id"]
     wait_settled(client, bid)
+    assert client.post("/api/boxes", json={"module": "M8", "label": evil[:40], "theme": "t", "count": 3}).status_code == 422      # refused at the door now
+    conn_of(s).execute("UPDATE boxes SET label=? WHERE id=?", (evil[:40], bid))                                                    # the paper still escapes what is already stored
     client.post(f"/api/boxes/{bid}/approve")
     page = client.get("/print/boxes").text
     assert "<img src=x" not in page and "&lt;img src=x" in page                              # the box name is text, never markup
     assert cat.items()[first].name in page                                                  # an anchor given as an ID prints as its name
-    free = client.post("/api/boxes", json={"module": "M9", "label": "Box B1", "theme": "t", "count": 3, "anchor": "<b>Tủ lạnh</b>"}).json()["id"]
+    free = client.post("/api/boxes", json={"module": "M9", "label": "Box B1", "theme": "t", "count": 3, "anchor": "Tủ lạnh"}).json()["id"]
     wait_settled(client, free)
+    conn_of(s).execute("UPDATE boxes SET anchor=? WHERE id=?", ("<b>Tủ lạnh</b>", free))
     client.post(f"/api/boxes/{free}/approve")
     page = client.get("/print/boxes").text
     assert "<b>Tủ lạnh</b>" not in page and "&lt;b&gt;Tủ lạnh&lt;/b&gt;" in page
 
-
-def test_the_page_follows_the_access_code(env):
-    s, cat = env
-    s.access_code = "ma-123"
-    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    assert client.get("/print/boxes").status_code == 401
-    assert client.get("/print/boxes", headers={"X-Access-Code": "ma-123"}).status_code == 200
-    assert client.get("/print/boxes?access_code=ma-123").status_code == 200                 # the header link carries the code

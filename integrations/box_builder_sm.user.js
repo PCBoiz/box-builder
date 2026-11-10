@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Box builder: đồng bộ kho với SM
 // @namespace    box-builder
-// @version      0.2.0
-// @description  Đọc kho đồ và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Chỉ tạo hộp mới trong SM sau khi bạn bấm xác nhận. Không sửa hay xoá gì.
+// @version      0.3.0
+// @description  Đọc kho đồ (kèm số lần dùng và ngày tạo) và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Chỉ tạo hộp mới trong SM sau khi bạn bấm xác nhận. Không sửa hay xoá gì.
 // @match        https://sm.config.inc/*
+// @match        https://sm.config.inc/object*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -18,13 +19,15 @@
    requests only, and posts a compact copy to Box builder (the address and sync code are typed once into the panel and kept in
    the browser's own storage). The one thing it ever writes to SM is a new box (POST /api/boxes, same site as the page you are
    on), and only after you press the confirm button in the panel. It never moves, hands over, assigns, borrows, edits or deletes
-   anything in SM, and it never sends the sync code to SM. The app's own checks decide what is kept. */
+   anything in SM, and it never sends the sync code to SM. The app's own checks decide what is kept.
+   Since 0.3.0 each object row also carries `uses` (the lifetime use count SM shows on its object page) and `created` (the date SM
+   gives for the object). Both come from the same GET /api/objects pages, only as a number and a date string, never a person. */
 (function () {
   "use strict";
   if (window.__bbSm) return;
   window.__bbSm = true;
 
-  const VERSION = "0.2.0";
+  const VERSION = "0.3.0";
   const DEFAULT_APP = "";               // the app fills this in when it serves the script, so nobody has to type the address
   const PAGE_CAP = 200;                 // never read more than this many pages of 30 from SM
   const APP_TIMEOUT = 90000;            // a sleeping free server can take about a minute to answer the first call
@@ -92,6 +95,59 @@
     const r = (Number(o.loan_reserved) || 0) + (Number(o.transfer_reserved) || 0);   // numbers only; anything else counts as 0
     return Math.max(0, q - r);
   }
+
+  /* Lifetime use (SM's object page shows it as "LIFETIME USE: 1587 borrows at least, 1611 items total"). SM's JSON field is
+     `_usage_count`, but its shape is not verified: it may be a number, a numeric string, or an object (boxes carry `borrows`,
+     `borrow_units`, `borrows_undercounted`). Only a whole number leaves this function; anything else is null, never 0. */
+  const USE_KEYS = ["borrows", "borrow_count", "count", "total", "uses", "used", "value"];
+  function wholeNumber(v) {
+    let n = null;
+    if (typeof v === "number") n = v;
+    else if (typeof v === "string" && /^\s*\d+(\.\d+)?\s*$/.test(v)) n = Number(v);
+    return n !== null && Number.isFinite(n) && n >= 0 && n <= Number.MAX_SAFE_INTEGER ? Math.round(n) : null;
+  }
+  function usesOf(o) {
+    const u = o._usage_count;
+    const direct = wholeNumber(u);
+    if (direct !== null) return direct;
+    if (u && typeof u === "object" && !Array.isArray(u)) {
+      for (const k of USE_KEYS) { const n = wholeNumber(u[k]); if (n !== null) return n; }     // the named keys first, in this order
+      for (const k of Object.keys(u)) { const n = wholeNumber(u[k]); if (n !== null) return n; }   // then the first number there is
+    }
+    return null;
+  }
+  /* The creation date: a text with a digit in it goes as SM wrote it. A number of seconds or milliseconds since 1970 (as a number, or as a
+     text of only digits) goes as an ISO text, so the app reads it the same way as any other date. Anything else is null. */
+  const CREATED_KEYS = ["created_at", "createdAt", "created", "date_created", "first_seen"];
+  function epochText(v) {
+    const ms = v >= 1e9 && v < 4.2e9 ? v * 1000 : (v >= 1e12 && v < 4.2e12 ? v : null);   // seconds, or milliseconds; the years 2001 to 2100
+    return ms === null ? null : new Date(ms).toISOString();
+  }
+  function createdOf(o) {
+    for (const k of CREATED_KEYS) {
+      const v = o[k];
+      if (typeof v === "string") {
+        const t = v.trim();
+        const when = /^\d{9,13}$/.test(t) ? epochText(Number(t)) : (t && t.length <= 40 && /\d/.test(t) ? t : null);
+        if (when !== null) return when;
+      } else if (typeof v === "number" && Number.isFinite(v)) {
+        const when = epochText(v);
+        if (when !== null) return when;
+      }
+    }
+    return null;
+  }
+  /* What SM sent for `_usage_count`, as kinds and key names only (never a value), so the log can show it without showing anything personal. */
+  const kindOf = (v) => (v === null ? "trống" : Array.isArray(v) ? "danh sách" : typeof v === "number" ? "số" : typeof v === "string" ? "chuỗi" : typeof v === "boolean" ? "đúng hoặc sai" : "nhóm");
+  function shapeOf(v) {
+    if (v === undefined) return "không có trường _usage_count";
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const keys = Object.keys(v);
+      return `nhóm có ${keys.length ? keys.slice(0, 8).map((k) => `${k.slice(0, 30)} (${kindOf(v[k])})`).join(", ") : "0 khoá"}`;
+    }
+    return kindOf(v);
+  }
+
   function compact(o) {
     const idDigits = digits(o.id);
     const id = idDigits.length >= 1 && idDigits.length <= 6 ? o.id : (o.iid != null ? o.iid : o.id);   // SM ids look like O004719
@@ -99,7 +155,22 @@
       id: String(id == null ? "" : id), name: String(o.name || ""), vi: pickVi(o), type: String(o.type || ""),
       status: String(o.status || ""), avail: availOf(o), qty: o.quantity == null ? null : o.quantity,
       loc: String(o.location || o.root_slot || ""), sector: String(o.sector || ""), image_url: String(o.image_url || ""),
+      uses: usesOf(o), created: createdOf(o),
     };
+  }
+  function sayUsage(say, rows, sample) {       // after a sync: what could be read, said plainly, and never a 0 for "unknown"
+    const total = rows.length, used = rows.filter((r) => r.uses !== null), dated = rows.filter((r) => r.created !== null).length;
+    if (used.length) {
+      const top = used.reduce((m, r) => Math.max(m, r.uses), 0);
+      say(used.length === total
+        ? `Số lần dùng: đọc được ở cả ${total} món và đã gửi kèm (nhiều nhất ${top} lần).`
+        : `Số lần dùng: đọc được ở ${used.length} trên ${total} món và đã gửi kèm (nhiều nhất ${top} lần). ${total - used.length} món còn lại để trống, không ghi là 0.`, "ok");
+    } else {
+      say(`Số lần dùng: SM không gửi số nào đọc được cho ${total} món, nên Box builder chưa có số này. Kho vẫn đồng bộ bình thường.`, "warn");
+      say(`Dạng SM gửi: ${shapeOf(sample)}. Bạn chép hai dòng này gửi cho người phát triển để chỉnh script đọc đúng.`, "warn");
+    }
+    if (!dated) say("Ngày tạo: SM không gửi ngày tạo nào đọc được nên để trống. Gửi một mẫu món cho người phát triển nếu bạn cần ngày này.", "warn");
+    else say(dated === total ? `Ngày tạo: đọc được ở cả ${total} món.` : `Ngày tạo: đọc được ở ${dated} trên ${total} món, ${total - dated} món còn lại để trống.`, "ok");
   }
 
   /* ------------------------------------------------------------------ talking to Box builder (Tampermonkey's request, not fetch) */
@@ -331,13 +402,16 @@
     const sectors = String(store.get("bb_sectors", "Hanoi-GPI") || "").split(",").map((x) => x.trim()).filter(Boolean);
     say("Đang đọc kho từ SM…");
     const rows = [];
-    let page = 1, pages = 1;
+    let page = 1, pages = 1, sample;             // sample: the first raw `_usage_count` SM sent, kept only to show its shape if none can be read
     do {
       const d = await smJson(`/api/objects?page=${page}`);
       pages = Math.min(PAGE_CAP, Number(d.total_pages) || 1);
       for (const o of listOf(d)) {
         const row = compact(o);
-        if (!sectors.length || sectors.includes(row.sector)) rows.push(row);
+        if (!sectors.length || sectors.includes(row.sector)) {
+          rows.push(row);
+          if (sample === undefined && o._usage_count != null) sample = o._usage_count;
+        }
       }
       say(`Đã đọc trang ${page}/${pages} (${rows.length} món thuộc khu ${sectors.join(", ") || "tất cả"}).`, "progress");
       page += 1;
@@ -353,6 +427,7 @@
       const sk = r.json.skipped || {};
       say(`Xong. Box builder có ${r.json.usable} món dùng được trong ${r.json.received} món nhận về.`, "ok");
       say(`Bỏ qua: thiếu tên tiếng Việt ${sk.no_vietnamese_name || 0}, hết hàng ${sk.out_of_stock || 0}, không hoạt động ${sk.inactive || 0}, khác loại ${sk.other_type || 0}.`, "progress");
+      sayUsage(say, rows, sample);
       const gone = r.json.claimed_now_unavailable || [];
       if (gone.length) say(`Chú ý: ${gone.length} món đang nằm trong hộp nhưng SM không còn liệt kê: ${gone.slice(0, 6).join(", ")}.`, "warn");
       store.set("bb_last", new Date().toLocaleString("vi-VN"));

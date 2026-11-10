@@ -1,0 +1,11 @@
+/* Login page only. The rest comes from app.css. Nothing under 16 px, every control at least 48 px high. */
+.login { max-width: 420px; margin: 0 auto; padding: 48px 16px 64px; display: grid; gap: 20px; }
+.login h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.login .panel h2 { font-size: 18px; }
+.login .hint, .login .err, .login .field > label, .login .admin-code summary { font-size: 16px; }
+.login input:not([type="checkbox"]) { width: 100%; padding: 12px 12px; font-size: 18px; border: 1px solid var(--line); border-radius: 8px; background: #fff; min-height: 48px; }
+.login .btn.wide { min-height: 48px; font-size: 16px; }
+.login .admin-code summary { cursor: pointer; padding: 8px 0; min-height: 48px; display: flex; align-items: center; }
+.login .admin-code[open] .field { margin-top: 4px; }
+.login a { color: inherit; text-underline-offset: 3px; }
+.login #login-off a { display: inline-flex; align-items: center; min-height: 48px; }

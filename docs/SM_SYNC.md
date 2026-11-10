@@ -1,9 +1,14 @@
 # Đồng bộ kho từ SM sang Box builder
 
-Công cụ này là một script Tampermonkey chạy trong chính tab SM của bạn. Từ bản 0.2.0 nó làm ba việc: đọc kho đồ từ SM, đọc danh sách hộp
-trong SM, và tạo hộp mới trong SM cho các hộp đã duyệt trong Box builder. Hai việc đầu **chỉ đọc**. Việc thứ ba chỉ chạy sau khi bạn
-bấm nút **Xác nhận tạo**.
+Công cụ này là một script Tampermonkey chạy trong chính tab SM của bạn. Từ bản 0.3.0 nó làm ba việc: đọc kho đồ từ SM (kèm số lượt mượn và
+ngày tạo của từng món), đọc danh sách hộp trong SM, và tạo hộp mới trong SM cho các hộp đã duyệt trong Box builder. Hai việc đầu **chỉ đọc**.
+Việc thứ ba chỉ chạy sau khi bạn bấm nút **Xác nhận tạo**. Script chạy ở mọi trang `sm.config.inc/boxes` và `sm.config.inc/object`.
 Script không bao giờ chuyển trạng thái, giao, mượn, sửa hay xoá hộp trong SM, và máy chủ Box builder không bao giờ kết nối tới SM.
+
+**Script của nhóm (v2.23.0, "Sondeptraidatimthayban") là một công cụ khác.** Nó cũng đọc hộp đã duyệt từ Box builder và gửi kho lên Box builder,
+nhưng ngoài việc tạo hộp nó còn gán người nhận và cập nhật hộp trong SM. Hai script không cần cùng chạy: nếu bật cả hai, nút của chúng chồng nhau
+và cùng gửi kho. Nếu nhóm vẫn dùng script v2.23.0 để đồng bộ kho, số lượt mượn chỉ đến được Box builder khi bạn thêm hai trường vào hàm
+`compactSmObject` của script đó: xem `docs/handoff/team_script_usage_patch.md`.
 
 ## Cài đặt (Firefox + Tampermonkey)
 
@@ -64,6 +69,27 @@ Cách script tránh tạo trùng:
 
 Lần đầu dùng với SM thật, chỉ để một hộp ở trạng thái sẵn sàng, bấm xác nhận rồi mở hộp đó trong SM để kiểm tra trước khi đưa nhiều hộp.
 
+### Thử MỘT hộp trên SM thật (làm một lần, do chính bạn bấm)
+
+Luồng tạo hộp đã chạy tốt trên SM giả, nhưng chưa từng chạy trên SM thật. Người hỗ trợ (Claude) không đăng nhập SM và không bấm thay bạn được.
+
+1. Trong trang admin của Box builder, tạo và duyệt MỘT hộp thử nhỏ (ví dụ module `TEST`, mã section `TEST-01`, ba món). Đừng để hộp nào khác ở trạng thái đã duyệt. Tên hộp trong SM sẽ là `TEST-01 - B2` (hoặc theo nhãn bạn đặt).
+2. Mở SM, đăng nhập, bấm nút **Box builder**, bấm **Xem và tạo trong SM**. Bước này không tạo gì. Đọc dòng "Sẽ tạo 1 hộp": tên đúng, số món đúng.
+3. Bấm **Xác nhận tạo 1 hộp**. Script gửi đúng một lệnh tạo hộp, với `borrow_now` là `false` (không mượn, không giao ai).
+4. Mở trang `sm.config.inc/boxes`, tìm hộp theo tên. Kiểm tra: tên, món neo, danh sách món và số lượng, trạng thái `created`, không ai được giao.
+5. Quay lại Box builder: hộp phải hiện "Đã lên SM". Nếu script báo "đã tạo trong SM nhưng chưa báo được cho Box builder", **đừng tạo lại**: lần xem sau hộp sẽ hiện là đã có trong SM.
+6. Chỉ khi cả năm bước đúng mới đưa nhiều hộp lên.
+
+Dọn hộp thử: hộp thử trong SM bạn tự xử lý trong SM (Box builder không xoá gì trong SM). Trong Box builder, hộp đã lên SM không bỏ duyệt hay huỷ được; để trả ba món về kho, admin gỡ dấu "đã lên SM" bằng `DELETE /api/boxes/<mã>/pushed` kèm mã đồng bộ, rồi huỷ hộp.
+
+## Đọc số lượt mượn (từ bản 0.3.0)
+
+Khi đồng bộ kho, script đọc thêm hai thứ của mỗi món từ lệnh `GET /api/objects` đã dùng: số lượt mượn (SM gọi là LIFETIME USE, hiện ở cột cuối của trang `sm.config.inc/object`) và ngày tạo món. Không có lệnh ghi nào được thêm.
+
+- Sau khi đồng bộ, dòng thông báo cho biết đọc được số lượt mượn của bao nhiêu món. Món SM không gửi số thì để trống, không bao giờ ghi là 0.
+- Nếu thông báo nói SM không gửi số đọc được, chép hai dòng "Dạng SM gửi" gửi cho người phát triển. Dạng dữ liệu thật của SM chưa được kiểm chứng, nên lần đồng bộ đầu tiên cần bạn xem dòng này.
+- Box builder dùng số này để vẽ biểu đồ ở "Cảnh báo kho" và để chọn ít hơn các món đã mượn từ 500 lượt trở lên (công tắc "Giảm món đã dùng nhiều" ở tab Tự động hoá).
+
 ## Thông báo và cách xử lý
 
 | Thông báo | Nghĩa là | Cách xử lý |
@@ -94,7 +120,6 @@ Lần đầu dùng với SM thật, chỉ để một hộp ở trạng thái s�
 | Hộp "...": SM nhận yêu cầu nhưng không trả mã hộp | SM không nói mã hộp mới | Mở SM kiểm tra hộp đã có chưa trước khi tạo lại |
 | Dừng lại, N hộp còn lại chưa tạo | SM báo chưa đăng nhập giữa chừng | Đăng nhập SM, bấm lại **Xem và tạo trong SM** |
 | Xong: tạo X hộp, lỗi Y, bỏ qua Z | Tổng kết lần tạo | Đọc dòng của từng hộp lỗi |
-| Box builder đang đòi mã truy cập chung | Box builder có đặt mã truy cập, script không gửi mã này | Báo người quản trị Box builder |
 | Phiên bản Box builder này còn cũ, chưa có chức năng này | Máy chủ chưa có phần nhận hộp hoặc danh sách hộp sẵn sàng | Cập nhật Box builder |
 
 ## Điều cần biết

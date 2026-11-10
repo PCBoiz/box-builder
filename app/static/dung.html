@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Làm hộp - Box builder</title>
+  <link rel="stylesheet" href="/static/fonts.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/dung.css">
+</head>
+<body class="dung">
+  <a class="d-skip" href="#main">Bỏ qua, đến phần chính</a>
+
+  <header class="d-top">
+    <div class="d-wrap d-top-in">
+      <p class="d-brand">Box builder</p>
+      <div class="d-who" id="who-box" hidden>
+        <p id="who"></p>
+        <a class="d-toplink" id="admin-link" href="/" hidden>Trang admin</a>
+        <button type="button" class="d-btn d-btn-light" id="logout">Thoát</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="d-progress" aria-label="Ba bước làm hộp">
+    <ol class="d-wrap d-steps" role="list">
+      <li class="d-step-li" data-step="1"><a href="#s1-h"><span class="d-step-n" aria-hidden="true">1</span><span class="d-step-t">Tạo hộp</span><span class="d-step-s"></span></a></li>
+      <li class="d-step-li" data-step="2"><a href="#s2-h"><span class="d-step-n" aria-hidden="true">2</span><span class="d-step-t">Xem và duyệt</span><span class="d-step-s"></span></a></li>
+      <li class="d-step-li" data-step="3"><a href="#s3-h"><span class="d-step-n" aria-hidden="true">3</span><span class="d-step-t">Lấy đồ</span><span class="d-step-s"></span></a></li>
+    </ol>
+  </nav>
+
+  <main id="main" class="d-wrap d-main" tabindex="-1">
+    <h1>Làm hộp</h1>
+    <p class="d-note" id="open-note" hidden>Bạn đang xem hộp của mọi người.</p>
+    <div class="d-banner" id="net-banner" hidden>
+      <p id="net-msg"></p>
+      <button type="button" class="d-btn" id="retry">Thử lại</button>
+    </div>
+
+    <section class="d-today" id="today" aria-labelledby="today-h">
+      <h2 id="today-h">Hôm nay</h2>
+      <p class="d-now" id="now-line"></p>
+
+      <details class="d-fold" id="fold-day">
+        <summary><span class="d-fold-t">Lịch cả ngày</span></summary>
+        <div class="d-fold-body">
+          <ol class="d-timeline" id="timeline" role="list"></ol>
+        </div>
+      </details>
+
+      <div class="d-banner" id="plan-banner" hidden>
+        <p id="plan-msg"></p>
+        <button type="button" class="d-btn" id="plan-retry">Thử lại</button>
+      </div>
+
+      <details class="d-fold" id="fold-return">
+        <summary><span class="d-fold-t">Hộp cần trả sáng nay</span><span class="d-fold-n" id="ret-n"></span><span class="d-tag" id="ret-tag" hidden></span></summary>
+        <div class="d-fold-body">
+          <p class="d-lead" id="ret-empty">Đang tải.</p>
+          <ul class="d-lines" id="ret-list" role="list"></ul>
+        </div>
+      </details>
+
+      <details class="d-fold" id="fold-plan">
+        <summary><span class="d-fold-t">Kế hoạch hôm nay</span></summary>
+        <div class="d-fold-body">
+          <p class="d-lead" id="plan-old" hidden>Đây là unit hôm qua, ai cũng làm cả ngày. Chọn ca hôm nay.</p>
+          <div class="d-field">
+            <label for="p-module">Module</label>
+            <input id="p-module" type="text" maxlength="20" autocapitalize="characters" spellcheck="false" autocomplete="off">
+          </div>
+          <ol class="d-units" id="units" role="list"></ol>
+          <p class="d-fielderr" id="plan-err" hidden></p>
+          <div class="d-actions">
+            <button type="button" class="d-btn" id="unit-add">Thêm unit</button>
+            <button type="button" class="d-btn d-btn-primary" id="plan-save">Lưu kế hoạch</button>
+          </div>
+          <p class="d-help" id="plan-dirty" hidden>Chưa lưu thay đổi.</p>
+        </div>
+      </details>
+
+      <details class="d-fold" id="fold-report">
+        <summary><span class="d-fold-t" id="rep-t">Báo cáo cuối ngày</span><span class="d-tag" id="rep-tag" hidden></span></summary>
+        <div class="d-fold-body">
+          <p class="d-lead" id="rep-empty">Đang tải.</p>
+          <div class="d-field" id="rep-box" hidden>
+            <textarea id="rep-text" readonly rows="5" aria-labelledby="rep-t"></textarea>
+            <button type="button" class="d-btn d-btn-primary" id="rep-copy">Sao chép báo cáo</button>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="d-step" id="step-create" aria-labelledby="s1-h">
+      <h2 id="s1-h" tabindex="-1"><span class="d-kicker">Bước 1</span> Tạo hộp</h2>
+      <form id="create-form" class="d-panel" novalidate autocomplete="off">
+        <div class="d-field">
+          <label for="f-module">Module</label>
+          <input id="f-module" name="module" type="text" maxlength="20" autocapitalize="characters" spellcheck="false" required aria-describedby="h-module err-module">
+          <p class="d-help" id="h-module">Ví dụ M8.</p>
+          <p class="d-fielderr" id="err-module" hidden></p>
+        </div>
+
+        <fieldset class="d-field d-kinds" aria-describedby="err-kind">
+          <legend>Loại hộp</legend>
+          <div class="d-choices" id="kinds"></div>
+          <p class="d-fielderr" id="err-kind" hidden></p>
+        </fieldset>
+
+        <div class="d-row2">
+          <div class="d-field">
+            <label for="f-code">Mã section (không bắt buộc)</label>
+            <input id="f-code" name="code" type="text" maxlength="40" spellcheck="false" aria-describedby="h-code">
+            <p class="d-help" id="h-code">Ví dụ M8-02.</p>
+          </div>
+          <div class="d-field">
+            <label for="f-anchor">Đồ lớn (không bắt buộc)</label>
+            <input id="f-anchor" name="anchor" type="text" maxlength="120" aria-describedby="h-anchor">
+            <p class="d-help" id="h-anchor">Ví dụ Tủ lạnh.</p>
+          </div>
+        </div>
+
+        <div class="d-recent" id="recent" hidden>
+          <h3 id="recent-h"></h3>
+          <p class="d-help">Chọn bối cảnh khác để khỏi làm trùng.</p>
+          <ul class="d-lines" id="recent-list" role="list"></ul>
+        </div>
+
+        <div class="d-field">
+          <label for="f-theme">Bối cảnh (không bắt buộc)</label>
+          <textarea id="f-theme" name="theme" rows="3" maxlength="300" placeholder="Ví dụ: bàn bếp và bàn ăn"></textarea>
+        </div>
+
+        <p class="d-fielderr" id="err-form" hidden></p>
+        <button type="submit" class="d-btn d-btn-primary d-btn-big" id="f-go">Tạo hộp</button>
+      </form>
+    </section>
+
+    <section class="d-step" id="step-view" aria-labelledby="s2-h">
+      <h2 id="s2-h" tabindex="-1"><span class="d-kicker">Bước 2</span> Xem và duyệt</h2>
+      <p class="d-lead" id="s2-lead"></p>
+      <div class="d-cards" id="cards"></div>
+    </section>
+
+    <section class="d-step" id="step-take" aria-labelledby="s3-h">
+      <h2 id="s3-h" tabindex="-1"><span class="d-kicker">Bước 3</span> Lấy đồ</h2>
+      <p class="d-lead" id="s3-lead"></p>
+      <div class="d-takes" id="takes"></div>
+    </section>
+
+    <p id="live" class="d-live" role="status" aria-live="polite" aria-atomic="true"></p>
+    <span id="d-newtab" hidden>Mở trong thẻ mới.</span>
+  </main>
+
+  <script src="/static/dung.js"></script>
+</body>
+</html>

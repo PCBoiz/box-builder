@@ -22,6 +22,6 @@ Stay inside these limits:
 - Nothing is written to Scenario Manager, the COS app, the Google Sheet or Render. No logins, no tokens.
 - No new external software without the user's say. Kanzo itself was installed on the user's request, from a verified download.
 - A task that needs an answer or a file from the user: comment what is missing, set it to `review`, and move on.
-- The team uses the app on the internal network only and decided not to use ACCESS_CODE. Do not add or propose a login or code. The cross-site
+- The team uses the app on the internal network only and decided not to use ACCESS_CODE (removed on 2026-11-11). Login by company ID exists since then and is off until ADMIN_IDS is set (docs/LOGIN.md). The cross-site
   write check stays, because it matters most on an internal network.
 - Read docs/SC_PROCESS.md before touching anything that creates or fills boxes: it holds the daily process and the box sizes.

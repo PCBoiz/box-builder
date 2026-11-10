@@ -45,14 +45,14 @@ the whole flow for free. The picks are not meaningful. Add the key for real sele
 - Whatever the model answers is checked by code: unknown IDs, repeats and objects held elsewhere are dropped,
   quantity is capped, and missing slots are re-requested (twice) and then filled by code. Boxes filled by code
   are marked with a dashed edge.
-- Drafts nobody touches for `DRAFT_TTL_HOURS` release their objects. Approved boxes never expire.
+- Drafts nobody touches for `DRAFT_TTL_HOURS` release their objects. An approved box is finished `BOX_DONE_DAYS` (default 2) Vietnam days after the day it was made: its objects return to the kho and its name can be used again.
 
 ## Sending approved boxes to SM TaskBox
 
 `GET /api/taskboxes` returns every **approved** box in the exact shape the SM TaskBox userscript builds from
 the sheet (title `M8-01 - Large object - A1`, anchor, contents, quantities). Userscript v2.20.0
 (`sm-userscript/`) accepts this page's link in its existing source box (paste `https://your-app/` instead of the
-Google Sheet link; add `?access_code=CODE` if you set one), then the usual Scan / Sync buttons work unchanged.
+Google Sheet link), then the usual Scan / Sync buttons work unchanged.
 Fill **Section code** and **Large object** when creating a box so the TaskBox title comes out right.
 
 ## Put it online (Neon + Render + Vercel)
@@ -65,11 +65,16 @@ that forwards to Render.
    ends with `?sslmode=require`). Tables are created automatically on first start.
 2. **GitHub**. Push this folder to a **private** repo (`data/catalog.csv` is your inventory).
 3. **Render**. New > Blueprint > pick the repo (it reads `render.yaml`). Paste `DATABASE_URL` (the Neon string)
-   and, when asked, `DEEPSEEK_API_KEY` and an optional `ACCESS_CODE`. Free instances sleep after about 15
+   and, when asked, `DEEPSEEK_API_KEY`. Free instances sleep after about 15
    minutes idle, so the first visit after a break takes up to a minute; the data is safe in Neon.
 4. **Vercel** (optional). Import the same repo. In `vercel.json` replace `box-builder.onrender.com` with your real
    Render address, then deploy. Leave the framework preset on *Other*.
 5. Open the address, create a box. With no DeepSeek key the page uses offline test picks.
+6. **Login (optional, off until you ask for it).** Set `ADMIN_IDS` (company IDs of the admins, comma separated) in
+   Render to switch login on: `/` becomes the admin page and people who only make boxes use `/dung`. Add `ADMIN_CODE`
+   so an admin must also type a code. Until `ADMIN_IDS` is set the app is open exactly as before, so deploying a new
+   version never locks the admin out. The team's browser scripts and the sheet script cannot log in and keep working
+   as they did. See [docs/LOGIN.md](docs/LOGIN.md) (Vietnamese, for the owner).
 
 Same code, three ways to store: a file (`DB_PATH`), Docker volume, or Neon (`DATABASE_URL`). If `DATABASE_URL`
 is set it wins.
@@ -100,9 +105,26 @@ new objects show as "Chua phan loai".
 - Quality of real selections depends on the model and the setting text; judge a few boxes before relying on it.
 - Run a single server process (the default). The database file lives in `data/`, back it up like any file.
 
+## Two pages
+
+- `/` is the **admin page** (below): the process at a glance (who has how many boxes in which state, what looks wrong), the catalog, automations, the list of people, the Google Sheet box. With login on, only admins. The admin watches and steps in; the people who make boxes approve their own.
+- `/dung` is the **page for people who make boxes**: three big steps (create a box, look at it and approve it, take the objects), copy the IDs,
+  print the pick list. It shows only the person's own boxes. The person approves their own box and can take the approval back until the box
+  is in SM. A draft nobody touches for `DRAFT_TTL_HOURS` (default 12) is deleted, and the page says how long each draft has left.
+  The page also holds the person's day: who works today and how (the plan), the boxes to hand back in SM this morning (yesterday's and the day before's;
+  the app only reminds), the end-of-day report of the units that did not work (to copy and send), the times of the day, and the themes made lately for a module.
+  The rules are in [docs/SC_PROCESS.md](docs/SC_PROCESS.md).
+
 ## Objects view and automations
 
 Three tabs: **Hộp** (the boxes), **Kho đồ** (the catalog) and **Tự động hoá** (switches and queues).
+
+**Heavily borrowed objects.** SM shows every object's LIFETIME USE; the userscript (v0.3.0) sends it as `uses`, with the object's
+creation date as `created`. Objects at 500 borrows or more are picked less (the chance halves for every 300 borrows past 500, and a
+young object that reached the count fast is reduced harder), and from `hard_limit` borrows they are left out (0 = never). Switch
+"Giảm món đã dùng nhiều" in the Automations tab; its numbers are settings. The "Cảnh báo kho" panel draws how many objects sit in each
+band and lists the heaviest ones; Kho đồ has a borrow column, a sort and a band filter. An object with no borrow data is never reduced.
+Hand-picking an object is always allowed. The formula and its limits: `app/usage.py`.
 
 **Kho đồ.** Search by name or ID, filter by category, sort, and see the status of every object: free, in a draft box,
 approved, pushed to SM, or already used in the workbook. Bars show how much of each category is still free. Tick free
@@ -117,7 +139,7 @@ objects and add them to a draft box in one go (they are locked, so Regenerate ke
 | Cấp danh sách cho bảng tính Google | `/api/sheet-boxes` serves approved boxes to the sheet script. Off = it gets an empty list. | on |
 | Theo dõi kho đồ | Alerts: catalog never synced or older than N hours, objects in boxes that SM no longer lists, categories running low. | on |
 | Tự thay món biến mất khỏi kho SM | After a catalog sync, objects SM no longer lists are swapped out of boxes that are not in SM yet. The other objects stay. An approved box goes back to Nháp for a person to approve again, unless Tự duyệt is on. Boxes already pushed are never touched. | **off** |
-| Hàng chờ đẩy lên SM | `/api/taskboxes?pending=true` (what the userscript reads) only returns approved, not-yet-pushed boxes that pass checks: every object still in stock, quantity within the cap, title not used by another box. Blocked boxes are listed with the reason. Off = the userscript sees nothing. | on |
+| Hàng chờ lên SM | `/api/taskboxes?pending=true` (what the userscript reads) only returns approved, not-yet-pushed boxes that pass checks: every object still in stock, quantity within the cap, title not used by another box. Blocked boxes are listed with the reason. Off = the userscript sees nothing. | on |
 
 **Việc cần làm.** The top of the Tự động hoá tab lists the steps that still need a person: drafts to approve,
 the SM push to confirm, the sheet script to run, a catalog sync. The app cannot do these itself (the rules keep SM and
@@ -152,7 +174,8 @@ Safety is unchanged: the server never writes to SM and holds no SM credentials (
 The userscript still creates TaskBoxes only after your confirm click; the sheet script still writes only empty cells.
 A short activity log shows what the automations did.
 
-Browser test: `pip install playwright && python -m playwright install chromium && python tests/ui_automation_e2e.py`.
+Browser tests: `pip install playwright && python -m playwright install chromium`, then `python tests/ui_automation_e2e.py`, `tests/admin_e2e.py` (login, people, sheet box, chart),
+`tests/dung_e2e.py` (the user page), `tests/usage_chart_e2e.py`, `tests/userscript_sync_e2e.py` and `tests/userscript_push_e2e.py` (they run on Linux and Windows).
 
 ## Tests
 
@@ -171,7 +194,7 @@ workbook IDs, locks, approval, expiry, access code, DeepSeek client against a fa
 4. **Push to SM.** In the userscript, paste the app link in the source field and press "Quét dữ liệu", review the table,
    then press "Đồng bộ". For boxes from the app it is create-only: it never updates a box that already exists in SM.
    After each confirmed create it tells the app (`POST /api/boxes/{id}/pushed`, needs `SYNC_TOKEN`), the box shows
-   "Đã đẩy lên SM", and it is skipped from then on, even on later days. A pushed box cannot be reopened or discarded
+   "Đã lên SM", and it is skipped from then on, even on later days. A pushed box cannot be reopened or discarded
    in the app. An admin can undo the mark with `DELETE /api/boxes/{id}/pushed` and the sync token.
 
 No SM password or token is stored on the server. The only secret the server holds for SM is the shared `SYNC_TOKEN`,

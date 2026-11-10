@@ -5,7 +5,7 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
-from . import images
+from . import images, usage
 
 
 def fold(s: str) -> str:
@@ -40,6 +40,8 @@ class Item:
     stock: int
     blob: str      # folded text used for search
     img: str = ""  # cleaned image URL pushed by the userscript (empty when SM sent none or it failed the checks)
+    uses: int | None = None       # lifetime uses (borrows) as SM counts them; None = unknown (the CSV fallback never has it)
+    created: float | None = None  # when SM created the object, epoch seconds; None = unknown
 
 
 UNCATEGORISED = "Chưa phân loại"
@@ -149,8 +151,10 @@ class Catalog:
                 continue
             name = str(o.get("name") or "").strip()
             cat = self._cat_of.get(oid, UNCATEGORISED)
+            # uses and created are optional: a row from an older sync or snapshot has neither, and then both stay unknown
             items[oid] = Item(oid, name, vi, cat, str(o.get("loc") or "").strip(), stock, fold(f"{name} {vi} {cat}"),
-                              images.pick_image(o, hosts=self.image_hosts) or "")
+                              images.pick_image(o, hosts=self.image_hosts) or "",
+                              usage.parse_uses(o.get("uses")), usage.parse_created(o.get("created")))
         return items, skipped
 
     def allowed_sector(self, o: dict) -> bool:

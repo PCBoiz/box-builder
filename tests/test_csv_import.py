@@ -56,18 +56,18 @@ def test_the_apps_own_export_comes_back_as_draft_boxes(env, tmp_path):
 def test_a_hand_made_file_bom_quotes_tabs_semicolons_and_other_header_names(env):
     client, s, _ = make_client(env)
     ids = free_ids(client, 12)
-    rows = [("M5", 'Box "A1"', "", i, "") for i in ids[:3]]
+    rows = [("M5", 'Box A1, x', "", i, "") for i in ids[:3]]
     for delim in (",", ";", "\t"):
         text = "﻿" + make_csv(rows, header=("Module", "Hộp", "STT", "ID", "Số lượng"), delim=delim)
         r = post(client, text)
         assert r.status_code == 200, delim
         body = r.json()
         assert body["totals"]["boxes_added"] == 1 and body["totals"]["items_added"] == 3 and body["csv"]["bad_total"] == 0, delim
-        assert body["boxes"][0]["label"] == 'Box "A1"'
+        assert body["boxes"][0]["label"] == 'Box A1, x'
     real = post(client, make_csv(rows, header=("module", "box", "stt", "object_id", "qty")), dry_run=False).json()
-    box = boxes_of(client)[("M5", 'Box "A1"')]
+    box = boxes_of(client)[("M5", 'Box A1, x')]
     assert [p for p, *_x in box[4]] == [1, 2, 3] and real["boxes"][0]["items_added"] == 3        # no stt column: numbered in file order
-    assert box[1] == 21                                                                        # 'Box "A1"' is not a stage name, so the default size
+    assert box[1] == 21                                                                        # 'Box A1, x' is not a stage name, so the default size
     assert "3/21" in real["boxes"][0]["reason"]                                                # three items make a short draft, and it says so
     a1 = post(client, make_csv([("M5", "Box A1", "", i, "") for i in ids[3:6]]), dry_run=False).json()
     assert boxes_of(client)[("M5", "Box A1")][1] == 12 and "3/12" in a1["boxes"][0]["reason"]   # a real A1 is 12 big

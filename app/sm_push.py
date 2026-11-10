@@ -50,7 +50,7 @@ def push_ready(conn, catalog: Catalog, client: SMClient, max_qty: int, options: 
         results.append({"box_id": b["box_id"], "title": b["title"], "ok": False, "code": "blocked", "error": "Bị chặn: " + "; ".join(b["reasons"][:2])})
     ok = sum(1 for r in results if r["ok"])
     if results:
-        automation.log(conn, "sm_push", f"Đẩy lên SM giả: {ok} hộp tạo được, {len(results) - ok} không tạo được")
+        automation.log(conn, "sm_push", f"Lên SM giả: {ok} hộp tạo được, {len(results) - ok} không tạo được")
     return {"created": ok, "failed": len(results) - ok, "results": results}
 
 

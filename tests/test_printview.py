@@ -337,14 +337,14 @@ def test_box_header_has_the_facts_and_the_date():
     page = render_pick_list(two_boxes()[:1], generated_at="10/11/2026 10:00")
     text = visible_text(page)
     for needle in ("M8 · Box B2", "Module: M8", "Hộp: Box B2", "Mã section: M8-02", "Đồ lớn: Tủ lạnh",
-                   "Tiêu đề TaskBox: M8-02 - Tủ lạnh - B2", "Ngày: 10/11/2026 10:00", "Phiếu lấy đồ"):
+                   "Ngày: 10/11/2026 10:00", "Phiếu lấy đồ"):
         assert needle in text, needle
 
 
 def test_header_leaves_out_empty_facts():
     page = render_pick_list([box([item("000001")], anchor="", code="", title="")])
     text = visible_text(page)
-    assert "Đồ lớn" not in text and "Mã section" not in text and "Tiêu đề TaskBox" not in text and "Ngày" not in text
+    assert "Đồ lớn" not in text and "Mã section" not in text and "TaskBox" not in text and "Ngày" not in text
 
 
 def test_totals_are_correct():
@@ -407,7 +407,7 @@ def test_untrusted_strings_are_escaped_everywhere(payload):
         assert "onerror" not in attrs
     text = visible_text(page)
     clean = payload.replace("‮", "").replace("\x00", "")
-    for prefix in ("N", "V", "L", "C", "A", "T", "D"):
+    for prefix in ("N", "V", "L", "C", "A", "D"):                 # the SM title is no longer printed (the box facts name the box)
         assert prefix + clean in text, prefix
     assert "AM04" + clean in text
     assert "<script" not in page and "<img src=x" not in page
@@ -475,7 +475,7 @@ def test_head_and_toolbar():
     assert {"name": "viewport", "content": "width=device-width, initial-scale=1"} in metas
     assert tag_attrs(page, "button") == [{"type": "button", "onclick": "window.print()"}]
     text = visible_text(page)
-    assert "In phiếu" in text and "Hoặc nhấn Ctrl+P" in text
+    assert "In phiếu" in text and "Ctrl+P" not in text
     assert page.index("In phiếu") < page.index("<main>")
     assert page.count("<title>") == 1
 

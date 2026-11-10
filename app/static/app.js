@@ -49,8 +49,7 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
 /* ------------------------------------------------------------------ app state */
-let cfg = { default_count: 21, max_qty: 3, needs_code: false, llm: "mock" };
-let code = store.get("bb_code");
+let cfg = { default_count: 21, max_qty: 3, llm: "mock" };
 let rev = -1;
 let data = null;
 let categories = [];
@@ -66,20 +65,23 @@ async function api(path, opts = {}) {
   try {
     res = await fetch(path, {
       method: opts.method || "GET",
-      headers: { "Content-Type": opts.raw !== undefined ? "text/csv" : "application/json", "X-Access-Code": code },
+      headers: { "Content-Type": opts.raw !== undefined ? "text/csv" : "application/json", },
       body: opts.raw !== undefined ? opts.raw : opts.body ? JSON.stringify(opts.body) : undefined,
     });
   } catch {
-    throw Object.assign(new Error("Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại."), { status: 0 });
+    throw Object.assign(new Error("Không kết nối được. Kiểm tra mạng rồi thử lại."), { status: 0 });
   }
-  if (res.status === 401) throw Object.assign(new Error("Cần nhập mã truy cập"), { status: 401 });
+  if (res.status === 401) {                                                         // login is on and the session ended: go sign in again
+    location.replace("/login?next=" + encodeURIComponent(location.pathname));
+    throw Object.assign(new Error("Phiên đăng nhập đã hết. Đang chuyển tới trang đăng nhập."), { status: 440 });
+  }
   let json = null;
   try { json = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
     const d = json && json.detail;
     const msg = typeof d === "string" ? d
       : Array.isArray(d) ? "Thông tin nhập chưa đúng. Hãy kiểm tra lại các ô đã điền."
-      : `Có lỗi xảy ra (mã ${res.status}). Hãy thử lại. Nếu vẫn lỗi, báo cho người quản lý.`;
+      : `Có lỗi xảy ra (mã ${res.status}). Hãy thử lại. Nếu vẫn lỗi, báo cho admin.`;
     throw Object.assign(new Error(msg), { status: res.status });
   }
   return json;
@@ -90,7 +92,7 @@ function toast(msg, kind) {
   $("#toasts").append(t);
   setTimeout(() => t.remove(), kind === "bad" ? 8000 : 4500);
 }
-const fail = (e) => { if (e.status !== 401) toast(e.message, "bad"); else showGate(); };
+const fail = (e) => toast(e.message, "bad");
 
 async function copyText(text) {
   try {
@@ -237,7 +239,7 @@ function emptyState() {
     h("div", { class: "ghost-tray", "aria-hidden": "true" }, Array.from({ length: 21 }, () => h("i"))));
 }
 
-const STATUS = { generating: "Đang chọn đồ", draft: "Nháp", approved: "Đã duyệt", error: "Cần xử lý" };
+const STATUS = { generating: "Đang chọn đồ", draft: "Nháp", approved: "Đã duyệt", error: "Chưa chọn được đồ" };
 
 function buildBox(box, u) {
   const n = box.items.length;
@@ -250,7 +252,7 @@ function buildBox(box, u) {
   let note = null;
   if (box.status === "error") note = h("p", { class: "note bad", role: "alert" }, box.message);
   else if (box.status === "generating" && box.message) note = h("p", { class: "note" }, box.message);
-  else if (filled) note = h("p", { class: "note" }, `${filled} món do hệ thống tự điền (viền nét đứt) vì mô hình trả về thiếu món hợp lệ. Hãy kiểm tra lại hoặc bấm Chọn lại.`);
+  else if (filled) note = h("p", { class: "note" }, `${filled} món app điền thêm (viền nét đứt) vì AI chọn thiếu món dùng được. Kiểm tra lại hoặc bấm Chọn lại.`);
 
   return h("article", { class: "tray", "data-id": box.id, style: "--c:" + colorOf(box), "aria-label": `${box.module} ${box.label}` },
     h("header", { class: "tray-head" },
@@ -259,7 +261,7 @@ function buildBox(box, u) {
         secOf(box) ? h("span", { class: "sec", title: "Mã section trong SM" }, secOf(box)) : null,
         h("h2", {}, box.label),
         h("span", { class: "pill " + box.status }, STATUS[box.status]),
-        box.pushed ? h("span", { class: "pill pushed", title: "Box ID trong SM: " + box.pushed.sm_box_id }, "Đã đẩy lên SM") : null,
+        box.pushed ? h("span", { class: "pill pushed", title: "Box ID trong SM: " + box.pushed.sm_box_id }, "Đã lên SM") : null,
         box.owner ? h("span", { class: "by" }, "Tạo bởi " + box.owner) : null),
       box.title ? h("p", { class: "tb-title", title: "Tiêu đề trong SM TaskBox" }, box.title) : null,
       box.theme ? h("p", { class: "theme" }, box.theme) : null,
@@ -279,7 +281,7 @@ function slotEl(box, pos, it, editable) {
   const act = (fn) => () => fn().then(() => poll(true)).catch(fail);
   const base = `/api/boxes/${box.id}/items/${pos}`;
   return h("div", { class: "slot pic" + (it.locked ? " locked" : "") + (it.source === "fill" ? " fill" : ""), title: tip },
-    h("span", { class: "stt", title: it.source === "fill" ? "Do hệ thống tự điền, không phải do mô hình chọn" : null }, pos),
+    h("span", { class: "stt", title: it.source === "fill" ? "App điền thêm, không phải AI chọn" : null }, pos),
     h("div", { class: "pic" }, BBThumbs.thumb(it, { size: "sm" })),
     h("div", { class: "body" },
       h("div", { class: "l1" },
@@ -334,7 +336,7 @@ function footEl(box, u, n, editable) {
     kids.push(btn("Duyệt", call("/approve", { method: "POST" }, `Đã duyệt ${name}`), { cls: "primary", keep: "approve", disabled: n < box.count,
       title: n < box.count ? `Cần đủ ${box.count} món` : "Chốt hộp. Các món vẫn được giữ chỗ." }));
   } else if (box.status === "approved") {
-    if (!box.pushed) kids.push(btn("Mở lại", call("/reopen", { method: "POST" }), { keep: "reopen" }));
+    if (!box.pushed) kids.push(btn("Bỏ duyệt", call("/reopen", { method: "POST" }), { keep: "reopen" }));
   }
   if (u.confirm) {
     kids.push(h("span", { class: "confirm" }, `Trả ${n} món về kho?`,
@@ -398,7 +400,6 @@ async function poll(force) {
   try {
     const d = await api("/api/state?rev=" + (force ? -1 : rev));
     setLive(true);
-    $("#gate").hidden = true;
     if (d.unchanged) return;
     rev = d.rev;
     data = d;
@@ -412,7 +413,7 @@ async function poll(force) {
     if (view === "objects") loadObjectsSoon();
     if (view === "auto") refreshAuto();
   } catch (e) {
-    if (e.status === 401) showGate(); else setLive(false);
+    setLive(false);
   }
 }
 function schedule() {
@@ -421,22 +422,7 @@ function schedule() {
 }
 
 /* ------------------------------------------------------------------ forms */
-function showGate() { $("#gate").hidden = false; $("#gate-code").focus(); }
 
-function setupGate() {
-  $("#gate-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    code = $("#gate-code").value;
-    $("#gate-err").hidden = true;
-    try { await api("/api/state?rev=-1"); store.set("bb_code", code); $("#gate").hidden = true; updateExport(); await poll(true); }
-    catch { $("#gate-err").hidden = false; }
-  });
-}
-function updateExport() {
-  const q = code ? "?access_code=" + encodeURIComponent(code) : "";
-  $("#export").href = "/api/export.csv" + q;
-  $("#print-link").href = "/print/boxes" + q;
-}
 
 function setupNewBox() {
   const theme = $("#f-theme");
@@ -544,13 +530,13 @@ function setupTabs() {
 }
 
 /* ------------------------------------------------------------------ object browser */
-const OBJ_STATUS = { free: "Còn trống", draft: "Trong hộp nháp", approved: "Đã duyệt", pushed: "Đã đẩy lên SM", external: "Đã dùng (bảng tính)", sm: "Trong hộp SM" };
-const ov = { q: "", status: "", category: "", sort: "id", page: 1, sel: new Set(), res: null, cov: [], covAll: false, seq: 0 };
+const OBJ_STATUS = { free: "Còn trống", draft: "Trong hộp nháp", approved: "Đã duyệt", pushed: "Đã lên SM", external: "Đã dùng (bảng tính)", sm: "Trong hộp SM" };
+const ov = { q: "", status: "", category: "", sort: "id", band: "", page: 1, sel: new Set(), res: null, cov: [], covAll: false, seq: 0 };
 const MAX_PICK = 60;
 
 async function loadObjects(withCoverage) {
   const my = ++ov.seq;
-  const qs = new URLSearchParams({ q: ov.q, category: ov.category, status: ov.status, sort: ov.sort, page: ov.page, per: 50 });
+  const qs = new URLSearchParams({ q: ov.q, category: ov.category, status: ov.status, sort: ov.sort, band: ov.band, page: ov.page, per: 50 });
   try {
     if (withCoverage) ov.cov = await api("/api/objects/coverage");
     const res = await api("/api/objects?" + qs);
@@ -597,7 +583,7 @@ function renderObjects() {
 
   BBThumbs.resetExpired();
   $("#o-body").replaceChildren(...(r.items.length ? r.items.map(objRow)
-    : [h("tr", {}, h("td", { colspan: 8, class: "none" }, "Không có món nào khớp bộ lọc này."))]));
+    : [h("tr", {}, h("td", { colspan: 9, class: "none" }, "Không có món nào khớp bộ lọc này."))]));
   const gone = BBThumbs.expiredCount();            // pictures whose SM link ran out (SM lets them be seen for about an hour)
   $("#o-imgtip").hidden = !gone;
   if (gone) {                                         // write the text only when it changed, so a screen reader is not told again on every redraw
@@ -609,8 +595,7 @@ function renderObjects() {
   all.disabled = !freeHere.length;
   all.checked = freeHere.length > 0 && freeHere.every((o) => ov.sel.has(o.id));
   $("#o-page").textContent = `Trang ${r.page}/${r.pages} · ${fmt(r.total)} món`;
-  const csvQuery = new URLSearchParams({ q: ov.q, category: ov.category, status: ov.status, sort: ov.sort });
-  if (code) csvQuery.set("access_code", code);
+  const csvQuery = new URLSearchParams({ q: ov.q, category: ov.category, status: ov.status, sort: ov.sort, band: ov.band });
   $("#o-csv").href = "/api/objects.csv?" + csvQuery;
   $("#o-prev").disabled = r.page <= 1;
   $("#o-next").disabled = r.page >= r.pages;
@@ -624,7 +609,14 @@ function objRow(o) {
     h("td", { class: "c-img" }, BBThumbs.thumb(o, { size: "sm" })),
     h("td", { class: "oid" }, o.id), h("td", {}, o.name), h("td", {}, o.vi), h("td", {}, o.category),
     h("td", { class: "num" }, fmt(o.stock)),
+    h("td", { class: "num" }, usesCell(o)),
     h("td", {}, h("span", { class: "pill st-" + o.status }, OBJ_STATUS[o.status]), o.holder ? h("small", { class: "holder" }, o.holder) : null));
+}
+/* Borrow count of one object, and what the "Giảm món đã dùng nhiều" switch does with it. Unknown stays unknown: a dash, never a zero. */
+function usesCell(o) {
+  if (o.uses == null) return h("span", { title: "SM chưa gửi số lượt mượn của món này" }, "-");
+  const w = o.weight, effect = w == null || w >= 1 ? null : w <= 0 ? "bị loại" : `còn ${Math.max(1, Math.round(w * 100))}%`;
+  return [fmt(o.uses), effect ? h("small", { class: "holder" }, effect) : null];
 }
 function togglePick(id, on, box) {
   if (on && ov.sel.size >= MAX_PICK) { box.checked = false; return toast(`Chỉ chọn được tối đa ${MAX_PICK} món một lần.`, "bad"); }
@@ -654,6 +646,7 @@ function setupObjects() {
   $("#o-q").addEventListener("input", debounce((e) => { ov.q = e.target.value.trim(); ov.page = 1; loadObjects(false); }, 250));
   $("#o-cat").addEventListener("change", (e) => { ov.category = e.target.value; ov.page = 1; renderCoverage(); loadObjects(false); });
   $("#o-sort").addEventListener("change", (e) => { ov.sort = e.target.value; ov.page = 1; loadObjects(false); });
+  $("#o-band").addEventListener("change", (e) => { ov.band = e.target.value; ov.page = 1; loadObjects(false); });
   $("#o-prev").addEventListener("click", () => { ov.page = Math.max(1, ov.page - 1); loadObjects(false); });
   $("#o-next").addEventListener("click", () => { ov.page += 1; loadObjects(false); });
   $("#cov-more").addEventListener("click", () => { ov.covAll = !ov.covAll; renderCoverage(); });
@@ -685,15 +678,16 @@ function setupObjects() {
 }
 
 /* ------------------------------------------------------------------ automations */
-let auto = null, queue = null, plan = null, smReport = null;
+let auto = null, queue = null, plan = null, smReport = null, people = null, auditLog = [], sheet = null, usageData = null, flow = null;
 
 let lastAnnounced = null;
 
 async function refreshAuto() {
   try {
-    const [a, q, r] = await Promise.all([api("/api/automations"), api("/api/queue"), api("/api/sm/boxes/report")]);
-    auto = a; queue = q; smReport = r;
-  } catch (e) { if (e.status === 401) showGate(); return; }
+    const [a, q, r, p, l, sh, us, fl] = await Promise.all([api("/api/automations"), api("/api/queue"), api("/api/sm/boxes/report?ages=1"),
+      api("/api/admin/people"), api("/api/admin/audit?n=15"), api("/api/sheet"), api("/api/usage"), api("/api/admin/overview")]);
+    auto = a; queue = q; smReport = r; people = p; auditLog = l.entries; sheet = sh; usageData = us; flow = fl;
+  } catch (e) { return; }
   const n = auto.alerts.length + auto.todo.length, badge = $("#alert-badge");
   badge.hidden = n === 0;
   badge.textContent = String(n);
@@ -714,6 +708,43 @@ function renderSyncStatus() {
   el.className = "hint";
 }
 
+const bandLabel = (b) => (b.to === null ? `Hơn ${b.from} ngày` : b.from === 0 ? `Đến ${b.to} ngày` : `Hơn ${b.from} đến ${b.to} ngày`);
+
+/* How old the SM boxes are, and what each number of days would free, so the number can be chosen with the figures in sight. */
+function renderSmAges() {
+  const r = smReport, a = r && r.synced_at ? r.ages : null, box = $("#smb-ages");
+  const worth = a && (a.boxes > 0 || a.options.some((o) => o.extra_free > 0));
+  box.hidden = !worth;
+  if (!worth) return;
+  const on = r.reuse && r.reuse.on;
+  $("#smb-age-sum").textContent = `${fmt(a.boxes)} hộp đang giữ món.` +
+    (a.undated ? ` ${fmt(a.undated)} hộp không có ngày tạo nên vẫn giữ món.` : "") +
+    ` Nếu tắt công tắc Dùng lại món của hộp cũ, kho có ${fmt(a.free_without_reuse)} món trống.`;
+  const most = Math.max(1, ...a.bands.map((b) => b.boxes));
+  $("#smb-age-wrap").hidden = a.boxes === 0;
+  $("#smb-age-body").replaceChildren(...a.bands.map((b) => h("tr", {}, h("th", { scope: "row", class: "rowh" }, bandLabel(b)), h("td", { class: "num" }, fmt(b.boxes)),
+    h("td", { class: "barcell" }, h("span", { class: "agebar", "aria-hidden": "true" }, h("i", { style: `width:${b.boxes ? Math.max(3, Math.round(100 * b.boxes / most)) : 0}%` }))))));
+  const body = $("#smb-opt-body");
+  if (body.contains(document.activeElement)) return;               // keep the keyboard where it is; the table is redrawn when focus leaves
+  body.replaceChildren(...a.options.map((o) => h("tr", { class: o.current ? "cur" : "" },
+    h("th", { scope: "row", class: "rowh" }, `${o.days} ngày`, o.current ? h("span", { class: "now" }, "đang dùng") : null),
+    h("td", { class: "num" }, fmt(o.old_boxes)), h("td", { class: "num" }, "+" + fmt(o.extra_free)), h("td", { class: "num" }, fmt(o.free_objects)),
+    h("td", { class: "num" }, (() => {
+      const text = o.current ? "Đang dùng" : on ? "Dùng số này" : "Bật với số này";           // the accessible name starts with the words on the button
+      return h("button", { type: "button", class: "btn small", disabled: o.current, "aria-label": `${text}: ${o.days} ngày`, onclick: () => chooseReuseDays(o.days) }, text);
+    })()))));
+}
+
+async function chooseReuseDays(days) {
+  try {
+    await api("/api/automations/reuse_old", { method: "PUT", body: { enabled: true, config: { days } } });
+    toast(`Đã đặt dùng lại món của hộp cũ hơn ${days} ngày.`);
+  } catch (err) { fail(err); }
+  await refreshAuto();
+  $("#smb-opt-h").focus();                                          // the pressed button is now disabled: park the keyboard on the heading
+  renderSmAges();
+}
+
 function renderSmBoxes() {
   const r = smReport;
   if (!r) return;
@@ -731,8 +762,9 @@ function renderSmBoxes() {
     reuseEl.textContent = !ru.on
       ? "Đang tắt việc dùng lại món của hộp cũ, nên mọi món trong hộp SM đều được giữ."
       : `Hộp SM tạo cách đây hơn ${ru.days} ngày không còn giữ món (trong SM chúng vẫn nằm ở hộp cũ): ${fmt(ru.old_boxes)} hộp, nhờ đó ${fmt(ru.freed_objects)} món được tính là trống để làm hộp mới.` +
-        (ru.undated_boxes ? ` ${fmt(ru.undated_boxes)} hộp không đọc được ngày tạo nên vẫn giữ món.` : "");
+        (ru.undated_boxes ? ` ${fmt(ru.undated_boxes)} hộp không có ngày tạo nên vẫn giữ món.` : "");
   } else reuseEl.hidden = true;
+  renderSmAges();
   const fill = (listId, headId, rows) => {
     $(listId).replaceChildren(...rows);
     $(listId).hidden = $(headId).hidden = rows.length === 0;
@@ -742,9 +774,148 @@ function renderSmBoxes() {
   fill("#smb-dbl", "#smb-dbl-h", r.doubles.slice(0, 50).map((d) => h("li", {}, h("b", {}, d.id), `${d.name ? " " + d.name : ""}: ${d.boxes.join(", ")}`)));
 }
 
+/* ------------------------------------------------------------------ the process as the admin watches it */
+function renderFlow() {
+  const f = flow;
+  if (!f) return;
+  const t = f.totals, n = Object.values(t).reduce((a, b) => a + b, 0);
+  $("#flow-sum").textContent = n
+    ? `${fmt(n)} hộp: ${fmt(t.generating)} đang chọn đồ, ${fmt(t.draft)} nháp chưa duyệt, ${fmt(t.approved)} đã duyệt chưa lên SM, ${fmt(t.pushed)} đã lên SM, ${fmt(t.error)} chưa chọn được đồ.`
+    : "Chưa có hộp nào.";
+  const list = $("#flow-problems");
+  list.hidden = !f.problems.length;
+  list.replaceChildren(...f.problems.map((p) => h("li", {}, p.msg)));
+  list.classList.toggle("bad", f.problems.some((p) => p.level === "bad"));
+  $("#flow-wrap").hidden = !f.owners.length;
+  $("#flow-body").replaceChildren(...f.owners.map((o) => h("tr", {},
+    h("th", { scope: "row", class: "rowh" }, o.name ? `${o.name} (${o.owner})` : o.owner || "Chưa rõ"),
+    ...["boxes", "generating", "draft", "approved", "pushed", "error"].map((k) => h("td", { class: "num" }, fmt(o[k] || 0))))));
+}
+
+/* ------------------------------------------------------------------ people and login (the admin keeps the list of company IDs) */
+const AUDIT_TEXT = { login: "đăng nhập", login_fail: "đăng nhập không được", logout: "thoát", people_save: "lưu danh sách người", people_remove: "xoá một người",
+  box_create: "tạo hộp", box_approve: "duyệt hộp", box_reopen: "bỏ duyệt hộp", box_delete: "xoá hộp" };
+
+function renderPeople() {
+  const p = people;
+  if (!p) return;
+  const st = $("#ppl-state"), body = $("#ppl-body");
+  const admins = p.people.filter((x) => x.admin).length;
+  st.textContent = !p.enforced
+    ? "Đăng nhập chưa bật: ai có link cũng vào được trang này. Để bật, đặt ADMIN_IDS trong Render (ID của các admin, cách nhau bằng dấu phẩy) rồi lưu. Render tự chạy lại, mất khoảng một phút. Sau đó người dùng thường chỉ vào được trang người dùng."
+    : `Đã bật đăng nhập: ${fmt(p.people.length)} người, ${fmt(admins)} admin. Ai biết ID là đăng nhập được. ` +
+      (p.admin_code ? "Admin phải nhập thêm mã quản trị." : "Nên đặt ADMIN_CODE trong Render để admin gõ thêm một mã.");
+  if (body.contains(document.activeElement)) return;                    // keep the keyboard where it is; the table is redrawn when focus leaves
+  body.replaceChildren(...(p.people.length ? p.people.map((x) => h("tr", {},
+    h("th", { scope: "row", class: "rowh" }, x.id), h("td", {}, x.name || "-"), h("td", {}, x.module || "-"),
+    h("td", {}, x.admin ? (x.from_setting ? "admin (đặt trong cài đặt)" : "admin") : "người dùng"),
+    h("td", { class: "num" }, x.from_setting ? null : h("button", { type: "button", class: "btn small", "aria-label": `Xoá ID ${x.id} khỏi danh sách`,
+      onclick: () => removePerson(x.id) }, "Xoá")))) : [h("tr", {}, h("td", { colspan: 5, class: "none" }, "Chưa có ai trong danh sách."))]));
+  $("#ppl-audit").replaceChildren(...(auditLog.length ? auditLog.map((e) => h("li", {}, h("time", {}, new Date(e.at * 1000).toLocaleString("vi-VN")), " ",
+    h("b", {}, e.actor === "-" ? "Chưa rõ" : e.actor), " ", AUDIT_TEXT[e.action] || e.action,
+    e.box_id ? ` (hộp ${e.box_id})` : "", e.detail ? `: ${e.detail}` : "")) : [h("li", { class: "none" }, "Chưa có việc nào được ghi lại.")]));
+}
+
+async function removePerson(id) {
+  if (!confirm(`Xoá ID ${id} khỏi danh sách? Người này sẽ bị đăng xuất ngay.`)) return;
+  try { await api("/api/admin/people/" + encodeURIComponent(id), { method: "DELETE" }); toast(`Đã xoá ID ${id}.`); } catch (e) { fail(e); }
+  await refreshAuto();
+  $("#ppl-h").focus();                                              // the pressed button is about to disappear: park the keyboard on the heading
+  renderPeople();                                                   // the table was kept as it was while the button had focus: draw it now
+}
+
+function setupPeople() {
+  $("#ppl-h").tabIndex = -1;
+  $("#ppl-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#ppl-save"), bad = $("#ppl-bad");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/admin/people", { method: "POST", body: { text: $("#ppl-text").value } });
+      toast(`Đã lưu: thêm ${r.added}, sửa ${r.updated}.` + (r.bad.length ? ` ${r.bad.length} dòng chưa đọc được.` : ""), r.bad.length ? "bad" : undefined);
+      bad.replaceChildren(...r.bad.map((b) => h("li", {}, `Dòng ${b.line}: ${b.reason}`)));
+      bad.hidden = r.bad.length === 0;
+      if (!r.bad.length) $("#ppl-text").value = "";
+      await refreshAuto();
+    } catch (err) { fail(err); } finally { btn.disabled = false; }
+  });
+}
+
+/* ------------------------------------------------------------------ the Google Sheet box: where it is, when its script last asked, the script */
+function renderSheetLink() {
+  const sh = sheet;
+  if (!sh) return;
+  const input = $("#sh-url"), open = $("#sh-open");
+  if (document.activeElement !== input) input.value = sh.url || "";
+  input.disabled = !sh.enforced;
+  $("#sh-save").disabled = !sh.enforced;
+  $("#sh-help").textContent = sh.enforced ? "Dán link của bảng tính. Để trống rồi lưu thì link bị xoá. Link chỉ dùng để mở bảng tính từ trang này."
+    : "Chưa lưu được link vì chưa bật đăng nhập. Hãy bật trước: đặt ADMIN_IDS trong Render.";
+  open.hidden = !sh.url;
+  if (sh.url) open.href = sh.url;
+  const last = sh.last_fetch;
+  const min = last ? Math.max(0, Math.round((Date.now() / 1000 - last.at) / 60)) : null;
+  $("#sh-last").textContent = (last
+    ? `Script bảng tính lấy danh sách lần cuối ${min < 1 ? "vừa xong" : min < 60 ? min + " phút trước" : Math.round(min / 60) + " giờ trước"}, nhận ${fmt(last.boxes)} hộp.`
+    : "Script bảng tính chưa lấy danh sách lần nào. Làm theo các bước dưới đây rồi chọn menu Box builder trong bảng tính.") +
+    (sh.export_on ? "" : " Công tắc Cấp danh sách cho bảng tính đang tắt nên script nhận danh sách rỗng.");
+}
+
+function setupSheetLink() {
+  $("#sh-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#sh-save");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/sheet", { method: "PUT", body: { url: $("#sh-url").value } });
+      toast(r.url ? "Đã lưu link bảng tính." : "Đã xoá link bảng tính.");
+      await refreshAuto();
+    } catch (err) { fail(err); } finally { btn.disabled = !(sheet && sheet.enforced); }
+  });
+  $("#sh-copy").addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/sheet/script", { credentials: "same-origin" });
+      if (!res.ok) throw new Error("Không lấy được script. Tải lại trang rồi thử lại.");
+      const ok = await copyText(await res.text());
+      toast(ok ? "Đã sao chép script. Dán vào Apps Script của bảng tính." : "Không sao chép được. Mở /api/sheet/script, chọn hết rồi sao chép.", ok ? undefined : "bad");
+    } catch (err) { fail(err); }
+  });
+}
+
+/* Who is signed in, and the way out. Shown only when login is on. */
+async function setupLoginChip() {
+  try {
+    const r = await fetch("/api/auth/status");
+    const st = await r.json();
+    const chip = $("#login-chip");
+    if (!st.enforced) { chip.hidden = false; chip.classList.add("warn"); chip.textContent = "Đăng nhập chưa bật"; chip.title = "Ai có link cũng vào được. Xem khung Người dùng và quyền ở tab Tự động hoá."; return; }
+    if (!st.person) return;
+    chip.hidden = false;
+    chip.textContent = `Đăng nhập: ${st.person.name ? st.person.name + " " : ""}(${st.person.id})`;
+    $("#logout").hidden = false;
+    $("#logout").addEventListener("click", async () => {
+      try { await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" } }); } catch { /* leave anyway */ }
+      location.replace("/login");
+    });
+  } catch { /* offline: the page itself will say so */ }
+}
+
 function renderAuto() {
   if (!auto) return;
   renderSyncStatus();
+  renderFlow();
+  renderPeople();
+  renderSheetLink();
+  if (usageData && window.BBUsageChart) {                                                  // heavily used objects, with the 500 line
+    BBUsageChart.render($("#a-usage"), usageData);
+    if (usageData.known > 0) {
+      const at = usageData.usage_at, min = at ? Math.max(0, Math.round((Date.now() / 1000 - at) / 60)) : null;
+      $("#a-usage").append(h("p", { class: "hint" }, at
+        ? `Số lượt mượn do SM gửi lần cuối ${min < 1 ? "vừa xong" : min < 60 ? min + " phút trước" : min < 2880 ? Math.round(min / 60) + " giờ trước" : Math.round(min / 1440) + " ngày trước"}. ` +
+          "Nếu lần đồng bộ nào không có số này, app giữ số cũ."
+        : "Chưa rõ số lượt mượn lấy từ lúc nào."));
+    }
+  }
   renderSmBoxes();
   $("#a-todo").replaceChildren(...(auto.todo.length
     ? auto.todo.map((t) => h("li", { class: t.level }, h("b", { class: "where" }, t.where), t.msg))
@@ -759,13 +930,13 @@ function renderAuto() {
   $("#b-plan").disabled = !batchOn;
   $("#b-create").disabled = !batchOn;
   $("#b-who").textContent = batchOn ? (auto.planner === "deepseek" ? "Kế hoạch do DeepSeek đề xuất."
-    : "Chế độ thử: chưa nối mô hình nên kế hoạch chỉ chia theo từng dòng bạn gõ.") : "Tính năng này đang tắt ở công tắc phía trên.";
+    : "Chưa nối AI nên kế hoạch chỉ chia theo từng dòng bạn gõ.") : "Tính năng này đang tắt ở công tắc phía trên.";
 
   const q = queue;
   const queueEls = [];
   if (!q.enabled) queueEls.push(h("p", { class: "hint" }, "Hàng chờ đang tắt: công cụ đồng bộ trong SM sẽ không thấy hộp nào để đưa lên SM."));
   else {
-    queueEls.push(h("p", { class: "hint" }, "Các hộp đã duyệt, chưa có trong SM. Hộp đạt kiểm tra sẽ hiện ở khung Box builder trong SM. Việc tạo TaskBox vẫn do bạn bấm xác nhận ở SM."));
+    queueEls.push(h("p", { class: "hint" }, "Các hộp đã duyệt, chưa có trong SM. Hộp đạt kiểm tra sẽ hiện ở khung Box builder trong SM."));
     queueEls.push(h("h3", {}, `Sẵn sàng (${q.ready.length})`));
     queueEls.push(q.ready.length ? h("ul", { class: "qlist" }, q.ready.map((b) => h("li", {}, h("b", {}, b.title), ` · ${b.items} món`)))
       : h("p", { class: "hint" }, "Chưa có hộp nào sẵn sàng."));
@@ -781,13 +952,17 @@ function renderAuto() {
   const approved = data ? data.boxes.filter((b) => b.status === "approved").length : 0;
   $("#a-sheet").replaceChildren(
     h("p", {}, sheetOn ? `${approved} hộp đã duyệt đang chờ script của bảng tính lấy về.` : "Công tắc đang tắt: script của bảng tính nhận danh sách rỗng."),
-    h("p", { class: "hint" }, "Script nằm ở integrations/google_sheets_apps_script.gs. Nó chỉ ghi vào ô còn trống và luôn hỏi xem trước khi ghi (trừ khi bạn bật chạy tự động 30 phút)."));
+    h("p", { class: "hint" }, "Script chỉ ghi vào ô trống. Nó hỏi xem trước khi ghi, trừ khi bạn bật chạy tự động mỗi 30 phút."));
 
   $("#a-log").replaceChildren(...(auto.log.length ? auto.log.map((e) =>
     h("li", {}, h("time", {}, new Date(e.at * 1000).toLocaleString("vi-VN")), e.msg)) : [h("li", { class: "none" }, "Chưa có hoạt động nào.")]));
 }
 
-const CFG_LABEL = { stale_hours: "Cảnh báo khi kho cũ hơn (giờ)", low_stock: "Cảnh báo khi một nhóm còn dưới (món)", days: "Dùng lại món của hộp tạo cách đây hơn (ngày)" };
+const CFG_LABEL = { stale_hours: "Cảnh báo khi kho cũ hơn (giờ)", low_stock: "Cảnh báo khi một nhóm còn dưới (món)", days: "Dùng lại món của hộp tạo cách đây hơn (ngày)",
+  soft_start: "Mức bắt đầu giảm (lượt mượn)", half_life: "Cứ thêm bao nhiêu lượt mượn thì cơ hội giảm một nửa",
+  hard_limit: "Mức loại hẳn (lượt mượn, 0 là không loại món nào)", age_effect: "Ảnh hưởng của tuổi món (%)", min_pool: "Số món tối thiểu còn để chọn" };
+const CFG_HINT = { age_effect: "Món mới mượn nhanh bị giảm nặng hơn, món cũ mượn chậm giảm nhẹ hơn. 0 là không tính theo ngày SM tạo món.",
+  min_pool: "Luôn giữ ít nhất số món này để chọn, nên hộp vẫn đủ món khi kho còn ít món trống." };
 
 function switchRow(sw) {
   const id = "sw-" + sw.key;
@@ -809,12 +984,14 @@ function switchRow(sw) {
     } });
   const cfgs = Object.entries(sw.config).map(([k, v]) => {
     const [lo, hi] = sw.limits[k] || [1, 9999];
-    return h("label", { class: "cfg" }, CFG_LABEL[k] || k,
-      h("input", { type: "number", min: lo, max: hi, value: v, onchange: async (e) => {
+    const hint = CFG_HINT[k], hintId = `cfg-${sw.key}-${k}`;
+    const field = h("label", { class: "cfg" }, CFG_LABEL[k] || k,
+      h("input", { type: "number", min: lo, max: hi, value: v, "aria-describedby": hint ? hintId : null, onchange: async (e) => {
         try { await api("/api/automations/" + sw.key, { method: "PUT", body: { config: { [k]: parseInt(e.target.value, 10) } } }); toast("Đã lưu."); }
         catch (err) { e.target.value = v; fail(err); }                       // refused: show the saved number again
         await refreshAuto();
       } }));
+    return hint ? h("div", { style: "display:grid;gap:3px;max-width:26em" }, field, h("span", { class: "help", id: hintId }, hint)) : field;
   });
   return h("div", { class: "sw-row" + (sw.enabled ? " on" : "") },
     h("div", { class: "sw-text" }, h("label", { for: id, class: "sw-title" }, sw.title), h("p", { class: "hint" }, sw.desc), cfgs.length ? h("div", { class: "cfgs" }, cfgs) : null),
@@ -944,7 +1121,7 @@ function setupSmPush() {
     btn.disabled = true;
     try {
       const r = await api("/api/sm/push", { method: "POST", body: { assignee: $("#smp-who").value.trim(), borrow_now: $("#smp-borrow").checked } });
-      say(r.results.length ? `Tạo được ${r.created} hộp trong SM giả, ${r.failed} hộp không tạo được.` : "Không có hộp nào sẵn sàng để đẩy.");
+      say(r.results.length ? `Tạo được ${r.created} hộp trong SM giả, ${r.failed} hộp không tạo được.` : "Không có hộp nào sẵn sàng lên SM giả.");
       showFakeResults(r, "Đã tạo");
       await refresh();
     } catch (e) { fail(e); } finally { btn.disabled = false; }
@@ -991,7 +1168,7 @@ function setupSmPush() {
 function setupBackup() {
   const file = $("#bk-file"), prev = $("#bk-preview"), rest = $("#bk-restore"), sum = $("#bk-summary");
   let parsed = null;
-  $("#bk-download").href = "/api/backup.json" + (code ? "?access_code=" + encodeURIComponent(code) : "");
+  $("#bk-download").href = "/api/backup.json";
   const clear = () => { $("#bk-table-wrap").hidden = true; sum.hidden = true; rest.disabled = true; };
   file.addEventListener("change", async () => {
     clear(); parsed = null; prev.disabled = true;
@@ -1113,9 +1290,9 @@ function renderNextStep(d) {
   const boxes = d.boxes, n = (st) => boxes.filter((b) => b.status === st).length;
   let text;
   if (!boxes.length) text = "Tạo hộp đầu tiên ở khung bên trái: gõ Module và tên hộp, rồi bấm Tạo hộp.";
-  else if (n("generating")) text = `Đang chọn đồ cho ${n("generating")} hộp. Chờ khoảng 15 giây.`;
-  else if (n("error")) text = `${n("error")} hộp bị lỗi. Mở hộp đó và bấm Chọn lại.`;
-  else if (n("draft")) text = `Có ${n("draft")} hộp nháp. Xem từng hộp, sửa nếu cần, rồi bấm Duyệt.`;
+  else if (n("generating")) text = `Đang chọn đồ cho ${n("generating")} hộp. Thường mất dưới một phút.`;
+  else if (n("error")) text = `${n("error")} hộp chưa chọn được đồ. Mở hộp đó và bấm Chọn lại.`;
+  else if (n("draft")) text = `Có ${n("draft")} hộp nháp chưa duyệt.`;
   else {
     const waiting = boxes.filter((b) => b.status === "approved" && !b.pushed).length;
     text = waiting
@@ -1151,13 +1328,14 @@ function setupTextSize() {
   $("#fs-up").addEventListener("click", () => apply((i = Math.min(ZOOMS.length - 1, i + 1))));
 }
 
-/* A box name can be used once per module. Say so before the person presses the button, not after. */
+/* A box name can be used once per module and per day: a box of yesterday does not block today's. Say so before the person presses the button, not after. */
 function checkDup() {
   const warn = $("#f-warn"), go = $("#f-go");
-  const m = normModule($("#f-module").value), l = $("#f-label").value.trim().toLowerCase();
-  const dup = !!(data && m && l && data.boxes.some((b) => b.module === m && b.label.toLowerCase() === l));
+  const m = normModule($("#f-module").value), name = $("#f-label").value.trim(), l = name.toLowerCase();
+  const today = data && typeof data.now === "number" ? new Date((data.now + 7 * 3600) * 1000).toISOString().slice(0, 10) : "";      // the Vietnam day by the clock of the server: UTC+7 all year
+  const dup = !!(today && m && l && data.boxes.some((b) => b.day === today && b.module === m && b.label.toLowerCase() === l));        // a box with no day (a very old one) never matches
   warn.hidden = !dup;
-  warn.textContent = dup ? `Hộp ${m} ${$("#f-label").value.trim()} đã có. Đặt tên khác, hoặc mở hộp đó ở bên phải.` : "";
+  warn.textContent = dup ? `Hôm nay đã có hộp ${m} ${name}. Đặt tên khác, hoặc mở hộp đó ở bên phải.` : "";
   go.disabled = dup;
 }
 
@@ -1191,12 +1369,11 @@ async function init() {
   $("#f-count").value = cfg.default_count;
   const chip = $("#llm");
   chip.hidden = false;
-  chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
+  chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối AI" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
-  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall(); setupCsvImport(); setupImgTip();
-  updateExport();
+  setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall(); setupCsvImport(); setupImgTip();
+  setupPeople(); setupSheetLink(); setupLoginChip();
   await poll(true);
-  if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });
   setupCategories();
   setupTabs();
   refreshAuto();

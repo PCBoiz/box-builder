@@ -16,8 +16,6 @@ services:
         sync: false
       - key: DEEPSEEK_API_KEY       # leave empty to run on offline test picks
         sync: false
-      - key: ACCESS_CODE            # optional shared code for the team
-        sync: false
       - key: SYNC_TOKEN             # secret the SM userscript sends to push the live object list (empty = sync off)
         sync: false
       - key: DEFAULT_COUNT
@@ -26,5 +24,7 @@ services:
         value: "3"
       - key: DRAFT_TTL_HOURS
         value: "12"
+      - key: BOX_DONE_DAYS          # an approved box is finished this many Vietnam days after the day it was made; its objects return to the kho (0 = never)
+        value: "2"
       - key: MAX_PARALLEL_LLM
         value: "1"

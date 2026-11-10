@@ -255,15 +255,15 @@ def test_state_revision_is_never_newer_than_its_data(env, monkeypatch):
     service.create_box(make, "M8", "Box A1", "t", [], 3, "x")
     reader, writer = conn_of(s), conn_of(s)
     before = db.rev(reader)
-    real = service.box_items
+    real = service.reuse_cutoff
 
-    def box_items_then_write(conn, box_id):
-        out = real(conn, box_id)
-        with db.tx(writer):                     # another user writes right after we read this box
+    def cutoff_then_write(conn, *a, **k):
+        out = real(conn, *a, **k)
+        with db.tx(writer):                     # another user writes while state() is still reading (after it has read the boxes)
             pass
         return out
 
-    monkeypatch.setattr(service, "box_items", box_items_then_write)
+    monkeypatch.setattr(service, "reuse_cutoff", cutoff_then_write)
     st = service.state(reader, cat)
     assert st["rev"] == before                  # labelled with the revision from before the read
     assert db.rev(reader) > st["rev"]           # so the client will notice it is behind and refetch

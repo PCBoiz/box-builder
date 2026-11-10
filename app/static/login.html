@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Đăng nhập - Box builder</title>
+  <link rel="stylesheet" href="/static/fonts.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+  <main class="login" id="main">
+    <h1>Box builder</h1>
+    <form class="panel" id="login-form" method="post" autocomplete="on" novalidate>
+      <h2>Đăng nhập</h2>
+      <p class="hint" id="login-intro">Chưa có ID? Nhờ admin thêm ID của bạn.</p>
+      <div class="field">
+        <label for="login-id">ID công ty</label>
+        <input id="login-id" name="username" type="text" inputmode="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="40" required aria-describedby="login-err">
+      </div>
+      <details class="admin-code" id="login-admin">
+        <summary>Tôi là admin</summary>
+        <div class="field">
+          <label for="login-code">Mã quản trị</label>
+          <input id="login-code" name="admin-code" type="password" autocomplete="off" maxlength="100">
+        </div>
+      </details>
+      <p class="err" id="login-err" role="alert" hidden></p>
+      <div class="actions"><button type="submit" class="btn primary wide" id="login-go">Vào</button></div>
+      <p class="hint">Đừng đưa ID cho người ngoài công ty.</p>
+    </form>
+    <p class="hint" id="login-off" hidden>Chọn <a href="/">trang admin</a> hoặc <a href="/dung">trang làm hộp</a>.</p>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>

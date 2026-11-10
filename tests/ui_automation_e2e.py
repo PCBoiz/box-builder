@@ -1,25 +1,72 @@
 """Browser test of the object browser, automations and AI batch flow on a throw-away instance (own port, own DB).
-Run:  pip install playwright && python -m playwright install chromium && python tests/ui_automation_e2e.py
+Run:  pip install playwright && python -m playwright install chromium && python -I tests/ui_automation_e2e.py
+Works on Windows and Linux. Set E2E_BROWSER=firefox to use Firefox, E2E_PORT to pick the port.
 Screenshots go to the system temp dir. Never touches SM, Render or Neon.
 Optional: AXE_JS=/path/to/axe.min.js (from the axe-core npm package) adds an accessibility run on every tab."""
-import os, subprocess, sys, tempfile, time, urllib.request, json
+import os, shutil, socket, subprocess, sys, tempfile, time, urllib.request, json
 from playwright.sync_api import sync_playwright
+
+# ---- portability (Windows and Linux): UTF-8 output, no proxy for local calls, a free port, the server started with this Python,
+# ---- and clean-up that survives a file still locked for a moment after the server stops
+for _stream in (sys.stdout, sys.stderr):
+    try: _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception: pass
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+
+def free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+def clean_env(**extra):
+    drop = ("DATABASE_URL", "DEEPSEEK_API_KEY", "ACCESS_CODE", "LLM_MODE", "IMAGE_HOSTS", "SECTORS", "SM_PUSH_MODE", "TEST_DATABASE_URL")
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    env.update(extra)
+    return env
+
+def stop_server(proc, log, *dirs):
+    if proc is not None and proc.poll() is None:
+        if os.name == "nt":   # a venv's python.exe starts the real interpreter as a child: stop the whole tree
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            proc.terminate()
+        try: proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill(); proc.wait(timeout=20)
+    try: log.close()
+    except Exception: pass
+    for d in dirs:
+        for attempt in range(10):
+            try: shutil.rmtree(d, ignore_errors=attempt == 9); break
+            except FileNotFoundError: break
+            except OSError: time.sleep(0.3)
+
+def start_server(root, env, port, tmp):
+    log = open(os.path.join(tmp, "server.log"), "w", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+                            cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+    for _ in range(300):
+        if proc.poll() is not None: break
+        try: urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1); return proc, log
+        except Exception: time.sleep(0.2)
+    log.flush()
+    tail = open(os.path.join(tmp, "server.log"), encoding="utf-8", errors="replace").read()[-1500:]
+    stop_server(proc, log, tmp)
+    raise RuntimeError("the app did not start: " + tail)
+
+def read_text(*parts):
+    with open(os.path.join(*parts), encoding="utf-8") as fh: return fh.read()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(tempfile.gettempdir(), "box-builder-ui-shots")
 os.makedirs(OUT, exist_ok=True)
-PORT = 8091
+PORT = int(os.environ.get("E2E_PORT") or free_port())
+BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 tmp = tempfile.mkdtemp()
-env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DEEPSEEK_API_KEY")}
-env.update(DB_PATH=os.path.join(tmp, "ui.db"), CATALOG_PATH=os.path.join(ROOT, "data/catalog.csv"), SYNC_TOKEN="t", SM_PUSH_MODE="mock")
-srv = subprocess.Popen([os.path.join(ROOT, ".venv/bin/uvicorn"), "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-for _ in range(50):
-    try:
-        urllib.request.urlopen(BASE + "/api/config", timeout=1); break
-    except Exception:
-        time.sleep(0.2)
+env = clean_env(DB_PATH=os.path.join(tmp, "ui.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t", SM_PUSH_MODE="mock")
+srv, srv_log = start_server(ROOT, env, PORT, tmp)
 
 
 import struct, zlib
@@ -47,7 +94,7 @@ def check(cond, msg):
 
 try:
     with sync_playwright() as pw:
-        b = pw.chromium.launch()
+        b = getattr(pw, BROWSER).launch()
         pg = b.new_context(viewport={"width": 1400, "height": 1000}).new_page()
         pg.on("pageerror", lambda e: errs.append("pageerror: " + str(e)))
         pg.on("console", lambda m: errs.append("console: " + m.text) if m.type == "error" else None)
@@ -91,7 +138,7 @@ try:
         pg.wait_for_selector(".tray .pill.draft", timeout=30000)
         pg.wait_for_selector("#f-warn:not([hidden])", timeout=8000)
         check(pg.is_disabled("#f-go") and "đã có" in pg.inner_text("#f-warn"), "a name that is already used is flagged before the button is pressed")
-        check("Duyệt" in pg.inner_text("#nextstep"), "the next step now says to review and approve the draft")
+        check("nháp chưa duyệt" in pg.inner_text("#nextstep"), "the next step says the draft is not approved yet")
         pg.fill("#f-label", "Box B1")
         check(pg.locator("#f-warn").is_hidden() and pg.is_enabled("#f-go"), "a free name clears the warning")
         pg.click("#adv summary")
@@ -149,7 +196,7 @@ try:
         shown = int("".join(ch for ch in pg.inner_text("#o-page").split("·")[1] if ch.isdigit()))
         with pg.expect_download() as dl:
             pg.click("#o-csv")
-        raw = open(dl.value.path(), "rb").read().decode("utf-8")
+        with open(dl.value.path(), "rb") as fh: raw = fh.read().decode("utf-8")
         lines = [ln for ln in raw.lstrip("\ufeff").splitlines() if ln]
         check(raw.startswith("\ufeff") and lines[0].startswith("id,name,vietnamese_name"), "CSV download has the BOM and the header")
         check(len(lines) - 1 == shown, f"CSV holds all {shown} filtered objects (got {len(lines) - 1})")
@@ -158,7 +205,7 @@ try:
         # --- automations tab
         pg.click(".tab[data-view=auto]")
         pg.wait_for_selector(".sw-row")
-        check(pg.locator(".sw-row").count() == 7, "seven switches")
+        check(pg.locator(".sw-row").count() == 8, "eight switches")
         check(not pg.locator("#sw-auto_approve").is_checked(), "auto-approve starts OFF")
         check(pg.locator("#sw-sheet_export").is_checked(), "sheet export starts ON")
         check(pg.locator("#a-alerts li").count() >= 1, "an alert is listed (catalog not synced with SM)")
@@ -180,7 +227,7 @@ try:
         except Exception:
             pass
         check(pg.evaluate("document.activeElement.id") == "sw-sheet_export", "keyboard focus stays on the switch after it saves")
-        check(pg.locator(".sw-state[aria-hidden=true]").count() == 7, "the visual On/Off text is hidden from screen readers (the switch already says it)")
+        check(pg.locator(".sw-state[aria-hidden=true]").count() == 8, "the visual On/Off text is hidden from screen readers (the switch already says it)")
         reuse_row = pg.locator(".sw-row:has(#sw-reuse_old)")
         check(pg.locator("#sw-reuse_old").is_checked() and "Dùng lại món của hộp cũ" in reuse_row.inner_text() and "ngày" in reuse_row.inner_text(), "reuse: the switch is on and says what it does")
         check(reuse_row.locator("input[type=number]").input_value() == "30", "reuse: thirty days by default")
@@ -225,12 +272,13 @@ try:
 
         # --- backup and restore: a bad file is refused, a good one is previewed first, and restoring twice adds nothing
         free3 = [o["id"] for o in json.load(urllib.request.urlopen(BASE + "/api/objects?status=free&per=3"))["items"]]
-        bk_dir = tempfile.mkdtemp()
+        bk_dir = tempfile.mkdtemp(dir=tmp)                  # inside the test's own temp dir, so it is cleaned up with it
         bad_path, good_path = os.path.join(bk_dir, "bad.json"), os.path.join(bk_dir, "good.json")
-        open(bad_path, "w").write("{{{ not json")
-        json.dump({"format": "box-builder-backup", "version": 1, "boxes": [
-            {"module": "M5", "label": "Box A1", "count": 3, "status": "approved", "items": [{"pos": n + 1, "object_id": oid} for n, oid in enumerate(free3)]}],
-            "used": [], "automations": []}, open(good_path, "w"))
+        with open(bad_path, "w", encoding="utf-8") as fh: fh.write("{{{ not json")
+        with open(good_path, "w", encoding="utf-8") as fh:
+            json.dump({"format": "box-builder-backup", "version": 1, "boxes": [
+                {"module": "M5", "label": "Box A1", "count": 3, "status": "approved", "items": [{"pos": n + 1, "object_id": oid} for n, oid in enumerate(free3)]}],
+                "used": [], "automations": []}, fh)
         check(pg.is_disabled("#bk-preview") and pg.is_disabled("#bk-restore"), "backup: preview and restore start switched off")
         pg.set_input_files("#bk-file", bad_path)
         pg.wait_for_selector(".toast.bad:has-text('không phải JSON')", timeout=8000)
@@ -256,7 +304,7 @@ try:
         # --- import boxes from a CSV: bad rows are listed, a preview writes nothing, the box comes in as a draft, a second import adds nothing
         csv_ids = [o["id"] for o in json.load(urllib.request.urlopen(BASE + "/api/objects?status=free&per=3"))["items"]]
         csv_path = os.path.join(bk_dir, "boxes.csv")
-        with open(csv_path, "w", encoding="utf-8-sig") as fh:
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:      # newline="": the same bytes on Windows and Linux
             fh.write("module,box,stt,object_id,qty\n" + "".join(f"M6,Box A1,{n + 1},{oid},1\n" for n, oid in enumerate(csv_ids)) + "M6,Box A1,4,abc,1\n")
         check(pg.is_disabled("#csv-preview") and pg.is_disabled("#csv-import"), "csv import: preview and import start switched off")
         pg.set_input_files("#csv-file", csv_path); pg.wait_for_function("!document.querySelector('#csv-preview').disabled"); pg.click("#csv-preview")
@@ -273,7 +321,7 @@ try:
         check(pg.is_disabled("#csv-import"), "csv import: importing the same file again would add nothing, so the button stays off")
         # a file that is not UTF-8 reaches the server as it is, so the person is told to save it as UTF-8 (the page must not silently garble it)
         latin = os.path.join(bk_dir, "latin1.csv")
-        open(latin, "wb").write(b"module,box,object_id\nM6,Box \xe9,000001\n")
+        with open(latin, "wb") as fh: fh.write(b"module,box,object_id\nM6,Box \xe9,000001\n")
         pg.set_input_files("#csv-file", latin)
         check(pg.locator("#csv-body").is_hidden() and pg.is_disabled("#csv-import"), "csv import: choosing another file clears the old result and keeps import off")
         pg.click("#csv-preview")
@@ -419,7 +467,7 @@ try:
         check(pg.evaluate("getComputedStyle(document.body).zoom") == "1" and pg.is_disabled("#fs-down"), "A- returns to normal size and stops there")
         pg.route("**/api/used", lambda route: route.abort())
         pg.fill("#u-text", "123456"); pg.click("#used button[type=submit]")
-        pg.wait_for_selector(".toast.bad:has-text('Không kết nối được máy chủ')", timeout=8000)
+        pg.wait_for_selector(".toast.bad:has-text('Không kết nối được')", timeout=8000)
         check(True, "a dropped connection says what to do, not 'Failed to fetch'")
         pg.unroute("**/api/used")
 
@@ -474,7 +522,7 @@ try:
         check("Đã trả 1 hộp" in pg.inner_text("#smp-sum"), "fake steps: confirming returns the old box")
         pg.click(".tab[data-view=boxes]")
         pg.wait_for_function("document.querySelectorAll('.pill.pushed').length >= 1", timeout=8000)
-        check(pg.locator(".pill.pushed").count() == ready_before, "fake push: the boxes now show 'Đã đẩy lên SM'")
+        check(pg.locator(".pill.pushed").count() == ready_before, "fake push: the boxes now show 'Đã lên SM'")
 
         # --- the paper for supporters opens in a new tab: approved boxes, sorted by shelf, with a print button
         check(pg.locator("#print-link").get_attribute("href") == "/print/boxes", "print: the header has a link to the pick list")
@@ -522,7 +570,7 @@ except Exception:
         print("could not read state:", e)
     raise
 finally:
-    srv.terminate()
+    stop_server(srv, srv_log, tmp)
 
 errs = [e for e in errs if "favicon" not in e and "422" not in e and "404" not in e and "ERR_FAILED" not in e]   # 422, 404 and ERR_FAILED = the bad number, the dead picture and the dropped connection the test uses on purpose
 check(not errs, f"no browser errors {errs[:3]}")

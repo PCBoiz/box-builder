@@ -160,8 +160,3 @@ def test_export_holds_no_secrets_and_the_endpoints_are_guarded(env, tmp_path):
     assert "catalog" not in json.loads(text) and "sm_boxes" not in json.loads(text)
     cross = {"Sec-Fetch-Site": "cross-site", "Origin": "http://evil.example"}
     assert client.post("/api/backup/import?dry_run=false", json=json.loads(text), headers=cross).status_code == 403   # a web page cannot restore into the app
-    s.access_code = "ma-123"
-    guarded = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    assert guarded.get("/api/backup.json").status_code == 401
-    assert guarded.post("/api/backup/import", json={}).status_code == 401
-    assert guarded.get("/api/backup.json?access_code=ma-123").status_code == 200              # the download link carries the code

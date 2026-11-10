@@ -440,6 +440,20 @@ svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-widt
 .hint.warnline { padding: 8px 10px; }
 .pill.st-sm { background: #d9e8f4; color: #13395a; }
 #a-smboxes h3 { margin: 6px 0 2px; font-size: 13px; }
+#sh-form { display: grid; gap: 8px; }
+#sh-url { width: 100%; }
+#a-people h3 { margin: 6px 0 2px; font-size: 13px; }
+#a-people textarea { width: 100%; }
+#ppl-h:focus { outline: none; }
+#ppl-audit li time { color: var(--ink2); margin-right: 4px; }
+#smb-ages { display: grid; gap: 8px; }
+#smb-opt-h:focus { outline: none; }
+.otable th.rowh { position: static; background: transparent; font-size: 13px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+.otable .barcell { width: 40%; min-width: 120px; vertical-align: middle; }
+.agebar { display: block; height: 12px; background: #e3e8e6; border-radius: 6px; overflow: hidden; }
+.agebar i { display: block; height: 100%; background: #2f6fa0; border-radius: 6px; }
+.otable.opts tr.cur th, .otable.opts tr.cur td { background: #fff3ea; }
+.otable .now { margin-left: 8px; font-size: 11.5px; font-weight: 600; color: var(--ok); }
 .days { width: 72px; }
 .qlist li .pick { display: inline-flex; align-items: center; gap: 8px; font-weight: 400; }
 .qlist li .pick input { width: auto; }

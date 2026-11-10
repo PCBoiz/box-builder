@@ -4,6 +4,7 @@ The UNIQUE index on box_items.object_id is the hard guarantee that an object can
 Every write transaction also takes one global lock (SQLite: BEGIN IMMEDIATE, Postgres: advisory lock), so
 "check it is free, then take it" can never interleave with another user."""
 import contextlib
+import datetime
 import os
 import re
 import sqlite3
@@ -176,7 +177,6 @@ def _schema(pg: bool) -> list[str]:
               owner       TEXT NOT NULL DEFAULT '',
               created_at  {real} NOT NULL,
               updated_at  {real} NOT NULL)""",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_box_name ON boxes(module, label)",
         """CREATE TABLE IF NOT EXISTS box_items(
               box_id     BIGINT NOT NULL REFERENCES boxes(id) ON DELETE CASCADE,
               pos        INTEGER NOT NULL,
@@ -222,12 +222,68 @@ def _schema(pg: bool) -> list[str]:
               at    {real} NOT NULL,
               kind  TEXT NOT NULL,
               msg   TEXT NOT NULL)""",
+        # login by company ID (app/auth.py). people = the allowlist the admin keeps; only the hash of a session token is stored
+        f"""CREATE TABLE IF NOT EXISTS people(
+              person_id TEXT PRIMARY KEY,
+              name      TEXT NOT NULL DEFAULT '',
+              module    TEXT NOT NULL DEFAULT '',
+              is_admin  INTEGER NOT NULL DEFAULT 0,
+              added_at  {real} NOT NULL)""",
+        f"""CREATE TABLE IF NOT EXISTS sessions(
+              token_hash TEXT PRIMARY KEY,
+              person_id  TEXT NOT NULL,
+              created_at {real} NOT NULL,
+              last_seen  {real} NOT NULL,
+              expires_at {real} NOT NULL)""",
+        "CREATE INDEX IF NOT EXISTS ix_sessions_person ON sessions(person_id)",
+        # failed logins, for the delay after too many: only hashes, never the ID that was typed
+        f"""CREATE TABLE IF NOT EXISTS login_fail(
+              id       {pk},
+              at       {real} NOT NULL,
+              ip_hash  TEXT NOT NULL,
+              key_hash TEXT NOT NULL DEFAULT '')""",
+        "CREATE INDEX IF NOT EXISTS ix_login_fail_at ON login_fail(at)",
+        # who did what: logins, allowlist changes, box create/approve/reopen/delete. Append only.
+        f"""CREATE TABLE IF NOT EXISTS audit_log(
+              id      {pk},
+              at      {real} NOT NULL,
+              actor   TEXT NOT NULL,
+              action  TEXT NOT NULL,
+              box_id  BIGINT,
+              detail  TEXT NOT NULL DEFAULT '',
+              ip_hash TEXT NOT NULL DEFAULT '')""",
+        "CREATE INDEX IF NOT EXISTS ix_audit_at ON audit_log(at)",
+        # a box that is finished (service.retire_done): its objects are free again, what is left is the record of what it was
+        f"""CREATE TABLE IF NOT EXISTS box_history(
+              box_id     BIGINT PRIMARY KEY,
+              module     TEXT NOT NULL,
+              label      TEXT NOT NULL,
+              code       TEXT NOT NULL DEFAULT '',
+              anchor     TEXT NOT NULL DEFAULT '',
+              theme      TEXT NOT NULL DEFAULT '',
+              count      INTEGER NOT NULL,
+              owner      TEXT NOT NULL DEFAULT '',
+              title      TEXT NOT NULL DEFAULT '',
+              sm_box_id  TEXT NOT NULL DEFAULT '',
+              created_at {real} NOT NULL,
+              done_at    {real} NOT NULL,
+              day        TEXT NOT NULL,
+              items      TEXT NOT NULL DEFAULT '[]')""",
+        "CREATE INDEX IF NOT EXISTS ix_box_history_created ON box_history(created_at)",
+        # one row per person per day: the module, the units (section code, large object, attendance)
+        f"""CREATE TABLE IF NOT EXISTS plans(
+              owner      TEXT NOT NULL,
+              day        TEXT NOT NULL,
+              data       TEXT NOT NULL,
+              updated_at {real} NOT NULL,
+              PRIMARY KEY(owner, day))""",
     ]
 
 
 # columns added after the first release: older databases get them on start
 _ADD_COLUMNS = [("boxes", "code", "TEXT NOT NULL DEFAULT ''"), ("boxes", "anchor", "TEXT NOT NULL DEFAULT ''"),
-                ("external_used", "added_at", "{real} NOT NULL DEFAULT 0")]
+                ("external_used", "added_at", "{real} NOT NULL DEFAULT 0"),
+                ("boxes", "day", "TEXT NOT NULL DEFAULT ''")]            # the Vietnam day a box was made: the same unit makes B2 again the next day
 
 
 def init(target: str) -> None:
@@ -248,6 +304,12 @@ def init(target: str) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}")
             elif col not in [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+        vn = datetime.timezone(datetime.timedelta(hours=7))                       # the team works in Vietnam time: a "day" is a Vietnam day
+        for r in conn.execute("SELECT id, created_at FROM boxes WHERE day=''").fetchall():            # boxes made before the column existed
+            conn.execute("UPDATE boxes SET day=? WHERE id=?", (datetime.datetime.fromtimestamp(r["created_at"], vn).strftime("%Y-%m-%d"), r["id"]))
+        # a name (module + box name) is used once per day, not once for the 2 days a finished box still lives: a unit needs a new B2 every day
+        conn.execute("DROP INDEX IF EXISTS ux_box_name")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_box_name_day ON boxes(module, label, day)")
     finally:
         conn.close()
 

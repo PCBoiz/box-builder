@@ -1,22 +1,79 @@
 """Browser test of the box features of integrations/box_builder_sm.user.js: reading SM's boxes, and pushing ready boxes in two steps.
 SM is never contacted: sm.config.inc is answered by app/sm_client.py's MockSM behind Playwright routes. The app is the real one, on its own port
-and database. Run: python -I tests/userscript_push_e2e.py (needs playwright + chromium)."""
-import csv, json, os, re, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
+and database. Run: python -I tests/userscript_push_e2e.py (needs playwright + chromium; set E2E_BROWSER=firefox to use Firefox).
+Works on Windows and Linux."""
+import csv, json, os, re, shutil, socket, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import sync_playwright
+
+# ---- portability (Windows and Linux): UTF-8 output, no proxy for local calls, a free port, the server started with this Python,
+# ---- and clean-up that survives a file still locked for a moment after the server stops
+for _stream in (sys.stdout, sys.stderr):
+    try: _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception: pass
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+
+def free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+def clean_env(**extra):
+    drop = ("DATABASE_URL", "DEEPSEEK_API_KEY", "ACCESS_CODE", "LLM_MODE", "IMAGE_HOSTS", "SECTORS", "SM_PUSH_MODE", "TEST_DATABASE_URL")
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    env.update(extra)
+    return env
+
+def stop_server(proc, log, *dirs):
+    if proc is not None and proc.poll() is None:
+        if os.name == "nt":   # a venv's python.exe starts the real interpreter as a child: stop the whole tree
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            proc.terminate()
+        try: proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill(); proc.wait(timeout=20)
+    try: log.close()
+    except Exception: pass
+    for d in dirs:
+        for attempt in range(10):
+            try: shutil.rmtree(d, ignore_errors=attempt == 9); break
+            except FileNotFoundError: break
+            except OSError: time.sleep(0.3)
+
+def start_server(root, env, port, tmp):
+    log = open(os.path.join(tmp, "server.log"), "w", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+                            cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+    for _ in range(300):
+        if proc.poll() is not None: break
+        try: urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1); return proc, log
+        except Exception: time.sleep(0.2)
+    log.flush()
+    tail = open(os.path.join(tmp, "server.log"), encoding="utf-8", errors="replace").read()[-1500:]
+    stop_server(proc, log, tmp)
+    raise RuntimeError("the app did not start: " + tail)
+
+def read_text(*parts):
+    with open(os.path.join(*parts), encoding="utf-8") as fh: return fh.read()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)                                     # python -I leaves the project off the path
 from app.sm_client import MockSM, SMError                    # noqa: E402
 
-PORT = 8096
+PORT = int(os.environ.get("E2E_PORT") or free_port())
+BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "tok-push-e2e"
-SCRIPT = open(os.path.join(ROOT, "integrations", "box_builder_sm.user.js"), encoding="utf-8").read()
-DB = os.path.join(tempfile.mkdtemp(), "p.db")
+SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")
+tmp = tempfile.mkdtemp()
+DB = os.path.join(tmp, "p.db")
 
 # ---- the pretend SM: the real catalog's usable objects, held in a MockSM
-rows = list(csv.reader(open(os.path.join(ROOT, "data", "catalog.csv"), encoding="utf-8-sig")))[1:]
+with open(os.path.join(ROOT, "data", "catalog.csv"), encoding="utf-8-sig", newline="") as fh:
+    rows = list(csv.reader(fh))[1:]
 usable = [r for r in rows if r[6].strip() == "ACTIVE" and r[2].strip() and r[7].strip().isdigit() and int(r[7]) > 0]
 objects = [{"id": f"O{r[0].strip().zfill(6)}", "iid": int(r[0]), "name": r[1], "type": "Obj", "status": "ACTIVE", "quantity": int(r[7]), "loan_reserved": 0,
             "transfer_reserved": 0, "location": r[5], "sector": "Hanoi-GPI", "image_url": ""} for r in usable]
@@ -26,13 +83,8 @@ sm = MockSM({o["id"][1:]: o["quantity"] for o in objects}, {o["id"][1:]: o["name
 PAGE = 2                                                     # SM answers two boxes per page, so the script has to follow has_next
 SECRETS = ("Tran Thi Assignee", "Le Van Holder", "Nguyen Van Creator", "Pham Van People", "Hoang Thi Receiver", "Pham Van Returner")
 
-env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DEEPSEEK_API_KEY")}
-env.update(DB_PATH=DB, CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN=TOKEN)
-srv = subprocess.Popen([os.path.join(ROOT, ".venv/bin/uvicorn"), "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-for _ in range(50):
-    try: urllib.request.urlopen(BASE + "/api/config", timeout=1); break
-    except Exception: time.sleep(0.2)
+env = clean_env(DB_PATH=DB, CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN=TOKEN)
+srv, srv_log = start_server(ROOT, env, PORT, tmp)
 
 fails, errs = [], []
 sm_requests, sm_posts, sm_queries, app_requests = [], [], [], []
@@ -145,7 +197,7 @@ def made_by_script(): return [p for p in sm_posts if p["status"] == 200]
 
 try:
     with sync_playwright() as pw:
-        b = pw.chromium.launch(); pg = b.new_context(viewport={"width": 1300, "height": 1000}).new_page()
+        b = getattr(pw, BROWSER).launch(); pg = b.new_context(viewport={"width": 1300, "height": 1000}).new_page()
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.route("https://sm.config.inc/api/**", sm_route)
         pg.route("https://sm.config.inc/", lambda r: r.fulfill(status=200, content_type="text/html", body="<html><body><h1>Scenario Manager</h1></body></html>"))
@@ -197,7 +249,7 @@ try:
         check(all(set(x) == {"box_id", "title", "status", "status_label", "created_at", "contents"} for x in posted[0]["boxes"]), "each box carries exactly the allowed fields")
         check(all(set(c) == {"object_id", "quantity"} for x in posted[0]["boxes"] for c in x["contents"]), "each content line carries only object_id and quantity")
         check(not any(x in sent for x in SECRETS + ("assignee", "holder", "history", "created_by", "people", "receiver", "returned_by")), "no person, holder or history was sent to the app")
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        con = sqlite3.connect(Path(DB).as_uri() + "?mode=ro", uri=True)       # a file: address that also works for a Windows path
         dump = json.dumps([list(r) for t in ("sm_boxes", "sm_box_items") for r in con.execute(f"SELECT * FROM {t}")] +
                           [list(r) for r in con.execute("SELECT v FROM catalog_snapshot WHERE k='sm_boxes'")])
         con.close()
@@ -326,7 +378,7 @@ try:
         pg.screenshot(path=os.path.join(tempfile.gettempdir(), "box-builder-push-panel.png"))
         b.close()
 finally:
-    srv.terminate()
+    stop_server(srv, srv_log, tmp)
 
 check(not errs, f"no script errors {errs[:2]}")
 print("FAILED" if fails else "ALL PUSH TOOL CHECKS PASSED")

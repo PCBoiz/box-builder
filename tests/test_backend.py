@@ -24,7 +24,7 @@ def env(request, tmp_path):
     target = str(tmp_path / "t.db") if request.param == "sqlite" else PG_URL
     if request.param == "postgres":
         c = db.connect(target)
-        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push, automations, automation_log, sm_boxes, sm_box_items CASCADE")
+        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push, automations, automation_log, sm_boxes, sm_box_items, people, sessions, login_fail, audit_log, box_history, plans CASCADE")
         c.close()
     s = Settings(db_path=target, catalog_path=str(tmp_path / "catalog.csv"), llm_mode="mock")
     shutil.copy(REAL_CSV, s.catalog_path)
@@ -197,7 +197,7 @@ def test_filters_too_narrow_gives_clear_error(env):
     picker.run_generation(s, cat, picker.MockLLM(), box)
     c = conn_of(s)
     b = service.get_box(c, box)
-    assert b["status"] == "error" and "món trống khớp bộ lọc" in b["message"]
+    assert b["status"] == "error" and "món trống hợp nhóm đồ" in b["message"]
 
 
 # ----------------------------------------------------------------------------- HTTP flow
@@ -281,14 +281,6 @@ def test_state_polling_only_sends_changes(env):
     assert "unchanged" not in client.get(f"/api/state?rev={st['rev']}").json()
 
 
-def test_access_code(env):
-    s, cat = env
-    s.access_code = "secret"
-    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    assert client.get("/api/config").json()["needs_code"] is True
-    assert client.get("/api/state").status_code == 401
-    assert client.get("/api/state", headers={"X-Access-Code": "secret"}).status_code == 200
-    assert client.get("/api/export.csv?access_code=secret").status_code == 200
 
 
 def test_abandoned_drafts_release_objects(env):
@@ -409,10 +401,7 @@ def test_catalog_sync_security_and_rules(env):
     client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
     bad = client.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Sync-Token": "nope"})
     assert bad.status_code == 401
-    # the shared access code never opens it, and a short list is refused so a half-failed fetch cannot wipe the kho
-    s.access_code = "team"
-    client2 = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    assert client2.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Access-Code": "team"}).status_code == 401
+    # a short list is refused so a half-failed fetch cannot wipe the kho
     short = client.post("/api/catalog/sync", json={"objects": _sm_rows(10)}, headers={"X-Sync-Token": "secret-sync"})
     assert short.status_code == 422
 
@@ -421,7 +410,7 @@ def test_catalog_sync_security_and_rules(env):
     d = ok.json()
     assert d["usable"] == 120 and d["received"] == 126
     assert d["skipped"] == {"other_sector": 2, "other_type": 1, "inactive": 1, "no_vietnamese_name": 1, "out_of_stock": 1, "bad_id": 0}
-    assert client.get("/api/catalog", headers={"X-Access-Code": "team"}).json()["source"] == "live"
+    assert client.get("/api/catalog").json()["source"] == "live"
 
 
 def test_live_catalog_drives_picks_survives_restart_and_flags_gone_items(env):

@@ -6,6 +6,7 @@ approved boxes) and the signed-in userscript / the sheet's own script do the wri
 import json
 import time
 
+from . import usage
 from .catalog import Catalog
 from .db import tx
 
@@ -18,8 +19,8 @@ META = {
     },
     "auto_approve": {
         "title": "Tự duyệt hộp khi đã chọn đủ",
-        "desc": "Hộp do mô hình chọn đủ số món (không có món do hệ thống tự điền) sẽ được duyệt luôn, khỏi bấm Duyệt. "
-                "Tắt thì bạn tự xem từng hộp trước khi duyệt.",
+        "desc": "Khi bật, hộp được AI chọn đủ món sẽ tự được duyệt, không cần bấm Duyệt. Hộp có món app điền thêm vẫn chờ người làm xem. "
+                "Khi tắt, mỗi người tự xem và duyệt hộp của mình.",
         "enabled": False, "config": {}, "limits": {},
     },
     "sheet_export": {
@@ -35,23 +36,37 @@ META = {
     },
     "reuse_old": {
         "title": "Dùng lại món của hộp cũ",
-        "desc": "Món nằm trong một hộp SM (hoặc trong danh sách đã dùng ở bảng tính) được coi là trống lại khi hộp đó đã tạo cách đây quá số ngày dưới đây, "
-                "vì hộp đã xa ngày làm hộp mới. Tắt thì mọi món đã dùng đều bị giữ mãi. Món trong hộp của app này luôn được giữ.",
+        "desc": "Món trong hộp SM (hoặc trong danh sách đã dùng ở bảng tính) được dùng lại khi hộp đó đã tạo quá số ngày dưới đây. "
+                "Tắt thì món đã dùng bị giữ mãi. Món trong hộp của app này luôn được giữ.",
         "enabled": True, "config": {"days": 30}, "limits": {"days": (1, 365)},
+    },
+    "usage_penalty": {
+        "title": "Giảm món đã dùng nhiều",
+        "desc": "Món có nhiều lượt mượn được chọn ít hơn. Từ mức bắt đầu giảm (mặc định 500 lượt), cứ thêm 300 lượt thì cơ hội được chọn giảm một nửa, thấp nhất còn 5%. "
+                "Món từ mức loại hẳn trở lên không được chọn nữa (0 là không loại món nào). Bạn vẫn thêm tay được mọi món. "
+                "Tắt thì mọi món có cơ hội như nhau.",
+        "enabled": True,
+        "config": {"soft_start": 500, "half_life": 300, "hard_limit": 0, "age_effect": 50, "min_pool": 100},
+        "limits": {"soft_start": (1, 100000), "half_life": (1, 5000), "hard_limit": (0, 100000), "age_effect": (0, 100), "min_pool": (1, 1000)},
     },
     "auto_heal": {
         "title": "Tự thay món biến mất khỏi kho SM",
-        "desc": "Khi đồng bộ kho cho thấy SM không còn một món trong hộp chưa đẩy lên SM, món đó được thay bằng món khác "
-                "và các món còn lại giữ nguyên. Hộp đã duyệt quay về Nháp để bạn duyệt lại (trừ khi bật tự duyệt). Hộp đã đẩy lên SM không bị đụng tới.",
+        "desc": "Khi SM không còn một món trong hộp (hộp chưa lên SM), app thay bằng món khác và giữ nguyên các món còn lại. "
+                "Hộp đã duyệt quay về Nháp để duyệt lại, trừ khi đang bật tự duyệt. Hộp đã lên SM không bị đổi.",
         "enabled": False, "config": {}, "limits": {},
     },
     "sm_queue": {
-        "title": "Hàng chờ đẩy lên SM",
+        "title": "Hàng chờ lên SM",
         "desc": "Kiểm tra từng hộp đã duyệt (món còn tồn kho, số lượng hợp lệ, tiêu đề không trùng) trước khi công cụ đồng bộ trong SM thấy nó. "
                 "Việc tạo TaskBox trong SM vẫn do bạn bấm xác nhận.",
         "enabled": True, "config": {}, "limits": {},
     },
 }
+# the labels of the number boxes, the same words as CFG_LABEL in app.js
+LABEL = {"stale_hours": "Cảnh báo khi kho cũ hơn (giờ)", "low_stock": "Cảnh báo khi một nhóm còn dưới (món)",
+         "days": "Dùng lại món của hộp tạo cách đây hơn (ngày)", "soft_start": "Mức bắt đầu giảm (lượt mượn)",
+         "half_life": "Cứ thêm bao nhiêu lượt mượn thì cơ hội giảm một nửa", "hard_limit": "Mức loại hẳn (lượt mượn, 0 là không loại món nào)",
+         "age_effect": "Ảnh hưởng của tuổi món (%)", "min_pool": "Số món tối thiểu còn để chọn"}
 LOG_KEEP = 200
 
 
@@ -101,15 +116,18 @@ def set_switch(conn, key: str, enabled: bool | None = None, config: dict | None 
         if lim is None:
             raise BadSetting(f"'{k}' không phải là thiết lập của '{key}'.")
         if isinstance(v, bool) or not isinstance(v, int) or not lim[0] <= v <= lim[1]:
-            raise BadSetting(f"'{k}' phải là số nguyên từ {lim[0]} đến {lim[1]}.")
+            raise BadSetting(f"Ô \"{LABEL.get(k, k)}\" phải là số nguyên từ {lim[0]} đến {lim[1]}.")
         new_cfg[k] = v
+    if key == "usage_penalty" and new_cfg["hard_limit"] and new_cfg["hard_limit"] < new_cfg["soft_start"]:
+        raise BadSetting(f"Mức loại hẳn ({new_cfg['hard_limit']} lượt mượn) thấp hơn mức bắt đầu giảm ({new_cfg['soft_start']} lượt mượn), "
+                         f"nên món bị loại trước khi bị giảm. Hãy đặt mức loại hẳn từ {new_cfg['soft_start']} lượt mượn trở lên, hoặc đặt 0 để không loại món nào.")
     with tx(conn):
         conn.execute(
             "INSERT INTO automations(k, enabled, config, updated_at) VALUES(?,?,?,?) "
             "ON CONFLICT (k) DO UPDATE SET enabled = excluded.enabled, config = excluded.config, updated_at = excluded.updated_at",
             (key, int(new_enabled), json.dumps(new_cfg), time.time()))
         if enabled is not None and enabled != cur["enabled"]:
-            _log(conn, "switch", f"{META[key]['title']}: {'BẬT' if new_enabled else 'TẮT'}")
+            _log(conn, "switch", f"{META[key]['title']}: {'đã bật' if new_enabled else 'đã tắt'}")
     return switches(conn)[key]
 
 
@@ -146,14 +164,16 @@ def alerts(conn, catalog: Catalog, taken: set[str]) -> list[dict]:
         hours = (time.time() - info["synced_at"]) / 3600
         if hours >= cfg["stale_hours"]:
             out.append({"kind": "stale", "level": "warn",
-                        "msg": f"Kho SM cập nhật lần cuối cách đây {hours:.0f} giờ (ngưỡng {cfg['stale_hours']} giờ)."})
+                        "msg": f"Kho chưa cập nhật từ SM {hours:.0f} giờ (cảnh báo từ {cfg['stale_hours']} giờ). "
+                               "Mở SM, bấm \"Đồng bộ kho ngay\" ở khung Box builder."})
     from . import service
     rep = service.sm_report(conn, catalog)
     if rep["conflicts"]:
         n = sum(len(c["objects"]) for c in rep["conflicts"])
         out.append({"kind": "sm_conflict", "level": "bad",
-                    "msg": f"{n} món trong {len(rep['conflicts'])} hộp của bạn đã nằm trong hộp khác ở SM hoặc trong danh sách đã dùng ở bảng tính: "
-                           + "; ".join(f"{c['box']} ({', '.join(o['id'] for o in c['objects'][:3])})" for c in rep["conflicts"][:3])})
+                    "msg": f"{n} món trong {len(rep['conflicts'])} hộp đã nằm ở hộp khác (trong SM hoặc bảng tính): "
+                           + "; ".join(f"{c['box']} ({', '.join(o['id'] for o in c['objects'][:3])})" for c in rep["conflicts"][:3])
+                           + ". Mở hộp và thay các món đó."})
     if rep["doubles"]:
         out.append({"kind": "sm_doubles", "level": "warn",
                     "msg": f"{len(rep['doubles'])} món đang nằm trong hai hộp SM trở lên: " + ", ".join(d["id"] for d in rep["doubles"][:6]) + (" ..." if len(rep["doubles"]) > 6 else "")})
@@ -164,6 +184,13 @@ def alerts(conn, catalog: Catalog, taken: set[str]) -> list[dict]:
         out.append({"kind": "gone", "level": "bad",
                     "msg": f"{len(gone)} món đang nằm trong hộp nhưng SM không còn liệt kê: {', '.join(gone[:8])}"
                            + (" ..." if len(gone) > 8 else "")})
+    up = switches(conn)["usage_penalty"]
+    if up["enabled"]:
+        st = usage.summary(items.values(), time.time(), up["config"])
+        if st["over_start"] > 0:
+            out.append({"kind": "heavy", "level": "warn",
+                        "msg": f"{st['over_start']} món có từ {up['config']['soft_start']} lượt mượn trở lên: "
+                               f"{st['reduced']} món được chọn ít hơn, {st['excluded']} món bị loại."})
     total: dict[str, int] = {}
     free: dict[str, int] = {}
     for it in items.values():
@@ -194,17 +221,17 @@ def todo(conn, catalog: Catalog, max_qty: int) -> list[dict]:
 
     errors = [b for b in boxes if b["status"] == "error"]
     if errors:
-        add("error", "bad", f"{len(errors)} hộp bị lỗi: " + ", ".join(f"{b['module']} {b['label']}" for b in errors[:5]), "Hộp")
+        add("error", "bad", f"{len(errors)} hộp chưa chọn được đồ: " + ", ".join(f"{b['module']} {b['label']}" for b in errors[:5])
+            + ". Mở hộp, bấm Chọn lại.", "Hộp")
     drafts = [b for b in boxes if b["status"] == "draft"]
     if drafts:
-        how = "Bật công tắc Tự duyệt nếu muốn bỏ bước này." if not sw["auto_approve"]["enabled"] else "Các hộp này có món do hệ thống tự điền nên cần bạn xem."
-        add("review", "warn", f"{len(drafts)} hộp nháp chờ bạn xem và duyệt. {how}", "Hộp")
+        add("review", "info", f"{len(drafts)} hộp nháp chưa được duyệt. Người làm hộp tự duyệt hộp của mình.", "Hộp")
     q = service.sm_queue(conn, catalog, max_qty)
     if q["blocked"]:
-        add("blocked", "bad", f"{len(q['blocked'])} hộp đã duyệt bị chặn khi đẩy lên SM: "
+        add("blocked", "bad", f"{len(q['blocked'])} hộp đã duyệt bị chặn nên chưa lên SM được: "
             + "; ".join(f"{b['title']} ({b['reasons'][0]})" for b in q["blocked"][:3]), "Tự động hoá")
     if q["ready"] and sw["sm_queue"]["enabled"]:
-        add("push", "warn", f"{len(q['ready'])} hộp sẵn sàng đẩy lên SM. Mở SM, bấm Quét dữ liệu ở khung Box builder, xem danh sách rồi bấm Đồng bộ.", "SM")
+        add("push", "warn", f"{len(q['ready'])} hộp sẵn sàng lên SM. Mở SM, bấm Quét dữ liệu ở khung Box builder, xem danh sách rồi bấm Đồng bộ.", "SM")
     approved = [b for b in boxes if b["status"] == "approved"]
     if approved and sw["sheet_export"]["enabled"]:
         add("sheet", "info", f"{len(approved)} hộp đã duyệt sẵn sàng cho bảng tính. Trong bảng tính: menu Box builder, Điền các box đã duyệt "

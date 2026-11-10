@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/static/fonts.css">
 <link rel="stylesheet" href="/static/app.css">
 <link rel="stylesheet" href="/static/thumbs.css">
+<link rel="stylesheet" href="/static/usage_chart.css">
 </head>
 <body>
 <header class="top">
@@ -15,11 +16,14 @@
   <div class="top-right">
     <span id="kho" class="chip" hidden></span>
     <span id="llm" class="chip" hidden></span>
+    <span id="login-chip" class="chip" hidden></span>
+    <button type="button" id="logout" class="linkbtn" hidden>Thoát</button>
     <label class="who"><span>Tên của bạn</span><input id="who" maxlength="40" autocomplete="name" placeholder="Tên hiện trên các hộp của bạn"></label>
+    <a id="user-page-link" class="link" href="/dung" title="Trang đơn giản cho người làm hộp: tạo, xem, duyệt hộp của mình, lấy đồ">Trang người dùng</a>
     <button type="button" id="guide-open" class="linkbtn">Hướng dẫn</button>
     <span class="textsize" role="group" aria-label="Cỡ chữ">
-      <button type="button" id="fs-down" aria-label="Chữ nhỏ hơn" title="Chữ nhỏ hơn">A−</button>
-      <button type="button" id="fs-up" aria-label="Chữ lớn hơn" title="Chữ lớn hơn">A+</button>
+      <button type="button" id="fs-down" aria-label="A−, chữ nhỏ hơn" title="Chữ nhỏ hơn">A−</button>
+      <button type="button" id="fs-up" aria-label="A+, chữ lớn hơn" title="Chữ lớn hơn">A+</button>
     </span>
     <a id="print-link" class="link" href="/print/boxes" target="_blank" rel="noopener" title="Mở phiếu lấy đồ của các hộp đã duyệt, sắp theo vị trí kệ, để in">In phiếu lấy đồ</a>
     <a id="export" class="link" href="/api/export.csv" download title="Tải danh sách mọi hộp và món về máy">Tải danh sách hộp (CSV)</a>
@@ -64,7 +68,7 @@
   <aside class="rail">
     <form id="new" class="panel" autocomplete="off">
       <h2>Tạo hộp mới</h2>
-      <p class="hint">Một hộp là một khay đồ cho một cảnh. Trang tự chọn món và không chọn trùng món với hộp khác.</p>
+      <p class="hint">Trang tự chọn món, không trùng với hộp khác.</p>
       <div class="row2">
         <div class="field">
           <label for="f-module">Module</label>
@@ -81,7 +85,7 @@
       <div class="field">
         <label for="f-theme">Bối cảnh (không bắt buộc)</label>
         <textarea id="f-theme" rows="3" maxlength="300" placeholder="Ví dụ: bàn bếp và bàn ăn" aria-describedby="h-theme"></textarea>
-        <small id="h-theme" class="help">Gõ vài từ về cảnh, hoặc bấm một gợi ý dưới đây. Để trống thì máy tự chọn.</small>
+        <small id="h-theme" class="help">Gõ vài từ về cảnh, hoặc bấm một gợi ý dưới đây. Để trống thì AI tự chọn.</small>
       </div>
       <div id="presets" class="presets" role="group" aria-label="Bối cảnh mẫu"></div>
       <details id="adv" class="cats adv">
@@ -111,7 +115,7 @@
         </details>
       </details>
       <button class="btn primary wide" id="f-go" type="submit">Tạo hộp</button>
-      <p class="hint">Mất khoảng 15 giây. Món đã nằm trong hộp khác, hoặc đã đánh dấu "đã dùng" bên dưới, sẽ không được chọn.</p>
+      <p class="hint">Thường mất dưới một phút. Món đã nằm trong hộp khác hoặc đã đánh dấu "đã dùng" bên dưới sẽ không được chọn.</p>
     </form>
 
     <form id="used" class="panel" autocomplete="off">
@@ -155,6 +159,16 @@
         <option value="category">Sắp theo nhóm</option>
         <option value="-stock">Tồn kho nhiều trước</option>
         <option value="stock">Tồn kho ít trước</option>
+        <option value="uses">Lượt mượn nhiều trước</option>
+      </select>
+      <select id="o-band" aria-label="Lọc theo số lượt mượn">
+        <option value="">Mọi số lượt mượn</option>
+        <option value="1000+">Từ 1.000 lượt mượn</option>
+        <option value="500-999">500 đến 999 lượt mượn</option>
+        <option value="250-499">250 đến 499 lượt mượn</option>
+        <option value="100-249">100 đến 249 lượt mượn</option>
+        <option value="0-99">Dưới 100 lượt mượn</option>
+        <option value="unknown">Chưa có số lượt mượn</option>
       </select>
     </div>
     <div id="o-chips" class="o-chips" role="group" aria-label="Lọc theo trạng thái"></div>
@@ -162,7 +176,7 @@
       <table class="otable">
         <thead><tr>
           <th scope="col" class="c-sel"><input type="checkbox" id="o-all" aria-label="Chọn mọi món còn trống ở trang này"></th>
-          <th scope="col" class="c-img">Ảnh</th><th scope="col">ID</th><th scope="col">Tên</th><th scope="col">Tiếng Việt</th><th scope="col">Nhóm</th><th scope="col" class="num">Tồn</th><th scope="col">Trạng thái</th>
+          <th scope="col" class="c-img">Ảnh</th><th scope="col">ID</th><th scope="col">Tên</th><th scope="col">Tiếng Việt</th><th scope="col">Nhóm</th><th scope="col" class="num">Tồn</th><th scope="col" class="num">Lượt mượn</th><th scope="col">Trạng thái</th>
         </tr></thead>
         <tbody id="o-body"></tbody>
       </table>
@@ -206,21 +220,21 @@
     <h3>Bước 2. Đồng bộ</h3>
     <ol class="plain">
       <li>Mở SM (https://sm.config.inc/boxes) và đăng nhập. Góc dưới bên phải có nút <b>Box builder</b>.</li>
-      <li>Bấm nút đó, nhập <b>Mã đồng bộ</b> (người quản lý có), bấm <b>Kiểm tra kết nối</b>, rồi <b>Đồng bộ kho ngay</b>.</li>
+      <li>Bấm nút đó, nhập <b>Mã đồng bộ</b> (admin có), bấm <b>Kiểm tra kết nối</b>, rồi <b>Đồng bộ kho ngay</b>.</li>
     </ol>
-    <p class="hint">Công cụ chỉ đọc từ SM, không tạo hay sửa gì trong SM. Hộp chỉ được tạo trong SM sau khi bạn bấm xác nhận.</p>
+    <p class="hint">Công cụ chỉ đọc từ SM, không tạo hay sửa gì trong SM.</p>
     <p class="hint">Ảnh của món do SM cấp có hạn khoảng một giờ. Khi hết hạn, ảnh hiện khung trống cho đến lần đồng bộ kho sau.</p>
   </section>
 
   <section class="panel" id="a-smpush" aria-labelledby="smp-h" hidden>
-    <h2 id="smp-h">Thử đẩy lên SM (SM giả)</h2>
-    <p class="hint">SM giả nằm ngay trong máy chủ, để thử cả quy trình mà không đụng tới SM thật. Hộp thật chỉ được tạo trong SM bằng công cụ trong tab SM, sau khi bạn bấm xác nhận.</p>
+    <h2 id="smp-h">Thử lên SM (SM giả)</h2>
+    <p class="hint">SM giả nằm ngay trong app, để thử cả quy trình mà không đụng tới SM thật.</p>
     <div class="field">
       <label for="smp-who">Người nhận (không bắt buộc)</label>
       <input id="smp-who" maxlength="60" autocomplete="off">
     </div>
     <label class="check"><input type="checkbox" id="smp-borrow"><span>Mượn luôn các món (cần có người nhận)</span></label>
-    <div class="actions"><button type="button" id="smp-go" class="btn primary">Đẩy các hộp sẵn sàng lên SM giả</button></div>
+    <div class="actions"><button type="button" id="smp-go" class="btn primary">Đưa các hộp sẵn sàng lên SM giả</button></div>
     <p id="smp-sum" class="hint" role="status" hidden></p>
     <div class="table-wrap" id="smp-wrap" hidden>
       <table class="otable">
@@ -250,7 +264,25 @@
     <h2 id="smb-h">Hộp đang có trong SM</h2>
     <p id="smb-sum" class="hint" role="status">Đang tải...</p>
     <p id="smb-reuse" class="hint" hidden></p>
-    <h3 id="smb-conf-h" hidden>Hộp của bạn có món đã nằm trong hộp khác ở SM</h3>
+    <div id="smb-ages" hidden>
+      <h3 id="smb-age-h">Hộp SM đang giữ món, theo ngày tạo</h3>
+      <p id="smb-age-sum" class="hint"></p>
+      <div class="table-wrap" id="smb-age-wrap">
+        <table class="otable ages" aria-labelledby="smb-age-h">
+          <thead><tr><th scope="col">Hộp tạo cách đây</th><th scope="col" class="num">Số hộp</th><th scope="col"><span class="sr-only">Biểu đồ</span></th></tr></thead>
+          <tbody id="smb-age-body"></tbody>
+        </table>
+      </div>
+      <h3 id="smb-opt-h" tabindex="-1">Nếu đổi số ngày dùng lại món</h3>
+      <p class="hint">Bấm nút ở cuối một dòng để đổi số ngày dùng lại món.</p>
+      <div class="table-wrap">
+        <table class="otable opts" aria-labelledby="smb-opt-h">
+          <thead><tr><th scope="col">Số ngày</th><th scope="col" class="num">Hộp thôi giữ món</th><th scope="col" class="num">Món trống thêm</th><th scope="col" class="num">Tổng món trống</th><th scope="col"><span class="sr-only">Chọn số ngày</span></th></tr></thead>
+          <tbody id="smb-opt-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <h3 id="smb-conf-h" hidden>Hộp có món đã nằm trong hộp khác ở SM</h3>
     <ul id="smb-conf" class="qlist bad" hidden></ul>
     <h3 id="smb-dbl-h" hidden>Món đang nằm trong hai hộp SM trở lên</h3>
     <ul id="smb-dbl" class="qlist" hidden></ul>
@@ -259,17 +291,53 @@
   <section class="panel" id="a-alerts-panel">
     <h2>Cảnh báo kho</h2>
     <ul id="a-alerts" class="alerts"></ul>
+    <div id="a-usage"></div>
+  </section>
+
+  <section class="panel" id="a-flow" aria-labelledby="flow-h">
+    <h2 id="flow-h">Tiến độ các hộp</h2>
+    <p class="hint">Mỗi người tự tạo và duyệt hộp của mình. Ở đây bạn xem chỗ nào đang vướng.</p>
+    <p id="flow-sum" class="hint" role="status">Đang tải...</p>
+    <ul id="flow-problems" class="qlist" hidden></ul>
+    <div class="table-wrap" id="flow-wrap">
+      <table class="otable" aria-labelledby="flow-h">
+        <thead><tr><th scope="col">Người làm</th><th scope="col" class="num">Hộp</th><th scope="col" class="num">Đang chọn</th><th scope="col" class="num">Nháp</th><th scope="col" class="num">Đã duyệt</th><th scope="col" class="num">Đã lên SM</th><th scope="col" class="num">Chưa chọn được</th></tr></thead>
+        <tbody id="flow-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="a-people" aria-labelledby="ppl-h">
+    <h2 id="ppl-h">Người dùng và quyền</h2>
+    <p id="ppl-state" class="hint" role="status">Đang tải...</p>
+    <div class="table-wrap">
+      <table class="otable" aria-labelledby="ppl-h">
+        <thead><tr><th scope="col">ID</th><th scope="col">Tên</th><th scope="col">Module</th><th scope="col">Quyền</th><th scope="col"><span class="sr-only">Xoá</span></th></tr></thead>
+        <tbody id="ppl-body"></tbody>
+      </table>
+    </div>
+    <form id="ppl-form" autocomplete="off">
+      <div class="field">
+        <label for="ppl-text">Thêm hoặc sửa người, mỗi dòng một người</label>
+        <textarea id="ppl-text" rows="4" maxlength="60000" placeholder="1111, Hải, M2&#10;2222, Hưng, M3, admin"></textarea>
+        <span class="help">Mỗi dòng gồm ID, tên, module. Thêm admin ở cuối dòng nếu người đó cần vào trang admin. ID đã có thì được sửa theo dòng mới.</span>
+      </div>
+      <div class="actions"><button type="submit" class="btn primary" id="ppl-save">Lưu danh sách</button></div>
+      <ul id="ppl-bad" class="qlist bad" hidden></ul>
+    </form>
+    <h3 id="ppl-audit-h">Việc gần đây</h3>
+    <ul id="ppl-audit" class="qlist" aria-labelledby="ppl-audit-h"></ul>
   </section>
 
   <section class="panel">
     <h2>Công tắc tự động hoá</h2>
-    <p class="hint">Phần này dành cho người quản lý: bạn không cần dùng nó để tạo hộp. Mọi công tắc được lưu và áp dụng cho cả nhóm. Trang này không tự ghi gì vào SM: việc tạo TaskBox trong SM luôn do bạn bấm xác nhận.</p>
+    <p class="hint">Phần này dành cho admin. Mọi công tắc được lưu và áp dụng cho cả nhóm. Trang này không tự ghi gì vào SM: việc tạo TaskBox trong SM luôn do bạn bấm xác nhận.</p>
     <div id="a-switches" class="switches"></div>
   </section>
 
   <form class="panel" id="a-batch" autocomplete="off">
     <h2>Tạo nhiều hộp bằng AI</h2>
-    <p class="hint">Gõ mô tả chung (hoặc mỗi dòng một bối cảnh). AI đề xuất danh sách hộp để bạn xem và sửa. Chưa có hộp nào được tạo cho đến khi bạn bấm "Tạo".</p>
+    <p class="hint">Gõ mô tả chung (hoặc mỗi dòng một bối cảnh). AI đề xuất danh sách hộp để bạn xem và sửa. Chưa có hộp nào được tạo cho đến khi bạn bấm "Tạo các hộp này".</p>
     <div class="row3">
       <label>Module<input id="b-module" required maxlength="20" placeholder="M8"></label>
       <label>Hộp đầu tiên<input id="b-start" maxlength="40" value="Box A1"></label>
@@ -287,7 +355,7 @@
       <button type="button" id="b-cats-clear" class="btn small ghost">Dùng tất cả nhóm</button>
     </details>
     <label>Mô tả chung<textarea id="b-brief" rows="3" maxlength="2000" required placeholder="Ví dụ: các cảnh sinh hoạt trong một căn hộ nhỏ: bếp, phòng khách, phòng tắm, bàn làm việc"></textarea></label>
-    <label class="check"><input type="checkbox" id="b-approve"><span>Duyệt luôn các hộp mà mô hình điền đủ món, để chúng vào hàng chờ đẩy lên SM. Hộp có món do hệ thống tự điền vẫn chờ bạn xem.</span></label>
+    <label class="check"><input type="checkbox" id="b-approve"><span>Tự duyệt hộp mà AI chọn đủ món. Hộp có món app điền thêm vẫn chờ bạn xem.</span></label>
     <div class="actions"><button type="submit" class="btn" id="b-plan">AI lên kế hoạch</button><span id="b-who" class="hint"></span></div>
     <div id="b-result" role="region" aria-label="Kế hoạch các hộp" tabindex="-1" hidden>
       <p id="b-cats-note" class="hint" hidden></p>
@@ -297,13 +365,32 @@
   </form>
 
   <section class="panel">
-    <h2>Hàng chờ đẩy lên SM</h2>
+    <h2>Hàng chờ lên SM</h2>
     <div id="a-queue"></div>
   </section>
 
   <section class="panel">
     <h2>Bảng tính Google</h2>
     <div id="a-sheet"></div>
+    <form id="sh-form" autocomplete="off">
+      <div class="field">
+        <label for="sh-url">Link bảng tính</label>
+        <input id="sh-url" type="url" inputmode="url" maxlength="600" placeholder="https://docs.google.com/spreadsheets/d/...">
+        <span class="help" id="sh-help"></span>
+      </div>
+      <div class="actions">
+        <button type="submit" class="btn primary" id="sh-save">Lưu link</button>
+        <a class="btn" id="sh-open" href="#" target="_blank" rel="noopener" hidden>Mở bảng tính</a>
+        <button type="button" class="btn" id="sh-copy">Sao chép script bảng tính</button>
+      </div>
+    </form>
+    <p id="sh-last" class="hint" role="status"></p>
+    <ol class="plain hint" aria-label="Cách nối bảng tính">
+      <li>Mở bảng tính, chọn Tiện ích mở rộng, rồi Apps Script.</li>
+      <li>Bấm Sao chép script bảng tính ở trên, xoá nội dung mẫu trong Apps Script, dán vào rồi bấm Lưu.</li>
+      <li>Tải lại bảng tính. Menu Box builder hiện ra. Lần đầu Google hỏi quyền, chọn Cho phép.</li>
+      <li>Chọn Điền các box đã duyệt vào bảng (xem trước), đọc dòng báo, rồi xác nhận. Script chỉ ghi vào ô trống.</li>
+    </ol>
   </section>
 
   <section class="panel" id="a-backup" aria-labelledby="bk-h">
@@ -361,18 +448,10 @@
 
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
-<div id="gate" class="gate" hidden>
-  <form id="gate-form" class="panel">
-    <h2>Mã truy cập</h2>
-    <p class="hint">Hãy hỏi người cài đặt trang này để lấy mã.</p>
-    <input id="gate-code" type="password" autocomplete="current-password" aria-label="Mã truy cập" required>
-    <p id="gate-err" class="err" hidden>Mã này không đúng.</p>
-    <button class="btn primary wide" type="submit">Mở</button>
-  </form>
-</div>
 
 <noscript><p style="padding:24px">Trang này cần bật JavaScript.</p></noscript>
 <script src="/static/thumbs.js"></script>
+<script src="/static/usage_chart.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

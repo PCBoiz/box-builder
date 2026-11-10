@@ -185,6 +185,12 @@ tr { break-inside: avoid; page-break-inside: avoid; }
 """
 
 
+def _day_text(day) -> str:
+    """'2026-11-11' -> '11/11': the day a box was made, so two boxes of one unit on two days can be told apart on paper."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", str(day or ""))
+    return f"{m.group(3)}/{m.group(2)}" if m else ""
+
+
 def _fact(label: str, value) -> str:
     v = _esc(value)
     return f"<li><b>{label}:</b> {v}</li>" if v else ""
@@ -227,7 +233,7 @@ def _box_section(box: dict, heading: str, generated_at: str) -> str:
     name = " · ".join(p for p in (_text(box.get("module")), _text(box.get("label"))) if p) or "Hộp chưa đặt tên"
     facts = "".join([
         _fact("Module", box.get("module")), _fact("Hộp", box.get("label")), _fact("Mã section", box.get("code")),
-        _fact("Đồ lớn", box.get("anchor")), _fact("Tiêu đề TaskBox", box.get("title")), _fact("Ngày", generated_at),
+        _fact("Đồ lớn", box.get("anchor")), _fact("Làm ngày", _day_text(box.get("day"))), _fact("Ngày", generated_at),
     ])
     out = [
         '<section class="box">\n',
@@ -266,7 +272,7 @@ def render_pick_list(boxes: list[dict], generated_at: str = "", heading: str = "
     when = _text(generated_at)
     if not boxes:
         sections = (f'<h1>{_esc(heading)}</h1>\n<div class="empty"><p>{EMPTY_TEXT}</p>'
-                    "<p>Duyệt hộp trong app, rồi mở lại phiếu này.</p></div>\n")
+                    "<p>Tạo hoặc duyệt hộp rồi mở lại phiếu này.</p></div>\n")
     else:
         parts = []
         if combined and len(boxes) > 1:
@@ -282,8 +288,7 @@ def render_pick_list(boxes: list[dict], generated_at: str = "", heading: str = "
         f"<title>{_esc(heading)}</title>\n"
         f"<style>{CSS}</style>\n"
         "</head>\n<body>\n"
-        '<div class="toolbar"><button type="button" onclick="window.print()">In phiếu</button>'
-        "<span>Hoặc nhấn Ctrl+P</span></div>\n"
+        '<div class="toolbar"><button type="button" onclick="window.print()">In phiếu</button></div>\n'
         f"<main>\n{sections}</main>\n"
         "</body>\n</html>\n"
     )
