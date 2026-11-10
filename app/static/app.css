@@ -443,3 +443,7 @@ svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-widt
 .days { width: 72px; }
 .qlist li .pick { display: inline-flex; align-items: center; gap: 8px; font-weight: 400; }
 .qlist li .pick input { width: auto; }
+#a-sync h3 { margin: 14px 0 4px; font-size: 14px; color: var(--ink); }
+#a-sync .actions { margin: 6px 0 10px; }
+#sync-code-box summary { cursor: pointer; font-size: 13px; color: var(--ink2); margin: 4px 0; }
+#sync-code { width: 100%; margin-top: 6px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre; overflow: auto; }

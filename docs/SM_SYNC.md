@@ -7,15 +7,29 @@ Script không bao giờ chuyển trạng thái, giao, mượn, sửa hay xoá h�
 
 ## Cài đặt (Firefox + Tampermonkey)
 
-1. Bấm biểu tượng Tampermonkey, chọn **Create a new script**.
-2. Xoá toàn bộ nội dung mẫu, dán toàn bộ file `integrations/box_builder_sm.user.js`, nhấn Ctrl+S.
-3. Nếu đang có script đồng bộ cũ (tải từ GitHub bằng loader), tắt nó đi để hai nút không chồng nhau.
-4. Mở https://sm.config.inc/boxes và đăng nhập SM như thường lệ. Góc dưới bên phải có nút **Box builder**.
-5. Bấm nút đó, nhập:
+Có hai cách. Cách A nhanh nhưng phụ thuộc vào việc Tampermonkey tự mở trang cài đặt. Nếu bấm liên kết mà chỉ thấy **một trang trống**
+(Tampermonkey đã chặn trang nhưng không mở được trang cài đặt) thì dùng cách B, cách này luôn dùng được.
+
+**Cách A.** Trong Box builder, tab **Tự động hoá**, bấm **Cài bằng một cú bấm**, rồi bấm **Install** ở trang Tampermonkey mở ra.
+Cách khác: Tampermonkey > **Dashboard** > **Utilities** > **Install from URL**, dán `https://box-builder-guwc.onrender.com/box_builder_sm.user.js`.
+
+**Cách B (sao chép và dán).**
+
+1. Trong Box builder, tab **Tự động hoá**, bấm **Sao chép mã công cụ**. Nếu trình duyệt không cho sao chép, mở mục
+   "Không sao chép được?", bấm vào khung mã, nhấn Ctrl+A rồi Ctrl+C. (Hoặc mở `/box_builder_sm.txt` của trang, chọn hết và sao chép.)
+2. Bấm biểu tượng Tampermonkey, chọn **Create a new script**.
+3. Bấm vào khung soạn thảo, nhấn Ctrl+A để xoá nội dung mẫu, nhấn Ctrl+V để dán, nhấn Ctrl+S để lưu.
+   Cách này không cần Box builder đã chạy: có thể dán thẳng file `integrations/box_builder_sm.user.js` trong thư mục dự án, rồi nhập địa chỉ ở bước 3 của phần dưới.
+
+**Sau khi cài.**
+
+1. Nếu đang có script đồng bộ cũ (tải từ GitHub bằng loader), tắt nó đi để hai nút không chồng nhau.
+2. Mở https://sm.config.inc/boxes và đăng nhập SM như thường lệ. Góc dưới bên phải có nút **Box builder**.
+3. Bấm nút đó, nhập:
    - **Địa chỉ Box builder**, ví dụ `https://box-builder-guwc.onrender.com`
    - **Mã đồng bộ**: giá trị `SYNC_TOKEN` (trong Render, mục Environment của dịch vụ box-builder)
    - **Khu**: `Hanoi-GPI`
-6. Bấm **Kiểm tra kết nối**. Khi cả ba bước báo xong, bấm **Đồng bộ kho ngay**.
+4. Bấm **Kiểm tra kết nối**. Khi cả ba bước báo xong, bấm **Đồng bộ kho ngay**.
 
 Lần đầu, Tampermonkey hỏi có cho script gọi tới địa chỉ Box builder không. Chọn cho phép (Always allow domain).
 

@@ -80,7 +80,7 @@ def test_every_route_is_guarded_except_the_two_public_ones(env):
         if "auth" in deps:
             continue
         (token if r.path in ("/api/catalog/sync", "/api/sync/check", "/api/sm/boxes/sync") or r.path.endswith("/pushed") else unguarded).add(r.path)
-    assert unguarded == {"/", "/api/config", "/box_builder_sm.user.js"}, unguarded
+    assert unguarded == {"/", "/api/config", "/box_builder_sm.user.js", "/box_builder_sm.txt"}, unguarded
     assert token == {"/api/catalog/sync", "/api/sync/check", "/api/sm/boxes/sync", "/api/boxes/{box_id}/pushed"}, token
 
 

@@ -21,6 +21,7 @@ def test_served_script_has_the_address_the_connect_line_and_update_links(env):
     assert "// @downloadURL  https://box-builder-guwc.onrender.com/box_builder_sm.user.js" in t
     assert "// @updateURL    https://box-builder-guwc.onrender.com/box_builder_sm.user.js" in t
     assert t.count("// @connect") >= 3 and "const DEFAULT_APP = \"\";" not in t
+    assert t.count("// @connect      box-builder-guwc.onrender.com") == 1                    # listed once, even though the file already names it
 
 
 def test_the_app_parameter_picks_the_address_and_bad_values_are_refused(env):
@@ -49,3 +50,15 @@ def test_the_script_holds_no_secret_and_is_the_same_file_as_in_the_repo(env):
     assert t.replace("// @connect      localhost\n", "") != source                       # only the header and the default address differ
     body = re.sub(r"^// ==UserScript==.*?// ==/UserScript==\n", "", t, flags=re.S).replace(re.search(r'const DEFAULT_APP = "[^"]*";', t).group(0), 'const DEFAULT_APP = "";')
     assert body == re.sub(r"^// ==UserScript==.*?// ==/UserScript==\n", "", source, flags=re.S)
+
+
+def test_the_same_script_is_also_served_as_plain_text_for_copy_and_paste(env):
+    """When Tampermonkey does not open its install page the person copies the code instead, so the text page must match the script exactly."""
+    client, s, _ = make_client(env)
+    hdr = {"host": "box-builder-guwc.onrender.com", "x-forwarded-proto": "https"}
+    js, txt = client.get("/box_builder_sm.user.js", headers=hdr), client.get("/box_builder_sm.txt", headers=hdr)
+    assert txt.status_code == 200 and txt.headers["content-type"].startswith("text/plain") and "charset=utf-8" in txt.headers["content-type"]
+    assert txt.headers["cache-control"] == "no-cache" and txt.text == js.text
+    assert txt.text.startswith("// ==UserScript==") and 'const DEFAULT_APP = "https://box-builder-guwc.onrender.com";' in txt.text
+    assert client.get("/box_builder_sm.txt", params={"app": "https://a.com/path"}).status_code == 422          # same address check
+    assert client.get("/box_builder_sm.txt", params={"app": "https://nas.example.com"}).text.count("// @connect      nas.example.com") == 1

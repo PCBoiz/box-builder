@@ -864,6 +864,34 @@ function showFakeResults(r, okText) {
   $("#smp-wrap").hidden = rows.length === 0;
 }
 
+function setupSyncInstall() {
+  const box = $("#sync-code"), msg = $("#sync-copy-msg"), details = $("#sync-code-box");
+  if (!box) return;
+  const loadCode = async () => {                       // the same script the install link serves, as plain text
+    if (box.value) return box.value;
+    const r = await fetch("/box_builder_sm.txt", { cache: "no-store" });
+    if (!r.ok) throw new Error("Không tải được mã công cụ. Thử lại sau ít giây.");
+    box.value = await r.text();
+    return box.value;
+  };
+  details.addEventListener("toggle", () => { if (details.open) loadCode().catch(fail); });
+  box.addEventListener("focus", () => box.select());
+  $("#sync-copy").addEventListener("click", async () => {
+    try {
+      const code = await loadCode();
+      let ok = false;
+      try { await navigator.clipboard.writeText(code); ok = true; } catch (e) { /* blocked, or the address is plain http: use the fallback */ }
+      if (!ok) {
+        details.open = true;                          // show the code and select it, so Ctrl+C is all that is left
+        box.focus(); box.select();
+        try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      }
+      msg.textContent = ok ? "Đã sao chép. Giờ dán vào Tampermonkey (Create a new script)." : "Chưa sao chép được tự động. Mã đã được chọn sẵn trong khung bên dưới: nhấn Ctrl+C.";
+      msg.className = ok ? "hint" : "hint warnline";
+    } catch (e) { fail(e); }
+  });
+}
+
 function setupSmPush() {
   const panel = $("#a-smpush");
   panel.hidden = cfg.sm_push_mode !== "mock";
@@ -1056,7 +1084,7 @@ async function init() {
   chip.hidden = false;
   chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
-  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush();
+  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall();
   updateExport();
   await poll(true);
   if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });

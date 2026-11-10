@@ -187,13 +187,22 @@
   <section class="panel" id="a-sync" aria-labelledby="sync-h">
     <h2 id="sync-h">Đồng bộ kho với SM</h2>
     <p id="sync-status" class="hint" role="status">Đang kiểm tra...</p>
+    <h3>Bước 1. Cài công cụ vào Tampermonkey (làm một lần)</h3>
+    <p class="hint"><b>Cách A:</b> bấm nút này. Tampermonkey sẽ mở trang cài đặt, bấm <b>Install</b>. Nếu chỉ thấy một trang trống thì dùng cách B.</p>
+    <div class="actions"><a id="sync-install" class="btn primary" href="/box_builder_sm.user.js">Cách A: Cài bằng một cú bấm</a></div>
+    <p class="hint"><b>Cách B (luôn dùng được):</b> bấm <b>Sao chép mã công cụ</b>. Rồi bấm biểu tượng Tampermonkey, chọn <b>Create a new script</b>
+      (tạo script mới), bấm vào khung soạn thảo, nhấn <b>Ctrl+A</b> để xoá hết chữ mẫu, nhấn <b>Ctrl+V</b> để dán, rồi nhấn <b>Ctrl+S</b> để lưu.</p>
+    <div class="actions"><button type="button" id="sync-copy" class="btn">Cách B: Sao chép mã công cụ</button>
+      <span id="sync-copy-msg" class="hint" role="status"></span></div>
+    <details id="sync-code-box"><summary>Không sao chép được? Mở mã ra rồi tự chọn và sao chép</summary>
+      <label class="hint" for="sync-code">Bấm vào khung, nhấn Ctrl+A rồi Ctrl+C.</label>
+      <textarea id="sync-code" rows="8" readonly spellcheck="false" wrap="off"></textarea></details>
+    <h3>Bước 2. Đồng bộ</h3>
     <ol class="plain">
-      <li>Cài một lần: bấm nút dưới đây. Tampermonkey mở trang cài đặt, bấm <b>Install</b>.</li>
       <li>Mở SM (https://sm.config.inc/boxes) và đăng nhập. Góc dưới bên phải có nút <b>Box builder</b>.</li>
       <li>Bấm nút đó, nhập <b>Mã đồng bộ</b> (người quản lý có), bấm <b>Kiểm tra kết nối</b>, rồi <b>Đồng bộ kho ngay</b>.</li>
     </ol>
-    <div class="actions"><a id="sync-install" class="btn primary" href="/box_builder_sm.user.js">Cài công cụ đồng bộ</a>
-      <span class="hint">Công cụ chỉ đọc từ SM, không tạo hay sửa gì trong SM.</span></div>
+    <p class="hint">Công cụ chỉ đọc từ SM, không tạo hay sửa gì trong SM. Hộp chỉ được tạo trong SM sau khi bạn bấm xác nhận.</p>
   </section>
 
   <section class="panel" id="a-smpush" aria-labelledby="smp-h" hidden>

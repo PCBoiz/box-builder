@@ -201,6 +201,19 @@ try:
         check("Chưa đồng bộ lần nào" in pg.inner_text("#sync-status"), "sync: says plainly that the kho has never been synced")
         script_text = urllib.request.urlopen(BASE + "/box_builder_sm.user.js").read().decode()
         check(script_text.startswith("// ==UserScript==") and f'const DEFAULT_APP = "{BASE}"' in script_text, "sync: the served script holds this app's address")
+        # the install route that does not rely on Tampermonkey catching the link: open the code, copy it, paste it into "Create a new script"
+        check("Cách B" in pg.inner_text("#a-sync") and pg.locator("#sync-copy").is_visible(), "sync: a copy-and-paste way to install is shown next to the link")
+        check(pg.locator("#sync-code").is_hidden() and not pg.input_value("#sync-code"), "sync: the code box starts closed and empty")
+        pg.locator("#sync-code-box summary").click()
+        pg.wait_for_function("document.querySelector('#sync-code').value.startsWith('// ==UserScript==')", timeout=8000)
+        txt_copy = urllib.request.urlopen(BASE + "/box_builder_sm.txt").read().decode()
+        check(pg.input_value("#sync-code") == txt_copy == script_text, "sync: the box holds exactly the script the install link serves")
+        pg.locator("#sync-code-box summary").click()
+        pg.locator("#sync-copy").click()
+        pg.wait_for_function("document.querySelector('#sync-copy-msg').textContent.length > 0", timeout=8000)
+        copy_msg = pg.inner_text("#sync-copy-msg")
+        check("Đã sao chép" in copy_msg or "Ctrl+C" in copy_msg, f"sync: the copy button answers either way: {copy_msg!r}")
+        check("Đã sao chép" in copy_msg or pg.locator("#sync-code").is_visible(), "sync: when the clipboard is blocked the code is opened and selected for Ctrl+C")
 
         # --- backup and restore: a bad file is refused, a good one is previewed first, and restoring twice adds nothing
         free3 = [o["id"] for o in json.load(urllib.request.urlopen(BASE + "/api/objects?status=free&per=3"))["items"]]
