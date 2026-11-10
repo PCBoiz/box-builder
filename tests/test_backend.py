@@ -416,7 +416,7 @@ def test_catalog_sync_security_and_rules(env):
     short = client.post("/api/catalog/sync", json={"objects": _sm_rows(10)}, headers={"X-Sync-Token": "secret-sync"})
     assert short.status_code == 422
 
-    ok = client.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Sync-Token": "secret-sync"})
+    ok = client.post("/api/catalog/sync", json={"objects": _sm_rows(), "force": True}, headers={"X-Sync-Token": "secret-sync"})
     assert ok.status_code == 200
     d = ok.json()
     assert d["usable"] == 120 and d["received"] == 126
@@ -428,7 +428,7 @@ def test_live_catalog_drives_picks_survives_restart_and_flags_gone_items(env):
     s, cat = env
     s.sync_token = "tok"
     client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
-    assert client.post("/api/catalog/sync", json={"objects": _sm_rows()}, headers={"X-Sync-Token": "tok"}).status_code == 200
+    assert client.post("/api/catalog/sync", json={"objects": _sm_rows(), "force": True}, headers={"X-Sync-Token": "tok"}).status_code == 200
     st = client.get("/api/state").json()
     assert st["stats"]["catalog"] == 120 and st["catalog"]["source"] == "live"
 
@@ -444,7 +444,7 @@ def test_live_catalog_drives_picks_survives_restart_and_flags_gone_items(env):
     # next sync: one object in the box has run out in SM -> reported, still shown, counted as gone
     gone = box["items"][0]["id"]
     rows = [dict(r, avail=0) if r["id"] == gone else r for r in _sm_rows()]
-    r = client2.post("/api/catalog/sync", json={"objects": rows}, headers={"X-Sync-Token": "tok"}).json()
+    r = client2.post("/api/catalog/sync", json={"objects": rows, "force": True}, headers={"X-Sync-Token": "tok"}).json()
     assert r["claimed_now_unavailable"] == [gone]
     st = client2.get("/api/state").json()
     assert st["stats"]["gone"] == 1

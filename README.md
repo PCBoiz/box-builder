@@ -123,6 +123,12 @@ In the batch form, "Một section: B2, B3, A1" fills the three names and "Mã se
 The sheet script then writes that section's rows (25 rows per section) and checks first that the block title is
 really there, so a tab with different spacing is skipped, not written to the wrong place.
 
+**Syncing the kho from SM.** `integrations/box_builder_sm.user.js` is a small Tampermonkey script for your signed-in SM tab. It reads
+SM's object list (GET only), keeps the chosen sector, and posts the compact rows to `/api/catalog/sync` with the sync token typed
+into its panel. Its "Kiểm tra kết nối" button says in plain Vietnamese which step fails. SM sends no Vietnamese names, so the app
+fills them from its CSV by Object ID, and it refuses a sync that would leave under 50 usable objects or under half of the current
+kho (send `force: true` to override). Steps and messages: `docs/SM_SYNC.md`. Test: `python tests/userscript_sync_e2e.py`.
+
 **One-click batch.** In "Tạo nhiều hộp bằng AI", tick "Duyệt luôn..." to approve each box as soon as the model has filled
 every slot. Only that batch is affected, and boxes with code-filled slots still wait for a person.
 

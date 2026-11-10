@@ -38,6 +38,7 @@ class PushedBody(BaseModel):
 
 class SyncBody(BaseModel):
     objects: list[dict] = Field(max_length=20000)     # rows exactly as the userscript compacts them from /api/objects
+    force: bool = False                               # accept a list that leaves far fewer usable objects than the catalog has now
 
 
 class Qty(BaseModel):
@@ -213,10 +214,19 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
             raise HTTPException(401, "Sai mã đồng bộ.")
         if len(body.objects) < 50:                # a short list means the fetch half-failed; never wipe the catalog with it
             raise service.Invalid(f"Danh sách chỉ có {len(body.objects)} món, quá ngắn nên bị bỏ qua.")
-        # Only a cleaned picture URL is kept (see app/images.py). Anything else in the row is dropped.
+        # A sync that would leave almost nothing usable (for example SM sent no Vietnamese names) must not replace a good catalog.
+        # The check runs on the compact rows below, so build them first.
         rows = [{"id": o.get("id"), "name": o.get("name"), "vi": o.get("vi"), "type": o.get("type"),
                  "status": o.get("status"), "avail": o.get("avail"), "qty": o.get("qty"), "loc": o.get("loc"),
                  "sector": o.get("sector"), "img": images.pick_image(o, hosts=cat.image_hosts)} for o in body.objects]
+        preview = cat.preview_live(rows)
+        have = len(cat.items())
+        if not body.force and preview["usable"] < max(50, have // 2):
+            sk = preview["skipped"]
+            raise service.Invalid(
+                f"Chỉ {preview['usable']} món dùng được trong {len(rows)} món nhận về (đang có {have}). "
+                f"Thiếu tên tiếng Việt: {sk['no_vietnamese_name']}, hết hàng: {sk['out_of_stock']}, khác khu: {sk['other_sector']}. "
+                "Kho không bị thay đổi.")
         now = time.time()
         summary = cat.set_live(rows, now)
         # Only keep what this app is allowed to use. Objects from other sectors are counted, then dropped, never stored.
@@ -433,6 +443,12 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         for box_id in ids:
             picker.start_generation(s, cat, engine, box_id, auto=True, approve=b.approve)
         return {"ids": ids}
+
+    @app.get("/api/sync/check")
+    def sync_check(x_sync_token: str = Header(default="")):
+        """For the sync tool's "check the connection" button: is the address right, is the code right, what does the app hold now."""
+        sync_auth(x_sync_token)
+        return {"ok": True, "catalog": cat.info(), "vi_fallback": True, "min_usable": 50}
 
     def sync_auth(x_sync_token: str):
         if not s.sync_token:

@@ -48,7 +48,7 @@ def test_token_routes_are_not_affected_by_the_browser_check(env):
     client, s, cat = make_client(env)                                    # sync token is "tok"
     rows = [{"id": f"{9000 + i:06d}", "name": f"T{i}", "vi": f"Đồ {i}", "type": "Obj", "status": "ACTIVE", "avail": 5, "qty": 5,
              "loc": "A", "sector": "Hanoi-GPI"} for i in range(60)]
-    r = client.post("/api/catalog/sync", json={"objects": rows}, headers={"X-Sync-Token": "tok", **CROSS_SITE})
+    r = client.post("/api/catalog/sync", json={"objects": rows, "force": True}, headers={"X-Sync-Token": "tok", **CROSS_SITE})
     assert r.status_code == 200                                          # the userscript calls from the SM page, with its token
     assert client.post("/api/catalog/sync", json={"objects": rows}, headers=CROSS_SITE).status_code == 401   # still needs the token
 
@@ -79,9 +79,9 @@ def test_every_route_is_guarded_except_the_two_public_ones(env):
         deps = [getattr(d.call, "__name__", "") for d in r.dependant.dependencies]
         if "auth" in deps:
             continue
-        (token if r.path == "/api/catalog/sync" or r.path.endswith("/pushed") else unguarded).add(r.path)
+        (token if r.path in ("/api/catalog/sync", "/api/sync/check") or r.path.endswith("/pushed") else unguarded).add(r.path)
     assert unguarded == {"/", "/api/config"}, unguarded
-    assert token == {"/api/catalog/sync", "/api/boxes/{box_id}/pushed"}, token
+    assert token == {"/api/catalog/sync", "/api/sync/check", "/api/boxes/{box_id}/pushed"}, token
 
 
 # ----------------------------------------------------------------------------- not a security finding, but a deploy one: no stale scripts

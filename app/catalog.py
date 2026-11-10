@@ -58,6 +58,7 @@ class Catalog:
         self._mtime = None
         self._items: dict[str, Item] = {}
         self._cat_of: dict[str, str] = {}
+        self._vi_of: dict[str, str] = {}
         self._live: dict[str, Item] | None = None
         self.sectors: tuple[str, ...] = ()        # empty = every sector; the app sets it from SECTORS
         self.image_hosts: tuple[str, ...] = images.DEFAULT_HOSTS
@@ -85,7 +86,9 @@ class Catalog:
         for r in rows[1:]:
             if len(r) >= 8 and pad_id(r[0]) and r[3].strip():
                 cat_of[pad_id(r[0])] = r[3].strip()
-        self._items, self._cat_of, self._mtime = items, cat_of, mtime
+        # Vietnamese names for every CSV row: SM's own object list carries no Vietnamese name, so a live sync falls back to these
+        vi_of = {pad_id(r[0]): r[2].strip() for r in rows[1:] if len(r) >= 3 and pad_id(r[0]) and r[2].strip()}
+        self._items, self._cat_of, self._vi_of, self._mtime = items, cat_of, vi_of, mtime
 
     def _fresh(self):
         try:
@@ -102,6 +105,17 @@ class Catalog:
     # ---------------------------------------------------------------- live snapshot from Scenario Manager
     def set_live(self, rows: list[dict], synced_at: float) -> dict:
         """Replace the catalog with SM's current objects. Returns counts so the caller can show what was skipped."""
+        items, skipped = self._build_live(rows)
+        self._live = items
+        self._live_info = {"synced_at": synced_at, "received": len(rows), "skipped": skipped}
+        return {**self._live_info, "usable": len(items)}
+
+    def preview_live(self, rows: list[dict]) -> dict:
+        """What set_live would give, without changing anything: lets the caller refuse a sync that would empty the catalog."""
+        items, skipped = self._build_live(rows)
+        return {"received": len(rows), "usable": len(items), "skipped": skipped}
+
+    def _build_live(self, rows: list[dict]) -> tuple[dict[str, Item], dict]:
         items: dict[str, Item] = {}
         skipped = {"other_sector": 0, "other_type": 0, "inactive": 0, "no_vietnamese_name": 0, "out_of_stock": 0, "bad_id": 0}
         for o in rows:
@@ -118,7 +132,7 @@ class Catalog:
             if str(o.get("status", "ACTIVE")) != "ACTIVE":
                 skipped["inactive"] += 1
                 continue
-            vi = str(o.get("vi") or "").strip()
+            vi = str(o.get("vi") or "").strip() or self._vi_of.get(oid, "")
             if not vi:
                 skipped["no_vietnamese_name"] += 1
                 continue
@@ -136,9 +150,7 @@ class Catalog:
             cat = self._cat_of.get(oid, UNCATEGORISED)
             items[oid] = Item(oid, name, vi, cat, str(o.get("loc") or "").strip(), stock, fold(f"{name} {vi} {cat}"),
                               images.pick_image(o, hosts=self.image_hosts) or "")
-        self._live = items
-        self._live_info = {"synced_at": synced_at, "received": len(rows), "skipped": skipped}
-        return {**self._live_info, "usable": len(items)}
+        return items, skipped
 
     def allowed_sector(self, o: dict) -> bool:
         """Rows from other sectors, or with no sector at all, are dropped (when a sector filter is set)."""
