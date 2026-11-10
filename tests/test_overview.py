@@ -58,3 +58,20 @@ def test_a_box_with_no_known_owner_is_listed_as_such(env):
     conn_of(s).execute("UPDATE boxes SET owner=''")
     o = admin.get("/api/admin/overview").json()
     assert o["owners"][0]["owner"] == "" and o["owners"][0]["boxes"] == 1
+
+
+def test_an_approved_box_not_in_sm_after_four_hours_is_a_problem_because_a_box_lives_one_day(env):
+    """With a one day life the old 24 hour limit could never fire: the box was gone before."""
+    admin, s, cat = _people(env)
+    hai = second_browser(admin, "2002")
+    fresh, _ = _own_box(hai, "Box A1", module="M5")
+    late, _ = _own_box(hai, "Box B2", module="M5")
+    for bid in (fresh, late):
+        hai.post(f"/api/my/boxes/{bid}/approve", headers=SAME)
+    c = conn_of(s)
+    now = time.time()
+    c.execute("UPDATE boxes SET updated_at=? WHERE id=?", (now - 3 * 3600, fresh))
+    c.execute("UPDATE boxes SET updated_at=? WHERE id=?", (now - 5 * 3600, late))
+    msgs = [p["msg"] for p in admin.get("/api/admin/overview").json()["problems"]]
+    stuck = [m for m in msgs if "chưa lên SM" in m]
+    assert len(stuck) == 1 and "Box B2" in stuck[0] and "Box A1" not in stuck[0], msgs

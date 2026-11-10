@@ -324,8 +324,8 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                     if cats:
                         raise service.Invalid(
                             f"Kho chỉ còn {len(pool)} món trống hợp nhóm đồ đã chọn, mà hộp cần {len(free)}. "
-                            "Chọn thêm nhóm đồ, hoặc xoá bớt hộp nháp để lấy món về.")
-                    raise service.Invalid(f"Kho chỉ còn {len(pool)} món trống, mà hộp cần {len(free)}. Xoá bớt hộp chưa cần để lấy món về.")
+                            "Chọn thêm nhóm đồ, hoặc xoá bớt hộp chưa duyệt để lấy món về.")
+                    raise service.Invalid(f"Kho chỉ còn {len(pool)} món trống, mà hộp cần {len(free)}. Xoá bớt hộp chưa duyệt để lấy món về.")
                 rng = random.Random(box_id * 1000 + attempt)
                 if heavy is None:
                     sample = pool if len(pool) <= POOL_LIMIT else rng.sample(pool, POOL_LIMIT)

@@ -51,9 +51,9 @@ SM kho, makes sure no object sits in two boxes, lets a person check and approve,
 | `docs/handoff/` | `LOOP.md` (how the work loop ran), `kz.py` (client for the local Kanzo board), `sm_explore.py` and `sm_usage_probe.py` (read-only SM look scripts) |
 
 Settings (environment variables, see `app/settings.py`): `DATABASE_URL` or `DB_PATH`, `CATALOG_PATH`, `LLM_MODE`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`,
-`DEFAULT_COUNT`, `STAGE_COUNTS` (A1 12, B2 21, B3 21), `MAX_QTY`, `DRAFT_TTL_HOURS`, `BOX_DONE_DAYS` (default 2; days after which an approved box is finished and its objects are free), `MAX_PARALLEL_LLM`, `SYNC_TOKEN`, `SECTORS`,
-`SM_PUSH_MODE` (`mock` or off), `IMAGE_HOSTS`, `IMAGE_TTL_MINUTES` (default 55), `ADMIN_IDS` (company IDs of the admins, comma list; empty = login off), `ADMIN_CODE` (optional second secret an admin types).
-Secrets (`DEEPSEEK_API_KEY`, `DATABASE_URL`, `SYNC_TOKEN`, `ADMIN_CODE`) live only in Render's Environment page.
+`DEFAULT_COUNT`, `STAGE_COUNTS` (A1 12, B2 21, B3 21), `MAX_QTY`, `DRAFT_TTL_HOURS`, `BOX_DONE_DAYS` (default 1; days after which an approved box is finished and its objects are free), `MAX_PARALLEL_LLM`, `SYNC_TOKEN`, `SECTORS`,
+`SM_PUSH_MODE` (`mock` or off), `IMAGE_HOSTS`, `IMAGE_TTL_MINUTES` (default 55), `ADMIN_IDS` (company IDs of the admins, comma list; empty = login off), `ADMIN_CODE` (optional second secret an admin types), `USER_IDS` (ordinary users who may sign in before any list is pasted), `USER_PASSWORD` (optional shared password of ordinary users; changing it signs everyone out).
+Secrets (`DEEPSEEK_API_KEY`, `DATABASE_URL`, `SYNC_TOKEN`, `ADMIN_CODE`, `USER_PASSWORD`) live only in Render's Environment page, never in the repo (it is public; if `render.yaml` ever declares `USER_PASSWORD` it must use `sync: false`, never `value:`). See `docs/LOGIN.md`.
 
 ## 4. Set up on a new laptop
 ```
@@ -70,12 +70,12 @@ You also need Node (for `tests/*.js`), `npm install axe-core` somewhere (point `
 ## 5. The checks (run all before a push; counts as of 2026-11-11)
 Linux or macOS:
 ```
-.venv/bin/python -m pytest tests -q                                   # 871 pass on SQLite, also on Python 3.12 (534 before 2026-11-11)
+.venv/bin/python -m pytest tests -q                                   # 880 pass on SQLite, also on Python 3.12 (534 before 2026-11-11)
 TEST_DATABASE_URL=postgresql://pgtest@127.0.0.1:5433/boxtest .venv/bin/python -m pytest tests -q    # 695 passed before 2026-11-11; NOT run since (see section 7, item 6)
 node tests/apps_script_test.js && node tests/thumbs_test.js && node tests/usage_chart_test.js     # all print OK
 env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 AXE_JS=/path/to/axe.min.js .venv/bin/python -I tests/ui_automation_e2e.py        # 141 checks
 env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 AXE_JS=/path/to/axe.min.js .venv/bin/python -I tests/admin_e2e.py                 # 48 (login, people, sheet box, chart, age tables, borrow column, names per day)
-env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 AXE_JS=/path/to/axe.min.js .venv/bin/python -I tests/dung_e2e.py                  # 581 (the user page: login, boxes, the day panel, days of a box, plain wording)
+env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 AXE_JS=/path/to/axe.min.js .venv/bin/python -I tests/dung_e2e.py                  # 647 (the user page: login with a password, boxes, the day panel, days of a box, plain wording)
 env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 AXE_JS=/path/to/axe.min.js .venv/bin/python -I tests/usage_chart_e2e.py           # 95
 env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 .venv/bin/python -I tests/userscript_sync_e2e.py     # 90
 env -i HOME=$HOME PATH=/usr/bin:/bin LANG=C.UTF-8 .venv/bin/python -I tests/userscript_push_e2e.py     # 69
@@ -94,7 +94,7 @@ The suite also ran green on Python 3.12 (the version Render uses) in a second vi
 - Picture links from SM expire after about an hour: the page shows a placeholder and one tip instead of broken thumbnails; the print list leaves them out.
 - Speed fix: saving hundreds of SM boxes was one database statement per row (over a minute on a hosted database); now batched (0.6 s).
 
-- 2026-11-11, box life and the day: an approved box is finished `BOX_DONE_DAYS` (2) Vietnam days after the day it was made (`service.retire_done`, the line is kept 30 days in `box_history`), so its objects come back; the person's day (`plans` table: units and shifts, `GET/PUT /api/my/plan`), the boxes to hand back this morning, the end-of-day report, the themes made lately (`GET /api/my/recent`). Rules: `docs/SC_PROCESS.md`.
+- 2026-11-11, box life and the day: an approved box is finished `BOX_DONE_DAYS` (1, first 2, lowered by the owner) Vietnam days after the day it was made (`service.retire_done`, the line is kept 30 days in `box_history`), so its objects come back; the person's day (`plans` table: units and shifts, `GET/PUT /api/my/plan`), the boxes to hand back this morning, the end-of-day report, the themes made lately (`GET /api/my/recent`). Rules: `docs/SC_PROCESS.md`.
 - 2026-11-11: login by company ID (`docs/LOGIN.md`), the user page `/dung`, borrow counts (userscript v0.3.0, storage, chart in Cảnh báo kho, borrow column and filters in Kho đồ, the switch "Giảm món đã dùng nhiều" and the picker rule, carry-over of counts when a tool sends none), age bands and the "what if N days" table for SM boxes, the Google Sheet box on the Automations tab, the sheet script served with this app's address.
 
 ## 7. What is next (the Kanzo project `box-builder` on the laptop used on 2026-11-11 holds the cards; the old laptop's board is not there)
@@ -106,7 +106,7 @@ Done on 2026-11-11 (code and tests; nothing pushed until the owner's release ste
 5. **Test one fill of the sheet copy** (card 44). Read-only check done through Drive on 2026-11-11: M5 section 7 of Box B2 is empty (E150:E170, H150:H170), the menu preview should say `GHI M5 / Box B2 (section 7) → E150:E170 & H150:H170`, the used-IDs helper gives 1,237 IDs. Box B3 section 7 of M5 is NOT empty (5 IDs) and an A1 of 21 objects does not fit (row 21 holds a label): the script skips both. Paste the script (button "Sao chép script bảng tính"), run the preview, confirm, check, discard the test box.
 6. **Run the Postgres test suite** (see section 5). It could not be run on the Windows laptop used on 2026-11-11 (no Postgres there, and downloading one was blocked), so the new tables (`people`, `sessions`, `login_fail`, `audit_log`) and the sheet/usage keys in `catalog_snapshot` were only checked on SQLite and by a reviewer reading the SQL.
 7. Then: 17 click an ID to copy; 37 Vietnamese names from SM (needs a read-only look at SM's EN/VI toggle); 30 day runner on the fake SM; 40 optional picture refresh in the tool (needs the user to update the userscript).
-8. Left over (small, none blocks the release): the user's print page prints a draft without a "NHÁP" line; the times in the day list after 9:30 are guesses (printing 10:00 to 11:00, report 11:00 to 11:30, B3 to the end of the shift): the owner confirms or corrects them in `app/static/dung.js`; cache the session lookup of the login gate for a few seconds if the database is slow; `/api/my/summary` could filter by owner in SQL instead of building the whole state.
+8. Left over (small, none blocks the release): the user's print page prints a draft without a "NHÁP" line; the day list times are in `app/static/dung.js` (the owner set printing and the report to 9:00 to 10:00, B3 from 9:30 to the end of the shift); cache the session lookup of the login gate for a few seconds if the database is slow; `/api/my/summary` could filter by owner in SQL instead of building the whole state.
 9. Follow-ups not on the board yet: a used-IDs dialog in the sheet script that lists IDs per tab so each tab can be pasted with its own day.
 
 ## 8. Decisions and risks waiting for the user

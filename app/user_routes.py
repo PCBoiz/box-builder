@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from . import auth, db, picker, printview, service
 
-STATUS_TEXT = {"generating": "Đang chọn đồ", "draft": "Chờ bạn duyệt", "approved": "Đã duyệt", "error": "Chưa chọn được đồ"}
+STATUS_TEXT = {"generating": "Đang chọn đồ", "draft": "Chờ duyệt", "approved": "Đã duyệt", "error": "Chưa chọn được đồ"}
 
 
 class PlanUnit(BaseModel):

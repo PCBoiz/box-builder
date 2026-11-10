@@ -25,13 +25,13 @@ nothing is ever reused.
 - Boxes made in this app keep their objects until the box is finished (next section): the database refuses one object in two boxes.
 - Not decided yet: whether the same module or shift should wait longer than the rest of the team.
 
-## A box is finished two days after the day it was made (rule given by the user, 2026-11-11)
-An approved box is finished two Vietnam days after the day it was made (made on the 11th, finished on the 13th, from midnight). The objects of a
+## A box is finished one day after the day it was made (rule given by the user, 2026-11-11; first two days, lowered to one the same day)
+An approved box is finished one Vietnam day after the day it was made (made on the 11th, finished on the 12th, from midnight). The objects of a
 finished box are free again and the box leaves the lists. A line stays in `box_history` for 30 days so the
-page can still say what was done on recent days. The number of days is the setting `BOX_DONE_DAYS` (2; 0 = never). Drafts are not finished by the
+page can still say what was done on recent days. The number of days is the setting `BOX_DONE_DAYS` (1; 0 = never). Drafts are not finished by the
 calendar: they expire after `DRAFT_TTL_HOURS` without a touch. Without this rule every box a person approves would hold its objects for ever and the
 kho (about 400 free objects) would be empty after a few days.
-- A box name (module + box name, for example `M8-02 Box B2`) is used once per Vietnam day, not for the two days a box lives: a unit needs a new B2
+- A box name (module + box name, for example `M8-02 Box B2`) is used once per Vietnam day, not for the days a box lives: a unit needs a new B2
   every day. The database keeps this with a unique index on module, name and day (`boxes.day`); the same name on the same day is refused.
   The sheet script gets only the newest approved box of a unit and kind.
 - The page "Hôm nay" lists the boxes to hand back in SM each morning: those of yesterday and of the day before. The app only reminds; the boxes are
@@ -69,7 +69,7 @@ is left out. The app does this with the switch "Giảm món đã dùng nhiều" 
 10:00: start printing paper for the supporters.
 
 ## Daily routine
-- Start of day: return yesterday's A3, B3 boxes (two days back) in SM. Ask the module leader which units work today.
+- Start of day: return yesterday's and the day before's boxes in SM (the app lists both). Ask the module leader which units work today.
 - Talk to collectors about what they did in the last days, to avoid repeats. Talk to supporters about how many there are per module.
 - Units that do not work: the supporter keeps the box. B1 is pushed up to become A1 the next morning. Box B is not put away.
 - End of day: send the report of absent units to the team lead. Write down and prepare scenarios for the collectors.

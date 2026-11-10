@@ -173,7 +173,7 @@ body.dung { font-size: 18px; line-height: 1.55; font-weight: 400; }
 
 .d-timeline { display: grid; gap: 8px; }
 .d-tl { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 10px 12px; border: 1px solid var(--line); border-left: 6px solid #a9b4b0; border-radius: 10px; background: #fff; }
-.d-tl-when { min-width: 7.5em; font-weight: 700; }
+.d-tl-when { min-width: 8.5em; font-weight: 700; }
 .d-tl-what { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
 .d-tl-mark { font-weight: 700; }
 .d-tl-mark:empty { display: none; }

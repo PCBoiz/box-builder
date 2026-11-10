@@ -155,7 +155,7 @@ def test_a_user_makes_a_box_the_admin_approves_it_and_every_step_is_on_record(en
     assert r.status_code == 201, r.text
     box_id = r.json()["id"]
     box = wait_box(hai, box_id)
-    assert box["status"] == "draft" and box["status_text"] == "Chờ bạn duyệt" and len(box["items"]) == box["count"] == 21
+    assert box["status"] == "draft" and box["status_text"] == "Chờ duyệt" and len(box["items"]) == box["count"] == 21
     assert {"pos", "id", "qty", "name", "vi", "category", "slot"} <= set(box["items"][0])
 
     assert hung.get("/api/my/summary").json()["boxes"] == []                                      # someone else's box is not shown
@@ -212,7 +212,7 @@ def test_a_person_approves_their_own_box_and_the_team_script_can_then_read_it(en
     admin, s, cat = _people(env)
     hai = second_browser(admin, "2002")
     box_id, box = _own_box(hai)
-    assert box["status"] == "draft" and box["status_text"] == "Chờ bạn duyệt"
+    assert box["status"] == "draft" and box["status_text"] == "Chờ duyệt"
     assert admin.get("/api/taskboxes?status=approved").json()["boxes"] == []                          # nothing for the team script yet
     assert hai.post(f"/api/my/boxes/{box_id}/approve", headers=SAME).status_code == 200
     mine = {b["id"]: b for b in hai.get("/api/my/summary").json()["boxes"]}[box_id]

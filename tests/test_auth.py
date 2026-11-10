@@ -96,7 +96,7 @@ def test_with_no_admin_named_the_app_stays_open_exactly_as_before(tmp_path):
     for method, path in [("get", "/"), ("get", "/api/state"), ("post", "/api/boxes"), ("get", "/dung"), ("get", "/api/my/ping"), ("get", "/api/admin/people")]:
         assert getattr(client, method)(path, headers=SAME).status_code == 200, path
     st = client.get("/api/auth/status").json()
-    assert st == {"enforced": False, "person": None, "admin_code": False}
+    assert st == {"enforced": False, "person": None, "admin_code": False, "user_password": False}
     assert login(client, "1001").status_code == 409                            # nothing to log into yet, and it says why
 
 
@@ -196,7 +196,7 @@ def test_an_admin_code_is_asked_of_admins_only_and_a_wrong_one_looks_like_any_re
 
 def test_the_status_route_tells_who_is_in_and_never_how_to_get_in(tmp_path):
     client, _ = mini(tmp_path)
-    assert client.get("/api/auth/status").json() == {"enforced": True, "person": None, "admin_code": False}
+    assert client.get("/api/auth/status").json() == {"enforced": True, "person": None, "admin_code": False, "user_password": False}
     login(client, "1001")
     st = client.get("/api/auth/status").json()
     assert st["person"] == {"id": "1001", "name": "", "module": "", "admin": True}
@@ -460,3 +460,87 @@ def test_the_audit_log_keeps_the_last_lines_only(tmp_path):
     n = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
     assert 4990 <= n <= 5001, n                                                         # a stranger's failed logins cannot grow the table without end
     assert conn.execute("SELECT MAX(at) FROM audit_log").fetchone()[0] == 1000.0 + 5029  # the newest line is kept
+
+
+# ----------------------------------------------------------------------------- the password every ordinary user types (USER_PASSWORD) and USER_IDS
+def mini_users(tmp_path, **kw):
+    s = Settings(db_path=str(tmp_path / "a.db"), catalog_path="data/catalog.csv", admin_ids="1001", **kw)
+    db.init(s.db_path)
+    app = FastAPI()
+    auth.install(app, s)
+    return TestClient(app), s
+
+
+def pw_login(client, pid, password="", code="", ip="10.0.0.1"):
+    return client.post("/api/auth/login", json={"id": pid, "code": code, "password": password}, headers={**SAME, "X-Forwarded-For": ip})
+
+
+def test_a_user_in_user_ids_signs_in_with_the_password_and_without_a_list(tmp_path):
+    client, s = mini_users(tmp_path, user_ids="4001, 4002", user_password="test-pass")
+    assert client.get("/api/auth/status").json()["user_password"] is True
+    r = pw_login(client, "4001", "test-pass")
+    assert r.status_code == 200 and r.json()["person"]["admin"] is False and r.json()["go"] == "/dung"
+    other = TestClient(client.app)
+    assert pw_login(other, "4002", "test-pass").status_code == 200                              # every listed ID shares the one password
+
+
+def test_a_wrong_or_missing_password_looks_like_any_other_refusal(tmp_path):
+    client, s = mini_users(tmp_path, user_ids="4001", user_password="test-pass")
+    for bad in ("", "wrong", "TEST-PASS", "test-pass "[:-1] + "x"):
+        r = pw_login(client, "4001", bad, ip="9.9.9.1")
+        assert r.status_code == 401 and r.json()["detail"] == auth.REFUSAL_PASSWORD, repr(bad)
+    assert pw_login(client, "9999", "test-pass", ip="9.9.9.2").json()["detail"] == auth.REFUSAL_PASSWORD     # an unknown ID gets the same sentence
+    assert "test-pass" not in auth.REFUSAL_PASSWORD
+
+
+def test_a_trailing_space_in_the_password_setting_does_not_lock_users_out(tmp_path):
+    client, s = mini_users(tmp_path, user_ids="4001", user_password="test-pass \n")
+    assert pw_login(client, "4001", "test-pass").status_code == 200
+
+
+def test_the_password_is_for_users_only_admins_keep_their_own_code(tmp_path):
+    client, s = mini_users(tmp_path, user_ids="4001", user_password="test-pass")
+    assert pw_login(client, "1001").status_code == 200                                          # an admin without a code needs no user password
+    again, _ = mini_users(tmp_path, user_ids="4001", user_password="test-pass", admin_code="s3cret")
+    assert pw_login(again, "1001", password="test-pass", ip="9.9.9.3").status_code == 401        # the user password is not an admin's key
+    assert pw_login(again, "1001", code="s3cret", ip="9.9.9.4").status_code == 200
+
+
+def test_without_a_user_password_ids_alone_still_sign_in_and_user_ids_work(tmp_path):
+    client, s = mini_users(tmp_path, user_ids="4001")
+    assert client.get("/api/auth/status").json()["user_password"] is False
+    assert pw_login(client, "4001").status_code == 200
+    assert pw_login(TestClient(client.app), "4003", ip="9.9.9.5").json()["detail"] == auth.GENERIC_REFUSAL
+
+
+def test_user_ids_cannot_be_removed_in_the_list_and_never_make_an_admin(tmp_path):
+    client, s = mini_users(tmp_path, user_ids="4001", user_password="test-pass")
+    assert pw_login(client, "1001").status_code == 200
+    people = {p["id"]: p for p in client.get("/api/admin/people").json()["people"]}
+    assert people["4001"]["admin"] is False and people["4001"]["from_setting"] is True
+    assert client.delete("/api/admin/people/4001", headers=SAME).status_code == 409
+    other = TestClient(client.app)
+    assert pw_login(other, "4001", "test-pass").status_code == 200
+    assert other.get("/api/admin/people").status_code == 403                                    # a user never reaches the admin routes
+
+
+def test_user_ids_and_the_password_do_nothing_while_login_is_off(tmp_path):
+    s = Settings(db_path=str(tmp_path / "a.db"), catalog_path="data/catalog.csv", admin_ids="", user_ids="4001", user_password="test-pass")
+    assert auth.enforced(s) is False                                                            # login is on only when an admin is named
+
+
+def test_setting_the_user_password_ends_every_session_made_before(tmp_path):
+    """A stranger who got in while the ID was enough, or a password that leaked, must be out when the owner sets or changes USER_PASSWORD."""
+    client, s = mini_users(tmp_path, user_ids="4001")
+    assert pw_login(client, "4001").status_code == 200
+    assert client.get("/api/auth/status").json()["person"]["id"] == "4001"
+    set_pw, _ = mini_users(tmp_path, user_ids="4001", user_password="test-pass")
+    set_pw.cookies.update(client.cookies)                                                       # the same browser, the app restarted with a password
+    assert set_pw.get("/api/auth/status").json()["person"] is None
+    assert pw_login(set_pw, "4001", "test-pass", ip="9.9.8.1").status_code == 200
+    assert set_pw.get("/api/auth/status").json()["person"]["id"] == "4001"
+    changed, _ = mini_users(tmp_path, user_ids="4001", user_password="test-pass-2")
+    changed.cookies.update(set_pw.cookies)
+    assert changed.get("/api/auth/status").json()["person"] is None                              # changing it ends them again
+    assert set_pw.post("/api/auth/logout", headers=SAME).status_code == 200
+    assert set_pw.get("/api/auth/status").json()["person"] is None                               # logout still works with a password set

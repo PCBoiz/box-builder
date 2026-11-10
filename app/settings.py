@@ -42,8 +42,10 @@ class Settings:
     image_hosts: str = ""             # hosts an object picture may come from (comma list; empty = the default host set in images.py)
     image_ttl_minutes: int = 55       # how long a signed SM picture link is trusted when the link does not say (SM's last about an hour)
     admin_ids: str = ""               # company IDs of the admins (comma list). Empty = login is OFF and the app stays open as before
-    box_done_days: int = 2            # an approved box is finished this many days after the day it was made (Vietnam days); 0 = never
+    box_done_days: int = 1            # an approved box is finished this many days after the day it was made (Vietnam days); 0 = never
     admin_code: str = ""              # optional second secret an admin types with the ID (empty = ID only)
+    user_ids: str = ""                # company IDs of ordinary users who may sign in without being in the pasted list (comma list)
+    user_password: str = ""           # optional password every ordinary user types with the ID (empty = ID only). Set in Render, never in the repo
 
     @property
     def sector_list(self) -> tuple[str, ...]:
@@ -71,4 +73,6 @@ class Settings:
             admin_ids=os.getenv("ADMIN_IDS", ""),
             box_done_days=min(30, max(0, _int("BOX_DONE_DAYS", cls.box_done_days))),
             admin_code=os.getenv("ADMIN_CODE", "").strip(),
+            user_ids=os.getenv("USER_IDS", ""),
+            user_password=os.getenv("USER_PASSWORD", "").strip(),
         )

@@ -25,6 +25,6 @@ services:
       - key: DRAFT_TTL_HOURS
         value: "12"
       - key: BOX_DONE_DAYS          # an approved box is finished this many Vietnam days after the day it was made; its objects return to the kho (0 = never)
-        value: "2"
+        value: "1"
       - key: MAX_PARALLEL_LLM
         value: "1"

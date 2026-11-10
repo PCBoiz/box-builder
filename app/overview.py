@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from . import db, service
 
 SOON_HOURS = 2            # a draft with less than this left is about to be deleted
-STUCK_HOURS = 24          # an approved box that is still not in SM after this long
+STUCK_HOURS = 4           # an approved box that is still not in SM after this long (a box lives one day, so 24 hours would never fire)
 
 
 def install(app, s, cat) -> None:

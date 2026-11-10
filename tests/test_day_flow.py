@@ -90,6 +90,7 @@ def test_a_unit_makes_the_same_kind_of_box_again_the_next_day(env):
 def test_the_team_tools_get_the_newest_box_of_a_unit_and_no_owner(env):
     """Two approved boxes of one unit and kind on two days: the sheet gets only the newest. Nothing that needs no login carries a company ID."""
     client, s, cat = make_client(env)
+    s.box_done_days = 2                                                                                # a box of yesterday is still alive (the default is 1 day)
     ids = usable_ids(cat)
     old = box_with(s, ids[:3], label="Box B2", module="M1", status="approved")
     conn = conn_of(s)

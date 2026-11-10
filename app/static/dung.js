@@ -8,7 +8,7 @@
   const $ = (s, el = document) => el.querySelector(s);
 
   /* ---------------------------------------------------------------- the words on the page */
-  const STATUS = { generating: "Đang chọn đồ", draft: "Chờ bạn duyệt", approved: "Đã duyệt", error: "Chưa chọn được đồ" };
+  const STATUS = { generating: "Đang chọn đồ", draft: "Chờ duyệt", approved: "Đã duyệt", error: "Chưa chọn được đồ" };
   const NEED_STATE = { none: "Chưa tạo", ...STATUS };
   const T = {
     fail: "Chưa làm được. Thử lại.",                        // every problem the person cannot fix: no code, no word of the machine room
@@ -19,7 +19,7 @@
     needModule: "Nhập Module.",
     needKind: "Chọn loại hộp.",
     created: (name) => `Đã tạo hộp ${name}. Đang chọn đồ.`,
-    ready: (name, n) => `Hộp ${name} đã chọn xong ${n} món. Chờ bạn duyệt.`,
+    ready: (name, n) => `Hộp ${name} đã chọn xong ${n} món. Chờ duyệt.`,
     approved: (name, tail) => `Hộp ${name} đã được duyệt.${tail}`,                    // seen by the page: approved somewhere else (the team's switch, an admin)
     approvedNow: (name, tail) => `Đã duyệt hộp ${name}.${tail}`,                      // the person pressed Có, duyệt hộp
     toStep3: " Bạn lấy đồ ở bước 3.",                                                // only for a box of today: step 3 lists no other
@@ -95,7 +95,7 @@
     type: "button", class: "d-btn" + (o.cls ? " " + o.cls : ""), "data-key": o.key, disabled: o.disabled, "aria-describedby": o.desc, "aria-label": o.aria, onclick,
   }, label);
   const dayWord = (n) => (n <= 0 ? T.today : n === 1 ? T.yesterday : n === 2 ? T.dayBefore : T.daysAgo(n));
-  /* A box lives two days after the day it was made, and a unit makes a new one every day: yesterday's box and today's can look the same.
+  /* A box is finished 1 day after the day it was made, and a unit makes a new one every day: yesterday's box and today's can look the same.
      The page says which day a box is from. The day is worked out with the clock of the server, so a page left open over midnight is right too. */
   const serverNow = () => Date.now() / 1000 + S.skew;
   const vnDay = (sec) => new Date((sec + 7 * 3600) * 1000).toISOString().slice(0, 10);               // the Vietnam day of a moment: UTC+7 all year
@@ -642,15 +642,15 @@
   }
 
   /* ---------------------------------------------------------------- Hôm nay: the clock of the shift (Vietnam time, never the computer's zone) */
-  // minutes since midnight: the work day is 2:30 to 11:30; "to" is when the item is finished. B3 runs on while the paper is printed and the report is sent.
+  // minutes since midnight: the work day is 2:30 to 11:30; "to" is when the item is finished. The paper and the report share the window 9:00 to 10:00; B3 starts in the middle of it.
   const DAY = [
     { key: "start", from: 150, to: 210, when: "2:30", text: "Đầu ngày: trả hộp trong SM, hỏi leader unit nào đi làm", short: "việc đầu ngày" },
     { key: "b1", from: 210, to: 330, when: "3:30 đến 5:30", text: "B1", short: "B1" },
     { key: "b2a", from: 360, to: 435, when: "6:00 đến 7:15", text: "B2", short: "B2" },
     { key: "b2b", from: 495, to: 570, when: "8:15 đến 9:30", text: "B2", short: "B2" },
+    { key: "print", from: 540, to: 600, when: "9:00 đến 10:00", text: "In giấy cho supporter", short: "in giấy cho supporter" },
+    { key: "report", from: 540, to: 600, when: "9:00 đến 10:00", text: "Báo cáo cuối ngày: gửi quản lý các unit không đi làm", short: "báo cáo cuối ngày" },
     { key: "b3", from: 570, to: 690, when: "từ 9:30", text: "B3", short: "B3" },
-    { key: "print", from: 600, to: 660, when: "10:00", text: "In giấy cho supporter", short: "in giấy cho supporter" },
-    { key: "report", from: 660, to: 690, when: "11:00", text: "Báo cáo cuối ngày: gửi quản lý các unit không đi làm", short: "báo cáo cuối ngày" },
   ];
   const SHIFT_START = 150, SHIFT_END = 690;
   const VN_TIME = (() => {
@@ -688,10 +688,12 @@
   function renderClock() {
     const t = vnClock();
     const inShift = t.min >= SHIFT_START && t.min < SHIFT_END;
-    const next = inShift ? DAY.find((it) => it.from > t.min) : null;
+    const ahead = inShift ? DAY.filter((it) => it.from > t.min) : [];
+    const nextAt = ahead.length ? Math.min(...ahead.map((it) => it.from)) : -1;       // what starts next; items with the same start are next together
+    const next = ahead.filter((it) => it.from === nextAt);
     const state = {};
-    for (const it of DAY) state[it.key] = !inShift ? "" : t.min >= it.to ? "done" : t.min >= it.from ? "now" : it === next ? "next" : "";
-    setText($("#now-line"), T.clock(t.text, !inShift ? T.clockOff : next ? T.clockNext(next.short, clockText(next.from)) : T.clockEnd(clockText(SHIFT_END))));
+    for (const it of DAY) state[it.key] = !inShift ? "" : t.min >= it.to ? "done" : t.min >= it.from ? "now" : it.from === nextAt ? "next" : "";
+    setText($("#now-line"), T.clock(t.text, !inShift ? T.clockOff : next.length ? T.clockNext(next.map((it) => it.short).join(" và "), clockText(nextAt)) : T.clockEnd(clockText(SHIFT_END))));
     for (const it of DAY) {
       const row = dayRows.get(it.key), s = state[it.key];
       if (!row) continue;

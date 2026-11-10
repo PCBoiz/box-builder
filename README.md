@@ -45,7 +45,7 @@ the whole flow for free. The picks are not meaningful. Add the key for real sele
 - Whatever the model answers is checked by code: unknown IDs, repeats and objects held elsewhere are dropped,
   quantity is capped, and missing slots are re-requested (twice) and then filled by code. Boxes filled by code
   are marked with a dashed edge.
-- Drafts nobody touches for `DRAFT_TTL_HOURS` release their objects. An approved box is finished `BOX_DONE_DAYS` (default 2) Vietnam days after the day it was made: its objects return to the kho and its name can be used again.
+- Drafts nobody touches for `DRAFT_TTL_HOURS` release their objects. An approved box is finished `BOX_DONE_DAYS` (default 1) Vietnam days after the day it was made: its objects return to the kho and its name can be used again.
 
 ## Sending approved boxes to SM TaskBox
 

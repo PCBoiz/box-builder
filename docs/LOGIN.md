@@ -26,6 +26,15 @@ Claude và ứng dụng không ghi vào Render. Bạn tự làm các bước nà
 
 Khi chưa đặt `ADMIN_IDS`, ứng dụng mở như trước: ai có link cũng vào được cả hai trang. Vì vậy đẩy bản mới lên không làm admin bị khoá. Thanh đầu trang hiện "Đăng nhập chưa bật" cho đến khi bạn đặt biến. Không còn mã truy cập chung `ACCESS_CODE`: ứng dụng bỏ qua biến này.
 
+## Tài khoản người dùng có mật khẩu chung
+
+Cách nhanh để cho người dùng vào trước khi dán danh sách, đặt trong Render cùng chỗ với `ADMIN_IDS`:
+
+- `USER_IDS`: ID của người dùng thường, cách nhau bằng dấu phẩy, ví dụ `4001,4002`. Những ID này vào được ngay, không cần dán danh sách. Không bao giờ thành admin.
+- `USER_PASSWORD`: một mật khẩu chung cho mọi người dùng thường. Khi có biến này, người dùng gõ ID và mật khẩu ở trang đăng nhập. Admin không dùng mật khẩu này (admin dùng `ADMIN_CODE` nếu có).
+
+Chỉ đặt mật khẩu trong Render, không ghi vào repo, tài liệu hay tin nhắn gửi nhiều người (repo này công khai). Mật khẩu chung nghĩa là ai biết mật khẩu và một ID thì vào được; muốn đổi thì sửa biến rồi lưu, Render chạy lại trong khoảng một phút. Đặt hoặc đổi mật khẩu thì mọi người (kể cả admin) phải đăng nhập lại một lần: phiên cũ hết hiệu lực. Mọi người trong văn phòng cùng dùng một địa chỉ mạng nên cùng chia một hạn mức gõ sai; chờ ít giây là bình thường. Hai biến này chỉ có tác dụng khi đã đặt `ADMIN_IDS`. Người ghi trong danh sách dán ở khung "Người dùng và quyền" cũng phải gõ mật khẩu khi biến này có.
+
 ## Những gì không đổi
 
 Các công cụ chạy trong tab trình duyệt của nhóm không đăng nhập được, nên các đường dẫn sau vẫn mở như cũ và giữ lớp bảo vệ riêng của chúng (mã đồng bộ `SYNC_TOKEN` cho các việc ghi):
@@ -49,9 +58,9 @@ Mọi đường dẫn khác mặc định chỉ dành cho admin, kể cả đư�
 
 Ứng dụng xoá hộp nháp không ai đụng tới sau `DRAFT_TTL_HOURS` giờ (mặc định 12) để trả món về kho. Trang `/dung` hiện còn bao lâu cho mỗi hộp nháp, và bảng "Tiến độ các hộp" của admin báo hộp nháp sắp mất. Nếu người làm hay duyệt muộn hơn 12 giờ, tăng `DRAFT_TTL_HOURS` trong Render.
 
-## Hộp đã duyệt xong sau 2 ngày
+## Hộp đã duyệt xong sau 1 ngày
 
-Hộp làm ngày 11 xong từ 0 giờ ngày 13 (giờ Việt Nam). Món của hộp về kho và hộp rời khỏi danh sách. Một dòng ghi chú được giữ 30 ngày để `/dung` nhắc hộp cần trả (hôm qua và hôm kia) và chủ đề làm gần đây. Ứng dụng chỉ nhắc, việc trả hộp trong SM do script của nhóm. Đổi số ngày bằng `BOX_DONE_DAYS` trong Render (mặc định 2, 0 là không bao giờ xong).
+Hộp làm ngày 11 xong từ 0 giờ ngày 12 (giờ Việt Nam). Món của hộp về kho và hộp rời khỏi danh sách. Một dòng ghi chú được giữ 30 ngày để `/dung` nhắc hộp cần trả (hôm qua và hôm kia) và chủ đề làm gần đây. Ứng dụng chỉ nhắc, việc trả hộp trong SM do script của nhóm. Đổi số ngày bằng `BOX_DONE_DAYS` trong Render (mặc định 1, 0 là không bao giờ xong).
 
 ## Khi chưa bật đăng nhập
 
@@ -59,7 +68,7 @@ Khi chưa bật đăng nhập, khung "Người dùng và quyền" và khung "B�
 
 ## Quay lại bản cũ
 
-Nếu quay lại bản cũ trên Render, bản cũ không có đăng nhập: trang admin và danh sách món lại công khai cho tới khi bạn lên lại bản mới. Biến `ADMIN_IDS`, `ADMIN_CODE` và các bảng mới trong cơ sở dữ liệu không làm hại bản cũ. Một chỗ cần cẩn thận: bản mới cho phép cùng tên hộp ở hai ngày khác nhau, còn bản cũ không khởi động được khi có hai hộp trùng tên. Trước khi quay lại, xoá hộp cũ hơn của mỗi cặp trùng tên (hoặc chờ hộp đó xong sau 2 ngày).
+Nếu quay lại bản cũ trên Render, bản cũ không có đăng nhập: trang admin và danh sách món lại công khai cho tới khi bạn lên lại bản mới. Biến `ADMIN_IDS`, `ADMIN_CODE` và các bảng mới trong cơ sở dữ liệu không làm hại bản cũ. Một chỗ cần cẩn thận: bản mới cho phép cùng tên hộp ở hai ngày khác nhau, còn bản cũ không khởi động được khi có hai hộp trùng tên. Trước khi quay lại, xoá hộp cũ hơn của mỗi cặp trùng tên (hoặc chờ hộp đó xong sau 1 ngày).
 
 ## Nếu bị khoá ngoài
 

@@ -32,7 +32,7 @@ IDLE_SECONDS = 14 * 86400            # a session that has not been used for this
 MAX_SECONDS = 30 * 86400             # and no session lasts longer than this
 TOUCH_EVERY = 300                    # last_seen is written at most this often, so reading a page is not a database write
 FAIL_WINDOW = 600                    # failed logins are counted over this many seconds
-IP_MAX = 12                          # failures from one address in the window before it must wait
+IP_MAX = 30                          # failures from one address in the window before it must wait (one office shares an address and, with a shared password, its typos)
 KEY_MAX = 5                          # failures from one address against one ID in 15 minutes before that pair must wait (an admin code guessed at)
 GLOBAL_MAX = 100                     # failures from everyone in the window before addresses that already failed once must wait
 MAX_PEOPLE_LINES = 500
@@ -49,6 +49,7 @@ HTML_PAGES = {"/", "/dung", "/my/print", "/print/boxes"}      # pages a browser 
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 
 GENERIC_REFUSAL = "Không vào được. Kiểm tra lại ID, hoặc nhờ admin thêm ID của bạn."
+REFUSAL_PASSWORD = "Không vào được. Kiểm tra lại ID và mật khẩu, hoặc nhờ admin thêm ID của bạn."          # same sentence for a wrong ID and a wrong password
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,16 @@ class Refused(Exception):
 # ----------------------------------------------------------------------------- who counts as an admin, and whether login is on
 def env_admins(s) -> set[str]:
     return {x for x in (normalize_id(p) for p in re.split(r"[,\s;]+", s.admin_ids or "")) if x}
+
+
+def env_users(s) -> set[str]:
+    """Ordinary users named in USER_IDS (Render): they can sign in before any list is pasted. Never admins."""
+    return {x for x in (normalize_id(p) for p in re.split(r"[,\s;]+", s.user_ids or "")) if x}
+
+
+def user_password_of(s) -> str:
+    """The password every ordinary user types, trimmed like the admin code. Empty = users sign in with the ID alone."""
+    return (s.user_password or "").strip()
 
 
 def admin_code_of(s) -> str:
@@ -97,7 +108,7 @@ def find_person(conn, s, pid: str | None) -> Person | None:
         return None
     row = conn.execute("SELECT person_id, name, module, is_admin FROM people WHERE person_id=?", (pid,)).fetchone()
     admin = pid in env_admins(s) or bool(row and row["is_admin"])
-    if row is None and not admin:
+    if row is None and not admin and pid not in env_users(s):
         return None
     return Person(pid, row["name"] if row else "", row["module"] if row else "", admin)
 
@@ -146,23 +157,27 @@ def _record_fail(conn, ip_h: str, key_h: str, now: float) -> None:
 
 
 # ----------------------------------------------------------------------------- sessions
-def _new_session(conn, pid: str, now: float) -> str:
+def _new_session(conn, pid: str, now: float, secret: str = "") -> str:
     token = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO sessions(token_hash, person_id, created_at, last_seen, expires_at) VALUES(?,?,?,?,?)",
-                 (_h_full(token), pid, now, now, now + MAX_SECONDS))
+                 (_h_full(token, secret), pid, now, now, now + MAX_SECONDS))
     conn.execute("DELETE FROM sessions WHERE expires_at < ? OR last_seen < ?", (now, now - IDLE_SECONDS))
     return token
 
 
-def _h_full(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+def _h_full(token: str, secret: str = "") -> str:
+    """What is stored for a session token. With a user password set the fingerprint is keyed by it, so setting or changing USER_PASSWORD ends
+    every session made before (a stranger who got in while the ID was enough, or a password that leaked, is out at once)."""
+    if not secret:
+        return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+    return hmac.new(secret.encode("utf-8", "replace"), token.encode("utf-8", "replace"), "sha256").hexdigest()
 
 
 def person_for_token(conn, s, token: str, now: float | None = None) -> Person | None:
     now = time.time() if now is None else now
     if not token:
         return None
-    th = _h_full(token)
+    th = _h_full(token, user_password_of(s))
     row = conn.execute("SELECT person_id, last_seen, expires_at FROM sessions WHERE token_hash=?", (th,)).fetchone()
     if row is None:
         return None
@@ -178,12 +193,12 @@ def person_for_token(conn, s, token: str, now: float | None = None) -> Person | 
     return person
 
 
-def logout(conn, token: str) -> None:
+def logout(conn, token: str, secret: str = "") -> None:
     if token:
-        conn.execute("DELETE FROM sessions WHERE token_hash=?", (_h_full(token),))
+        conn.execute("DELETE FROM sessions WHERE token_hash=?", (_h_full(token, secret),))
 
 
-def login(conn, s, raw_id, code: str, ip: str, now: float | None = None) -> tuple[Person, str]:
+def login(conn, s, raw_id, code: str, ip: str, now: float | None = None, password: str = "") -> tuple[Person, str]:
     now = time.time() if now is None else now
     pid = normalize_id(raw_id)
     ip_h, key_h = _h(ip or "-"), (_h(f"{ip or '-'}|{pid}") if pid else "")      # the per-ID delay is per address too: an outsider's guesses must not slow the real admin down
@@ -195,11 +210,13 @@ def login(conn, s, raw_id, code: str, ip: str, now: float | None = None) -> tupl
     ok = person is not None
     if ok and person.admin and admin_code_of(s):         # the admin code is only asked of admins; a wrong one looks like any other refusal
         ok = hmac.compare_digest((code or "").strip().encode("utf-8", "replace"), admin_code_of(s).encode("utf-8", "replace"))
+    elif ok and not person.admin and user_password_of(s):      # the user password is only asked of ordinary users; wrong looks like any other refusal
+        ok = hmac.compare_digest((password or "").strip().encode("utf-8", "replace"), user_password_of(s).encode("utf-8", "replace"))
     if not ok:
         _record_fail(conn, ip_h, key_h, now)
         audit(conn, "-", "login_fail", detail="", ip=ip or "-", now=now)
-        raise Refused(401, GENERIC_REFUSAL)
-    token = _new_session(conn, person.id, now)
+        raise Refused(401, REFUSAL_PASSWORD if user_password_of(s) else GENERIC_REFUSAL)
+    token = _new_session(conn, person.id, now, user_password_of(s))
     audit(conn, person.id, "login", detail="admin" if person.admin else "user", ip=ip or "-", now=now)
     return person, token
 
@@ -253,12 +270,14 @@ def save_people(conn, rows: list[dict], now: float | None = None) -> dict:
 
 
 def list_people(conn, s) -> list[dict]:
-    env = env_admins(s)
+    env, envu = env_admins(s), env_users(s)
     out = {r["person_id"]: {"id": r["person_id"], "name": r["name"], "module": r["module"], "admin": bool(r["is_admin"]) or r["person_id"] in env,
-                            "from_setting": r["person_id"] in env, "added_at": r["added_at"]}
+                            "from_setting": r["person_id"] in env or r["person_id"] in envu, "added_at": r["added_at"]}
            for r in conn.execute("SELECT person_id, name, module, is_admin, added_at FROM people ORDER BY person_id")}
     for pid in sorted(env - set(out)):
         out[pid] = {"id": pid, "name": "", "module": "", "admin": True, "from_setting": True, "added_at": 0}
+    for pid in sorted(envu - set(out)):
+        out[pid] = {"id": pid, "name": "", "module": "", "admin": False, "from_setting": True, "added_at": 0}
     return sorted(out.values(), key=lambda p: p["id"])
 
 
@@ -341,6 +360,7 @@ class LoginBody(BaseModel):
     # generous on purpose: a too-long ID must get the same refusal as any wrong ID, not a different kind of error
     id: str = Field(default="", max_length=300)
     code: str = Field(default="", max_length=300)
+    password: str = Field(default="", max_length=300)
 
 
 class PeopleBody(BaseModel):
@@ -412,13 +432,13 @@ def install(app, s) -> None:
         if enforced(s):
             token = read_token(request)
             person = person_for_token(c, s, token) if token else None
-        return {"enforced": enforced(s), "person": person.public() if person else None, "admin_code": bool(admin_code_of(s))}
+        return {"enforced": enforced(s), "person": person.public() if person else None, "admin_code": bool(admin_code_of(s)), "user_password": bool(user_password_of(s))}
 
     @router.post("/api/auth/login")
     def do_login(body: LoginBody, request: Request, c=Depends(conn_dep)):
         if not enforced(s):
             raise Refused(409, "Chưa bật đăng nhập. Đặt ADMIN_IDS trong Render.")
-        person, token = login(c, s, body.id, body.code, client_ip(request))
+        person, token = login(c, s, body.id, body.code, client_ip(request), password=body.password)
         out = JSONResponse({"person": person.public(), "go": "/" if person.admin else "/dung"})
         set_cookie(out, token, _https(request))
         return out
@@ -427,7 +447,7 @@ def install(app, s) -> None:
     def do_logout(request: Request, c=Depends(conn_dep)):
         token = read_token(request)
         person = person_for_token(c, s, token) if token and enforced(s) else None
-        logout(c, token)
+        logout(c, token, user_password_of(s))
         if person:
             audit(c, person.id, "logout", ip=client_ip(request))
         out = JSONResponse({"ok": True})
@@ -442,7 +462,8 @@ def install(app, s) -> None:
     @admin_router.get("/api/admin/people")
     def people(c=Depends(conn_dep)):
         on = enforced(s)
-        return {"enforced": on, "admin_code": bool(s.admin_code), "people": list_people(c, s) if on else []}      # with login off anyone could read these IDs, and an ID is a login
+        return {"enforced": on, "admin_code": bool(s.admin_code), "user_password": bool(user_password_of(s)),
+                "people": list_people(c, s) if on else []}      # with login off anyone could read these IDs, and an ID is a login
 
     @admin_router.post("/api/admin/people")
     def add_people(body: PeopleBody, request: Request, c=Depends(conn_dep)):
@@ -466,6 +487,8 @@ def install(app, s) -> None:
         pid = normalize_id(pid) or ""
         if pid in env_admins(s):
             raise Refused(409, "ID này là admin cố định (đặt ở ADMIN_IDS trong Render), không xoá được ở đây.")
+        if pid in env_users(s):
+            raise Refused(409, "ID này đặt ở USER_IDS trong Render, không xoá được ở đây.")
         if not c.execute("SELECT 1 FROM people WHERE person_id=?", (pid,)).fetchone():
             raise Refused(404, "ID này không có trong danh sách.")
         c.execute("DELETE FROM sessions WHERE person_id=?", (pid,))

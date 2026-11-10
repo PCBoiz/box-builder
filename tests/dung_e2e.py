@@ -2,7 +2,9 @@
 Run:  pip install playwright && python -m playwright install chromium && python -I tests/dung_e2e.py
 Works on Windows and Linux. Set E2E_PORT to pick the port. Never contacts anything but 127.0.0.1 (no SM, Render, Neon or Google).
 Optional: AXE_JS=/path/to/axe.min.js (from the axe-core npm package) adds the accessibility runs on /login and on /dung in every state.
-The server runs with ADMIN_IDS=1001 (login on), the mock picker, and the people 2002 (Hải, M2) and 3003 (Hưng, M3)."""
+The server runs with ADMIN_IDS=1001 (login on), the mock picker, and the people 2002 (Hải, M2) and 3003 (Hưng, M3).
+A second server has login off. A third has ADMIN_IDS=1001, USER_IDS=4001,4002 and a made-up USER_PASSWORD (kept in this process only).
+The first server runs with BOX_DONE_DAYS=2: the app finishes a box 1 day after the day it was made, and the tests of the tag Hôm qua need a box of yesterday that is still alive."""
 import datetime, http.cookiejar, json, os, re, shutil, socket, sqlite3, subprocess, sys, tempfile, time, traceback, urllib.error, urllib.parse, urllib.request
 from playwright.sync_api import sync_playwright
 
@@ -22,7 +24,7 @@ def free_port():
 
 def clean_env(**extra):
     drop = ("DATABASE_URL", "DEEPSEEK_API_KEY", "ACCESS_CODE", "LLM_MODE", "IMAGE_HOSTS", "SECTORS", "SM_PUSH_MODE", "TEST_DATABASE_URL",
-            "ADMIN_IDS", "ADMIN_CODE", "STAGE_COUNTS", "DEFAULT_COUNT", "DRAFT_TTL_HOURS", "SYNC_TOKEN", "DB_PATH", "CATALOG_PATH")
+            "ADMIN_IDS", "ADMIN_CODE", "USER_IDS", "USER_PASSWORD", "BOX_DONE_DAYS", "STAGE_COUNTS", "DEFAULT_COUNT", "DRAFT_TTL_HOURS", "SYNC_TOKEN", "DB_PATH", "CATALOG_PATH")
     env = {k: v for k, v in os.environ.items() if k not in drop}
     env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     env.update(extra)
@@ -92,8 +94,9 @@ PORT = int(os.environ.get("E2E_PORT") or free_port())
 BASE = f"http://127.0.0.1:{PORT}"
 AXE = os.environ.get("AXE_JS")
 tmp = tempfile.mkdtemp()
-srv = srv_log = srv2 = srv2_log = None
+srv = srv_log = srv2 = srv2_log = srv3 = srv3_log = None
 tmp2 = tempfile.mkdtemp()
+tmp3 = tempfile.mkdtemp()
 
 ALLOWED_PREFIXES = ("/dung", "/login", "/static/", "/api/my/", "/api/auth/", "/api/config", "/my/print", "/favicon.ico")
 LIVE_WATCH = """() => { window.__live = []; const el = document.getElementById('live'); if (!el) return;
@@ -119,7 +122,7 @@ FILLER = re.compile(r"\b(seamless(ly)?|robust|leverag(e|ing)|delve|tapestry|cutt
                     r"comprehensive|effortless(ly)?|elevate)\b|mạnh mẽ|toàn diện|tối ưu hoá|mượt mà|vô cùng|hết sức|đa dạng và phong phú|dễ dàng nhanh chóng", re.I)
 
 ENV = clean_env(DB_PATH=os.path.join(tmp, "dung.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t",
-                ADMIN_IDS="1001", LLM_MODE="mock")
+                ADMIN_IDS="1001", BOX_DONE_DAYS="2", LLM_MODE="mock")
 
 
 PUMP = [None]      # the page that waits pump: the sync API only hands over browser events while it is inside a call
@@ -298,7 +301,7 @@ page_texts = []
 
 
 def main():
-    global srv, srv_log, srv2, srv2_log
+    global srv, srv_log, srv2, srv2_log, srv3, srv3_log
     # ---------------------------------------------------------------- the shipped text follows the writing rules
     for name in ("app/static/dung.html", "app/static/dung.js", "app/static/dung.css"):
         text = open(os.path.join(ROOT, name), encoding="utf-8").read()
@@ -313,7 +316,8 @@ def main():
     check(not re.search(r"admin\s+(sẽ\s+)?(duyệt|mở lại)|[Nn]hờ admin|[Cc]hờ admin|cho đến khi admin|do admin duyệt", shown),
           "dung.html and dung.js say nowhere that an admin approves")
     check(not re.search(r"mã truy cập|access.?code|mã chung|mã quản trị", shown, re.I), "dung.html and dung.js mention no access code")
-    check("Chờ bạn duyệt" in js and "Chờ admin duyệt" not in js, "dung.js names the waiting state Chờ bạn duyệt")
+    check("Chờ duyệt" in js and "Chờ bạn duyệt" not in js and "Chờ admin duyệt" not in js, "dung.js names the waiting state Chờ duyệt, nothing else")
+    check("Chờ bạn duyệt" not in html and "Chờ bạn duyệt" not in open(os.path.join(ROOT, "app/static/dung.css"), encoding="utf-8").read(), "dung.html and dung.css do not use the old name")
     for want in ("Xem và duyệt", "Duyệt hộp", "Bỏ duyệt", "Điền ô trống", "Có hộp để lấy", "Hôm nay", "Hộp cần trả sáng nay", "Kế hoạch hôm nay", "Báo cáo cuối ngày",
                  "Lưu kế hoạch", "Sao chép báo cáo", "Gần đây ở", "Chọn bối cảnh khác để khỏi làm trùng.",
                  NOT_SAVED, "Có, chọn lại", "Các món hiện có sẽ bị thay.", BY_APP, CHECK_BY_APP):
@@ -367,6 +371,8 @@ def main():
         check(urllib.parse.urlsplit(page.url).path == "/login" and "next=/dung" in page.url, f"/dung without a session goes to /login?next=/dung ({page.url})")
         axe_check(page, "on /login")
         login_look(page, "(normal)")
+        check(page.is_hidden("#login-pw-field") and page.is_hidden("#login-pw") and "Mật khẩu" not in page.inner_text("body"),
+              "no user password is asked: the login page shows no field Mật khẩu")
         page.click("#login-admin summary")
         check(page.is_visible("#login-code"), "Tôi là admin opens the field of the admin code")
         login_look(page, "(admin code open)")
@@ -472,7 +478,7 @@ def main():
         page.wait_for_function("document.activeElement && document.activeElement.dataset.key === 'head' && document.activeElement.closest('article')", timeout=15000)
         check(True, "after Tạo hộp the keyboard focus moves to the new box in step 2")
         page.wait_for_selector("article.d-card.is-draft", timeout=30000)
-        check(page.inner_text("article.d-card .d-chip") == "Chờ bạn duyệt", "the box becomes Chờ bạn duyệt")
+        check(page.inner_text("article.d-card .d-chip") == "Chờ duyệt", "the box becomes Chờ duyệt")
         n_items = page.locator("article.d-card .d-item").count()
         check(n_items == stage["A1"], f"the box has {stage['A1']} objects (got {n_items})")
         check(page.evaluate("document.activeElement.dataset.key") == "head", "the focus stays on the box heading when it fills in")
@@ -689,7 +695,7 @@ def main():
         card.locator("[data-key=reopen]").click()          # the undo asks nothing
         page.wait_for_selector("article.d-card.is-draft", timeout=15000)
         check(len(sent("/reopen")) == 1 and sent("/reopen")[0][2] == 200, f"Bỏ duyệt sends one request and asks no question {sent('/reopen')}")
-        check(card.locator(".d-chip").inner_text() == "Chờ bạn duyệt" and card.locator(".d-confirm").count() == 0, "after Bỏ duyệt the box is a draft again")
+        check(card.locator(".d-chip").inner_text() == "Chờ duyệt" and card.locator(".d-confirm").count() == 0, "after Bỏ duyệt the box is a draft again")
         check(live_has(page, lambda t: t == OWN_REOPEN) and page.evaluate("window.__live").count(OWN_REOPEN) == taken + 1, f"the live region says the approval was taken back, once {taken} {page.evaluate('window.__live')[-5:]}")
         check(focus_on_head(page, mine["id"]), "after Bỏ duyệt the focus is on the heading of that box")
         check(card.locator("[data-key^=swap]").count() == stage["A1"] and all(b.is_enabled() for b in card.locator("[data-key^=swap]").all())
@@ -1191,7 +1197,7 @@ def main():
         ph.close()
         ctx_c = new_ctx(viewport={"width": 1100, "height": 900}, timezone_id="America/New_York", storage_state=state3)
         DONE, NOW, NEXT = "Xong", "Bây giờ", "Tiếp theo"
-        CLOCKS = [   # (hour, minute), the line, the marks of the 7 lines (start, B1, B2, B2, B3, printing, report), the tag of Hộp cần trả, the tag of Báo cáo
+        CLOCKS = [   # (hour, minute), the line, the marks of the 7 lines (start, B1, B2, B2, printing, report, B3), the tag of Hộp cần trả, the tag of Báo cáo
             ((2, 29), "Bây giờ 02:29. Ngoài giờ làm.", ["", "", "", "", "", "", ""], "", ""),
             ((2, 30), "Bây giờ 02:30. Tiếp theo: B1 lúc 3:30.", [NOW, NEXT, "", "", "", "", ""], NOW, ""),
             ((2, 40), "Bây giờ 02:40. Tiếp theo: B1 lúc 3:30.", [NOW, NEXT, "", "", "", "", ""], NOW, ""),
@@ -1199,9 +1205,16 @@ def main():
             ((5, 45), "Bây giờ 05:45. Tiếp theo: B2 lúc 6:00.", [DONE, DONE, NEXT, "", "", "", ""], "", ""),
             ((6, 30), "Bây giờ 06:30. Tiếp theo: B2 lúc 8:15.", [DONE, DONE, NOW, NEXT, "", "", ""], "", ""),
             ((8, 0), "Bây giờ 08:00. Tiếp theo: B2 lúc 8:15.", [DONE, DONE, DONE, NEXT, "", "", ""], "", ""),
-            ((9, 45), "Bây giờ 09:45. Tiếp theo: in giấy cho supporter lúc 10:00.", [DONE, DONE, DONE, DONE, NOW, NEXT, ""], "", ""),
-            ((10, 5), "Bây giờ 10:05. Tiếp theo: báo cáo cuối ngày lúc 11:00.", [DONE, DONE, DONE, DONE, NOW, NOW, NEXT], "", NEXT),
-            ((11, 10), "Bây giờ 11:10. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, NOW, DONE, NOW], "", NOW),
+            ((8, 15), "Bây giờ 08:15. Tiếp theo: in giấy cho supporter và báo cáo cuối ngày lúc 9:00.", [DONE, DONE, DONE, NOW, NEXT, NEXT, ""], "", NEXT),
+            ((8, 59), "Bây giờ 08:59. Tiếp theo: in giấy cho supporter và báo cáo cuối ngày lúc 9:00.", [DONE, DONE, DONE, NOW, NEXT, NEXT, ""], "", NEXT),
+            ((9, 0), "Bây giờ 09:00. Tiếp theo: B3 lúc 9:30.", [DONE, DONE, DONE, NOW, NOW, NOW, NEXT], "", NOW),
+            ((9, 29), "Bây giờ 09:29. Tiếp theo: B3 lúc 9:30.", [DONE, DONE, DONE, NOW, NOW, NOW, NEXT], "", NOW),
+            ((9, 30), "Bây giờ 09:30. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, NOW, NOW, NOW], "", NOW),
+            ((9, 45), "Bây giờ 09:45. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, NOW, NOW, NOW], "", NOW),
+            ((9, 59), "Bây giờ 09:59. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, NOW, NOW, NOW], "", NOW),
+            ((10, 0), "Bây giờ 10:00. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, DONE, DONE, NOW], "", ""),
+            ((10, 5), "Bây giờ 10:05. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, DONE, DONE, NOW], "", ""),
+            ((11, 10), "Bây giờ 11:10. Ca làm hết lúc 11:30.", [DONE, DONE, DONE, DONE, DONE, DONE, NOW], "", ""),
             ((11, 30), "Bây giờ 11:30. Ngoài giờ làm.", ["", "", "", "", "", "", ""], "", ""),
             ((11, 40), "Bây giờ 11:40. Ngoài giờ làm.", ["", "", "", "", "", "", ""], "", ""),
             ((13, 0), "Bây giờ 13:00. Ngoài giờ làm.", ["", "", "", "", "", "", ""], "", ""),
@@ -1219,17 +1232,22 @@ def main():
                 cp.click("#fold-day > summary")
                 check(cp.is_visible("#timeline") and cp.locator("#timeline li").count() == 7, "the day list shows 7 lines")
                 parts = cp.evaluate("[...document.querySelectorAll('#timeline li')].map(li => [...li.children].map(c => c.textContent))")
-                check([p[0] for p in parts] == ["2:30", "3:30 đến 5:30", "6:00 đến 7:15", "8:15 đến 9:30", "từ 9:30", "10:00", "11:00"]
-                      and [p[1] for p in parts] == ["Đầu ngày: trả hộp trong SM, hỏi leader unit nào đi làm", "B1", "B2", "B2", "B3", "In giấy cho supporter",
-                                                    "Báo cáo cuối ngày: gửi quản lý các unit không đi làm"], f"the day list: the times and what to do {parts}")
+                check([p[0] for p in parts] == ["2:30", "3:30 đến 5:30", "6:00 đến 7:15", "8:15 đến 9:30", "9:00 đến 10:00", "9:00 đến 10:00", "từ 9:30"]
+                      and [p[1] for p in parts] == ["Đầu ngày: trả hộp trong SM, hỏi leader unit nào đi làm", "B1", "B2", "B2", "In giấy cho supporter",
+                                                    "Báo cáo cuối ngày: gửi quản lý các unit không đi làm", "B3"], f"the day list: the times and what to do {parts}")
+                widths = cp.evaluate("[...document.querySelectorAll('#timeline .d-tl-when')].map(e => Math.round(e.getBoundingClientRect().width))")
+                check(len(set(widths)) == 1, f"the time column of the day list has one width, so the texts line up {widths}")
                 check(cp.locator("#timeline li[aria-current=time]").count() == 1 and "is-now" in cp.locator("#timeline li[aria-current=time]").get_attribute("class"),
                       "the current line carries aria-current, and the marks are words")
                 check(not small_targets(cp) and not small_text(cp) and overflow_ok(cp)[0], "the day list: large controls, text 16 px or more, no sideways scroll")
                 page_texts.append(cp.inner_text("body"))
                 axe_check(cp, "on /dung (Hôm nay, day list open at 04:00)")
-            if (hh, mm) == (10, 5):
+            if (hh, mm) == (8, 59):
                 page_texts.append(cp.inner_text("body"))
-                axe_check(cp, "on /dung (Hôm nay at 10:05, the report is next)")
+                axe_check(cp, "on /dung (Hôm nay at 08:59, the report is next)")
+            if (hh, mm) == (9, 0):
+                page_texts.append(cp.inner_text("body"))
+                axe_check(cp, "on /dung (Hôm nay at 09:00, the report is now)")
             cp.close()
 
         # a minute passes, the tab is hidden, the plan is read again every few minutes
@@ -1337,7 +1355,7 @@ def main():
         pg.keyboard.press("Enter")
         pg.wait_for_selector("article.d-card", timeout=15000)
         box_id = pg.locator("article.d-card").first.get_attribute("data-box")
-        check(wait_until(lambda: row_states(rows.nth(1)) == ["Chờ bạn duyệt", "Chưa tạo"], 30), f"after the box is made and picked its unit says Chờ bạn duyệt {row_states(rows.nth(1))}")
+        check(wait_until(lambda: row_states(rows.nth(1)) == ["Chờ duyệt", "Chưa tạo"], 30), f"after the box is made and picked its unit says Chờ duyệt {row_states(rows.nth(1))}")
         check(rows.nth(1).locator(".d-needs button").all_inner_texts() == ["Tạo A1"] and rows.nth(1).locator("a[data-key=need-B2]").inner_text() == "Xem hộp B2"
               and rows.nth(1).locator("a[data-key=need-B2]").get_attribute("aria-label") == "Xem hộp B2 của M3-02", "a made box has a link, a box not made keeps its button")
         link = rows.nth(1).locator("a[data-key=need-B2]")
@@ -1578,7 +1596,7 @@ def main():
         pg.close()
         ctx_h.close()
 
-        # ---------------------------------------------------------------- the same box name on two days (a box lives two days, a unit needs a new B2 every day)
+        # ---------------------------------------------------------------- the same box name on two days (with BOX_DONE_DAYS=2 yesterday's box is still alive, a unit needs a new B2 every day)
         code, out = admin.call("POST", "/api/admin/people", {"text": "6006, Mai, M6"})
         check(code == 200 and out["added"] == 1, f"the admin adds a fourth person {out}")
         c6 = Client(BASE)
@@ -1654,7 +1672,7 @@ def main():
         check(takes6.count() == 1 and takes6.get_attribute("data-box") == str(new_id) and takes6.locator(".d-day").count() == 0
               and takes6.locator("a[data-key=print]").get_attribute("href") == f"/my/print?ids={new_id}", "step 3 shows today's box only")
         check(steps(p6) == ["Xong", "Đang ở đây", "Có hộp để lấy"], f"the progress strip follows today's box {steps(p6)}")
-        check(wait_until(lambda: row_states(rows_of(p6).nth(0)) == ["Chờ bạn duyệt", "Chưa tạo", "Chưa tạo"], 15), f"the unit counts today's box only {row_states(rows_of(p6).nth(0))}")
+        check(wait_until(lambda: row_states(rows_of(p6).nth(0)) == ["Chờ duyệt", "Chưa tạo", "Chưa tạo"], 15), f"the unit counts today's box only {row_states(rows_of(p6).nth(0))}")
         new_items = [i["id"] for i in box6(new_id)["items"]]
         paper = p6.evaluate("fetch('/my/print').then(r => r.text())")
         check(new_items[0] in paper and not any(i in paper for i in old_items), "the printed paper has today's box and not yesterday's")
@@ -1785,6 +1803,115 @@ def main():
         lo.close()
         ctx_o.close()
 
+        # ---------------------------------------------------------------- login with a shared password: ADMIN_IDS=1001, USER_IDS=4001,4002, USER_PASSWORD (made up, never printed)
+        PW, BAD_PW = "test-pass", "wrong-pass"
+        REFUSAL_PW = "Không vào được. Kiểm tra lại ID và mật khẩu, hoặc nhờ admin thêm ID của bạn."
+        env3 = clean_env(DB_PATH=os.path.join(tmp3, "pw.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t",
+                         ADMIN_IDS="1001", USER_IDS="4001,4002", USER_PASSWORD=PW, LLM_MODE="mock")
+        port3 = free_port()
+        srv3, srv3_log = start_server(env3, port3, tmp3)
+        base3 = f"http://127.0.0.1:{port3}"
+        code, st = Client(base3).call("GET", "/api/auth/status")
+        check(code == 200 and st.get("enforced") is True and st.get("user_password") is True and PW not in json.dumps(st), "password server: the status says a password is asked, and never shows it")
+        ctx_p = new_ctx(viewport={"width": 1000, "height": 900})
+        pp = ctx_p.new_page(); watch(pp, "pw-login")
+
+        def pw_cookies():
+            return [c["name"] for c in ctx_p.cookies() if c["name"] in ("sid", "__Host-sid")]
+
+        def pw_submit(pid, password, key_in="#login-pw"):
+            """Types the ID and the password, presses Enter, returns the answer of the server once the page has shown it."""
+            pp.fill("#login-id", pid); pp.fill("#login-pw", password)
+            with pp.expect_response(lambda r: r.url.endswith("/api/auth/login")) as got:
+                pp.press(key_in, "Enter")
+            return got.value
+
+        def wait_refusal():
+            pp.wait_for_function("(() => { const e = document.getElementById('login-err'); return !e.hidden && e.textContent !== ''; })()", timeout=10000)
+
+        pp.goto(base3 + "/login")
+        pp.wait_for_selector("#login-pw-field:not([hidden])")
+        tops = pp.evaluate("[document.getElementById('login-id'), document.getElementById('login-pw'), document.querySelector('#login-admin summary')].map(e => e.getBoundingClientRect().top)")
+        check(pp.inner_text("label[for=login-pw]") == "Mật khẩu" and pp.get_attribute("#login-pw", "type") == "password" and pp.get_attribute("#login-pw", "autocomplete") == "current-password"
+              and pp.get_attribute("#login-pw", "maxlength") == "300" and pp.get_attribute("#login-pw", "required") is None and pp.input_value("#login-pw") == "",
+              "password server: the field Mật khẩu is a password box with the right hints, not required in the page")
+        check(tops[0] < tops[1] < tops[2], f"password server: Mật khẩu sits under ID công ty and above Tôi là admin {tops}")
+        pw_text = pp.inner_text("body")
+        check("Chưa có ID? Nhờ admin thêm ID của bạn." in pw_text and "Đừng đưa ID cho người ngoài công ty." in pw_text and not jargon_hits(pw_text)
+              and pp.locator("#login-admin summary").inner_text() == "Tôi là admin" and not pp.is_visible("#login-code"),
+              f"password server: the same two sentences as before, the admin code still inside Tôi là admin {pw_text!r}")
+        login_look(pp, "(with Mật khẩu)")
+        axe_check(pp, "on /login (with Mật khẩu)")
+        pp.click("#login-admin summary")
+        check(pp.is_visible("#login-code") and pp.is_visible("#login-pw"), "password server: Tôi là admin opens the admin code and the password stays")
+        login_look(pp, "(with Mật khẩu, admin code open)")
+        axe_check(pp, "on /login (with Mật khẩu, admin code open)")
+        pp.click("#login-admin summary")
+
+        pq = ctx_p.new_page(); watch(pq, "pw-phone")
+        pq.set_viewport_size({"width": 375, "height": 800})
+        pq.goto(base3 + "/login"); pq.wait_for_selector("#login-pw-field:not([hidden])")
+        login_look(pq, "(with Mật khẩu, 375 px)")
+        axe_check(pq, "on /login at 375 px (with Mật khẩu)")
+        pq.click("#login-admin summary")
+        login_look(pq, "(with Mật khẩu, 375 px, admin code open)")
+        axe_check(pq, "on /login at 375 px (with Mật khẩu, admin code open)")
+        pq.close()
+
+        # a wrong password: the sentence of the server, the ID stays, the password goes
+        got = pw_submit("4001", BAD_PW)
+        wait_refusal()
+        sent = got.request.post_data_json
+        check(got.status == 401 and got.json().get("detail") == REFUSAL_PW and pp.inner_text("#login-err") == REFUSAL_PW, f"password server: a wrong password shows the sentence of the server {pp.inner_text('#login-err')!r}")
+        check(pp.input_value("#login-id") == "4001" and pp.input_value("#login-pw") == "" and pp.input_value("#login-code") == "" and urllib.parse.urlsplit(pp.url).path == "/login",
+              "password server: after a wrong password the ID stays and the password is empty")
+        check(sorted(sent) == ["code", "id", "password"] and sent["id"] == "4001" and sent["password"] == BAD_PW, "password server: the sign-in sends the ID, the code and the password")
+        check(pp.evaluate("parseFloat(getComputedStyle(document.getElementById('login-err')).fontSize)") >= 16, "password server: the sentence of the refusal is 16 px or more")
+        login_look(pp, "(with Mật khẩu, refusal)")
+        axe_check(pp, "on /login (with Mật khẩu, refusal)")
+        # no password at all, and an ID that is not listed with the right password: the same sentence
+        got = pw_submit("4001", "")
+        wait_refusal()
+        check(got.status == 401 and pp.inner_text("#login-err") == REFUSAL_PW, "password server: a listed ID with no password is refused with the same sentence")
+        got = pw_submit("4999", PW)
+        wait_refusal()
+        check(got.status == 401 and got.json().get("detail") == REFUSAL_PW and pp.inner_text("#login-err") == REFUSAL_PW and pp.input_value("#login-pw") == "",
+              "password server: an ID that is not listed is refused with the same sentence, even with the right password")
+        check(pw_cookies() == [], "password server: a refusal sets no cookie")
+        # the right password
+        got = pw_submit("4001", PW)
+        pp.wait_for_url(base3 + "/dung")
+        pp.wait_for_function("document.getElementById('who').textContent === '4001'", timeout=15000)
+        check(got.status == 200 and pp.url == base3 + "/dung" and pp.evaluate("fetch('/api/auth/status').then(r => r.json()).then(j => [j.person.id, j.person.admin])") == ["4001", False],
+              "password server: ID 4001 with the right password lands on /dung as an ordinary person")
+        check(len(pw_cookies()) == 1 and not pp.is_visible("#admin-link"), "password server: a cookie is set, and an ordinary person has no link to the admin page")
+        pp.click("#logout")
+        pp.wait_for_url(base3 + "/login")
+        check(pw_cookies() == [], "password server: after Thoát the cookie is gone")
+        pp.goto(base3 + "/dung")
+        check(urllib.parse.urlsplit(pp.url).path == "/login" and "next=/dung" in pp.url, "password server: after Thoát, /dung goes back to /login")
+        pp.wait_for_selector("#login-pw-field:not([hidden])")
+        # the second ID, the same password
+        got = pw_submit("4002", PW)
+        pp.wait_for_url(base3 + "/dung")
+        pp.wait_for_function("document.getElementById('who').textContent === '4002'", timeout=15000)
+        check(got.status == 200 and len(pw_cookies()) == 1, "password server: the second ID 4002 works with the same password")
+        pp.click("#logout")
+        pp.wait_for_url(base3 + "/login")
+        check(pw_cookies() == [], "password server: after Thoát the cookie of 4002 is gone")
+        # the admin: no password, no admin code (the fold stays closed)
+        pp.wait_for_selector("#login-pw-field:not([hidden])")
+        pp.fill("#login-id", "1001")
+        with pp.expect_response(lambda r: r.url.endswith("/api/auth/login")) as got:
+            pp.press("#login-id", "Enter")
+        pp.wait_for_url(base3 + "/")
+        check(got.value.status == 200 and pp.url == base3 + "/" and len(pw_cookies()) == 1 and pp.evaluate("fetch('/api/auth/status').then(r => r.json()).then(j => j.person.admin)") is True,
+              "password server: the admin ID with no admin code enters without the password and lands on the admin page")
+        pp.evaluate("fetch('/api/auth/logout', {method: 'POST'}).then(r => r.status)")
+        check(wait_until(lambda: pw_cookies() == [], 6), "password server: after the admin signs out the cookie is gone")
+        check(not [e for e in errs if e.startswith("pw-")], f"password server: no script error or console error {[e for e in errs if e.startswith('pw-')][:3]}")
+        ctx_p.close()
+
         browser.close()
 
 
@@ -1796,6 +1923,7 @@ except Exception:
 finally:
     stop_server(srv, srv_log, tmp)
     stop_server(srv2, srv2_log, tmp2)
+    stop_server(srv3, srv3_log, tmp3)
 
 print(f"\n{len(results)} checks, {len(fails)} failed")
 for f in fails:

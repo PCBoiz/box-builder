@@ -803,7 +803,7 @@ function renderPeople() {
   const admins = p.people.filter((x) => x.admin).length;
   st.textContent = !p.enforced
     ? "Đăng nhập chưa bật: ai có link cũng vào được trang này. Để bật, đặt ADMIN_IDS trong Render (ID của các admin, cách nhau bằng dấu phẩy) rồi lưu. Render tự chạy lại, mất khoảng một phút. Sau đó người dùng thường chỉ vào được trang người dùng."
-    : `Đã bật đăng nhập: ${fmt(p.people.length)} người, ${fmt(admins)} admin. Ai biết ID là đăng nhập được. ` +
+    : `Đã bật đăng nhập: ${fmt(p.people.length)} người, ${fmt(admins)} admin. ${p.user_password ? "Người dùng thường gõ ID và mật khẩu chung." : "Ai biết ID là đăng nhập được."} ` +
       (p.admin_code ? "Admin phải nhập thêm mã quản trị." : "Nên đặt ADMIN_CODE trong Render để admin gõ thêm một mã.");
   if (body.contains(document.activeElement)) return;                    // keep the keyboard where it is; the table is redrawn when focus leaves
   body.replaceChildren(...(p.people.length ? p.people.map((x) => h("tr", {},
