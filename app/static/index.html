@@ -21,6 +21,7 @@
       <button type="button" id="fs-down" aria-label="Chữ nhỏ hơn" title="Chữ nhỏ hơn">A−</button>
       <button type="button" id="fs-up" aria-label="Chữ lớn hơn" title="Chữ lớn hơn">A+</button>
     </span>
+    <a id="print-link" class="link" href="/print/boxes" target="_blank" rel="noopener" title="Mở phiếu lấy đồ của các hộp đã duyệt, sắp theo vị trí kệ, để in">In phiếu lấy đồ</a>
     <a id="export" class="link" href="/api/export.csv" download title="Tải danh sách mọi hộp và món về máy">Tải danh sách hộp (CSV)</a>
     <span id="live" class="live" role="status"><i></i><b>Đang kết nối</b></span>
   </div>
@@ -183,6 +184,61 @@
     <ul id="a-todo" class="alerts"></ul>
   </section>
 
+  <section class="panel" id="a-sync" aria-labelledby="sync-h">
+    <h2 id="sync-h">Đồng bộ kho với SM</h2>
+    <p id="sync-status" class="hint" role="status">Đang kiểm tra...</p>
+    <ol class="plain">
+      <li>Cài một lần: bấm nút dưới đây. Tampermonkey mở trang cài đặt, bấm <b>Install</b>.</li>
+      <li>Mở SM (https://sm.config.inc/boxes) và đăng nhập. Góc dưới bên phải có nút <b>Box builder</b>.</li>
+      <li>Bấm nút đó, nhập <b>Mã đồng bộ</b> (người quản lý có), bấm <b>Kiểm tra kết nối</b>, rồi <b>Đồng bộ kho ngay</b>.</li>
+    </ol>
+    <div class="actions"><a id="sync-install" class="btn primary" href="/box_builder_sm.user.js">Cài công cụ đồng bộ</a>
+      <span class="hint">Công cụ chỉ đọc từ SM, không tạo hay sửa gì trong SM.</span></div>
+  </section>
+
+  <section class="panel" id="a-smpush" aria-labelledby="smp-h" hidden>
+    <h2 id="smp-h">Thử đẩy lên SM (SM giả)</h2>
+    <p class="hint">SM giả nằm ngay trong máy chủ, để thử cả quy trình mà không đụng tới SM thật. Hộp thật chỉ được tạo trong SM bằng công cụ trong tab SM, sau khi bạn bấm xác nhận.</p>
+    <div class="field">
+      <label for="smp-who">Người nhận (không bắt buộc)</label>
+      <input id="smp-who" maxlength="60" autocomplete="off">
+    </div>
+    <label class="check"><input type="checkbox" id="smp-borrow"><span>Mượn luôn các món (cần có người nhận)</span></label>
+    <div class="actions"><button type="button" id="smp-go" class="btn primary">Đẩy các hộp sẵn sàng lên SM giả</button></div>
+    <p id="smp-sum" class="hint" role="status" hidden></p>
+    <div class="table-wrap" id="smp-wrap" hidden>
+      <table class="otable">
+        <thead><tr><th scope="col">Hộp</th><th scope="col">Kết quả</th><th scope="col">Ghi chú</th></tr></thead>
+        <tbody id="smp-body"></tbody>
+      </table>
+    </div>
+    <h3 id="smp-h3">SM giả đang có</h3>
+    <p class="hint">Chọn hộp rồi bấm một bước. Tên người dùng ô "Người nhận" ở trên. Bước nào SM giả từ chối sẽ được báo rõ lý do.</p>
+    <ul id="smp-list" class="qlist"></ul>
+    <div class="actions" id="smp-moves" role="group" aria-label="Các bước với hộp đã chọn">
+      <button type="button" class="btn" data-move="assign">Giao cho người nhận</button>
+      <button type="button" class="btn" data-move="borrow">Mượn</button>
+      <button type="button" class="btn" data-move="floor">Đưa ra sàn</button>
+      <button type="button" class="btn" data-move="hand_over">Bàn giao</button>
+    </div>
+    <div class="actions" id="smp-old">
+      <label for="smp-days">Trả các hộp ở sàn đã tạo từ ít nhất</label>
+      <input id="smp-days" type="number" min="0" max="365" value="2" class="days">
+      <span>ngày</span>
+      <button type="button" class="btn" id="smp-old-preview">Xem hộp sẽ trả</button>
+      <button type="button" class="btn danger" id="smp-old-go" disabled>Xác nhận trả</button>
+    </div>
+  </section>
+
+  <section class="panel" id="a-smboxes" aria-labelledby="smb-h">
+    <h2 id="smb-h">Hộp đang có trong SM</h2>
+    <p id="smb-sum" class="hint" role="status">Đang tải...</p>
+    <h3 id="smb-conf-h" hidden>Hộp của bạn có món đã nằm trong hộp khác ở SM</h3>
+    <ul id="smb-conf" class="qlist bad" hidden></ul>
+    <h3 id="smb-dbl-h" hidden>Món đang nằm trong hai hộp SM trở lên</h3>
+    <ul id="smb-dbl" class="qlist" hidden></ul>
+  </section>
+
   <section class="panel" id="a-alerts-panel">
     <h2>Cảnh báo kho</h2>
     <ul id="a-alerts" class="alerts"></ul>
@@ -231,6 +287,27 @@
   <section class="panel">
     <h2>Bảng tính Google</h2>
     <div id="a-sheet"></div>
+  </section>
+
+  <section class="panel" id="a-backup" aria-labelledby="bk-h">
+    <h2 id="bk-h">Sao lưu và khôi phục</h2>
+    <p class="hint">Tải về mọi hộp, món đã dùng trong bảng tính và thiết lập. Khôi phục chỉ thêm vào, không ghi đè: hộp trùng tên và món đã nằm ở hộp khác sẽ được bỏ qua.</p>
+    <div class="actions"><a id="bk-download" class="btn" href="/api/backup.json" download>Tải bản sao lưu (JSON)</a></div>
+    <div class="field">
+      <label for="bk-file">Khôi phục từ tệp sao lưu</label>
+      <input id="bk-file" type="file" accept=".json,application/json">
+    </div>
+    <div class="actions">
+      <button type="button" id="bk-preview" class="btn" disabled>Xem trước</button>
+      <button type="button" id="bk-restore" class="btn primary" disabled>Khôi phục</button>
+    </div>
+    <p id="bk-summary" class="hint" role="status" hidden></p>
+    <div class="table-wrap" id="bk-table-wrap" hidden>
+      <table class="otable">
+        <thead><tr><th scope="col">Hộp</th><th scope="col">Kết quả</th><th scope="col" class="num">Món</th><th scope="col">Ghi chú</th></tr></thead>
+        <tbody id="bk-body"></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="panel">

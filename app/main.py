@@ -4,19 +4,23 @@ import csv
 import hashlib
 import hmac
 import io
+import json
 import os
 import re
+import threading
 import time
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import automation, db, images, picker, planner, service
+from . import automation, db, images, picker, planner, printview, service, sm_push
 from .catalog import Catalog
 from .settings import Settings
+from .sm_client import STATUS_LABELS, MockSM
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -39,6 +43,24 @@ class PushedBody(BaseModel):
 class SyncBody(BaseModel):
     objects: list[dict] = Field(max_length=20000)     # rows exactly as the userscript compacts them from /api/objects
     force: bool = False                               # accept a list that leaves far fewer usable objects than the catalog has now
+
+
+class SmBoxesBody(BaseModel):
+    boxes: list = Field(max_length=20000)             # what the userscript read from SM; entries that are not boxes are skipped and counted
+    allow_empty: bool = False
+
+
+class SmPushBody(BaseModel):
+    assignee: str = Field(default="", max_length=60)
+    borrow_now: bool = False
+
+
+class SmMoveBody(BaseModel):
+    action: str = Field(max_length=20)                    # assign | borrow | floor | hand_over | return_old
+    box_ids: list[str] = Field(default=[], max_length=200)
+    person: str = Field(default="", max_length=60)
+    days: int = Field(default=2, ge=0, le=365)            # return_old: boxes at least this many days old
+    confirm: bool = False                                 # return_old only acts when this is true
 
 
 class Qty(BaseModel):
@@ -134,7 +156,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     # A browser sends a plain form POST from any web page without asking first. With no access code set, that would let a page the
     # visitor opens approve, regenerate or reopen boxes here. Refuse unsafe requests that a browser marks as coming from another
     # site. The two token routes are exempt: the userscript calls them from the SM page and they carry their own secret.
-    TOKEN_ROUTES = ("/api/catalog/sync",)
+    TOKEN_ROUTES = ("/api/catalog/sync", "/api/sm/boxes/sync")
 
     @app.middleware("http")
     async def refuse_cross_site_writes(request: Request, call_next):
@@ -190,9 +212,37 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         """How many objects a box gets: what was asked for, else the size of its stage (A1, B2, B3), else the default."""
         return explicit or s.stage_counts.get(service.stage_of(label), s.default_count)
 
+    SCRIPT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "integrations", "box_builder_sm.user.js")
+    APP_URL_OK = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+
+    @app.get("/box_builder_sm.user.js")
+    def sync_script(request: Request, app_url: str = Query("", alias="app")):
+        """The SM sync tool, served so Tampermonkey offers to install it with one click. The app's own address is written into it
+        (and into its @connect line), and it checks for newer versions here. It holds no secret: the sync code is typed by the person."""
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        origin = f"{proto}://{request.headers.get('host', request.url.netloc)}"
+        target = app_url.strip().rstrip("/") or origin
+        if not APP_URL_OK.match(target):
+            raise service.Invalid("Tham số app phải là một địa chỉ dạng https://tên-máy hoặc http://tên-máy:cổng.")
+        with open(SCRIPT_FILE, encoding="utf-8") as f:
+            text = f.read()
+        host = urlsplit(target).hostname
+        self_url = f"{origin}/box_builder_sm.user.js" + (f"?app={target}" if app_url.strip() else "")
+        text = text.replace('const DEFAULT_APP = "";', f"const DEFAULT_APP = {json.dumps(target)};", 1)
+        text = text.replace("// @connect      localhost\n", f"// @connect      localhost\n// @connect      {host}\n// @downloadURL  {self_url}\n// @updateURL    {self_url}\n", 1)
+        return Response(text, media_type="text/javascript; charset=utf-8", headers={"Cache-Control": "no-cache"})
+
+    fake_sm = MockSM({}, {}, clock=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())) if s.sm_push_mode == "mock" else None          # in memory only: the real SM is never reached from here
+    fake_lock = threading.Lock()
+
+    def need_fake_sm() -> MockSM:
+        if fake_sm is None:
+            raise service.Conflict("Chế độ thử với SM giả đang tắt. Đặt SM_PUSH_MODE=mock rồi chạy lại máy chủ để dùng.")
+        return fake_sm
+
     @app.get("/api/config")
     def config():
-        return {"llm": engine.name, "model": s.deepseek_model if engine.name == "deepseek" else "mock",
+        return {"llm": engine.name, "model": s.deepseek_model if engine.name == "deepseek" else "mock", "sm_push_mode": s.sm_push_mode,
                 "default_count": s.default_count, "stage_counts": s.stage_counts, "max_qty": s.max_qty,
                 "needs_code": bool(s.access_code), "draft_ttl_hours": s.draft_ttl_hours}
 
@@ -387,6 +437,98 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": "attachment; filename=objects.csv"})
 
+    # ------------------------------------------------------------------ backup and restore
+    BACKUP_MAX = 10 * 1024 * 1024
+
+    @app.get("/api/backup.json", dependencies=[Depends(auth)])
+    def backup(c=Depends(conn_dep)):
+        """Everything this app owns, as one JSON file: boxes and items, pushed records, used-in-sheet IDs, automation switches.
+        No secrets, no catalog, no SM snapshot."""
+        body = json.dumps(service.export_backup(c), ensure_ascii=False, indent=1)
+        return Response(body, media_type="application/json; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename=box-builder-backup-{time.strftime('%Y%m%d')}.json"})
+
+    @app.post("/api/backup/import", dependencies=[Depends(auth)])
+    async def backup_import(request: Request, dry_run: bool = True, c=Depends(conn_dep)):
+        """Merge a backup in. dry_run (the default) only reports what would happen. Nothing is overwritten."""
+        raw = await request.body()
+        if len(raw) > BACKUP_MAX:
+            raise HTTPException(413, "Tệp sao lưu lớn hơn 10 MB nên bị từ chối.")
+        try:
+            data = json.loads(raw.decode("utf-8-sig"))
+        except (ValueError, UnicodeDecodeError):
+            raise service.Invalid("Tệp này không phải JSON hợp lệ. Hãy chọn tệp đã tải từ nút Tải bản sao lưu.")
+        report = await run_in_threadpool(service.import_backup, c, data, cat, s.max_qty, dry_run)
+        if not dry_run:
+            automation.log(c, "backup", f"Khôi phục: thêm {report['totals']['boxes_added']} hộp, bỏ qua {report['totals']['boxes_skipped']} hộp")
+        return report
+
+    @app.get("/print/boxes", dependencies=[Depends(auth)])
+    def print_boxes(status: str = "approved", module: str = "", ids: str = "", combined: bool = True, c=Depends(conn_dep)):
+        """The paper a supporter takes to the shelves: approved boxes, one page each, plus one list sorted by shelf location."""
+        wanted = tuple(x.strip() for x in status.split(",") if x.strip()) or ("approved",)
+        id_set = {int(x) for x in ids.split(",") if x.strip().isdigit()}
+        boxes = []
+        for b in service.state(c, cat)["boxes"]:
+            if b["status"] not in wanted or not b["items"] or (module and b["module"] != module.strip()) or (id_set and b["id"] not in id_set):
+                continue
+            anchor_id, name = service.split_anchor(b["anchor"])
+            if anchor_id:
+                item = cat.get(anchor_id)
+                name = item.name if item else ""
+            boxes.append({**b, "anchor": name})
+        page = printview.render_pick_list(boxes, generated_at=time.strftime("%d/%m/%Y %H:%M"), combined=combined)
+        return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/sm/push", dependencies=[Depends(auth)])
+    def sm_push_run(body: SmPushBody, c=Depends(conn_dep)):
+        """Try the push on the fake SM: every ready box becomes a TaskBox there and is recorded as pushed."""
+        sm = need_fake_sm()
+        if not automation.is_on(c, "sm_queue"):
+            raise service.Conflict("Hàng chờ đẩy lên SM đang tắt (tab Tự động hoá). Bật lại rồi thử.")
+        with fake_lock:
+            items = cat.items()
+            sm.add_stock({oid: it.stock for oid, it in items.items()}, {oid: it.name for oid, it in items.items()})
+            return sm_push.push_ready(c, cat, sm, s.max_qty, body.model_dump())
+
+    @app.post("/api/sm/moves", dependencies=[Depends(auth)])
+    def sm_moves(body: SmMoveBody, c=Depends(conn_dep)):
+        """The other SM steps, tried on the fake: assign, borrow, send to the floor, hand over, return the old boxes (only with confirm)."""
+        sm = need_fake_sm()
+        with fake_lock:
+            if body.action == "assign":
+                results = sm_push.assign(sm, body.box_ids, body.person)
+            elif body.action == "borrow":
+                results = sm_push.borrow(sm, body.box_ids, body.person)
+            elif body.action == "floor":
+                results = sm_push.to_floor(sm, body.box_ids)
+            elif body.action == "hand_over":
+                results = sm_push.hand_over(sm, body.box_ids, body.person)
+            elif body.action == "return_old":
+                out = sm_push.return_old(sm, body.days, body.person, body.confirm)
+                if not out["preview"]:
+                    automation.log(c, "sm_push", f"SM giả: trả {sum(1 for r in out['results'] if r['ok'])} hộp cũ")
+                return out
+            else:
+                raise service.Invalid("Thao tác không có trong danh sách: assign, borrow, floor, hand_over, return_old.")
+        automation.log(c, "sm_push", f"SM giả ({body.action}): {sum(1 for r in results if r['ok'])} hộp xong, {sum(1 for r in results if not r['ok'])} không làm được")
+        return {"preview": False, "boxes": [], "results": results}
+
+    @app.get("/api/sm/mock", dependencies=[Depends(auth)])
+    def sm_mock_state():
+        """What the fake SM holds now."""
+        sm = need_fake_sm()
+        with fake_lock:
+            return {"boxes": [{"box_id": b["box_id"], "title": b["title"], "status": b["status"], "status_label": STATUS_LABELS.get(b["status"], b["status"]),
+                               "objects": len(b["contents"]), "object_ids": [x["object_id"] for x in b["contents"]], "note": b["note"],
+                               "anchor_object_id": b["anchor_object_id"], "assignee": b.get("assignee"), "holder": b.get("holder")}
+                              for b in sm.list_boxes()]}
+
+    @app.get("/api/sm/boxes/report", dependencies=[Depends(auth)])
+    def sm_boxes_report(c=Depends(conn_dep)):
+        """What the last read of SM says: boxes and objects held, conflicts with this app's boxes, objects held twice."""
+        return service.sm_report(c, cat)
+
     @app.get("/api/objects/coverage", dependencies=[Depends(auth)])
     def objects_coverage(c=Depends(conn_dep)):
         return service.coverage(c, cat)
@@ -445,10 +587,17 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         return {"ids": ids}
 
     @app.get("/api/sync/check")
-    def sync_check(x_sync_token: str = Header(default="")):
+    def sync_check(x_sync_token: str = Header(default=""), c=Depends(conn_dep)):
         """For the sync tool's "check the connection" button: is the address right, is the code right, what does the app hold now."""
         sync_auth(x_sync_token)
-        return {"ok": True, "catalog": cat.info(), "vi_fallback": True, "min_usable": 50}
+        return {"ok": True, "catalog": cat.info(), "vi_fallback": True, "min_usable": 50, "sm_boxes": service.sm_boxes_info(c)}
+
+    @app.post("/api/sm/boxes/sync")
+    def sm_boxes_sync(body: SmBoxesBody, x_sync_token: str = Header(default=""), c=Depends(conn_dep)):
+        """The userscript (signed in to SM) sends the boxes SM holds so a new box never reuses one of their objects.
+        Same secret as the catalog sync. Read only on SM's side; the server never contacts SM."""
+        sync_auth(x_sync_token)
+        return service.save_sm_boxes(c, body.boxes, time.time(), body.allow_empty)
 
     def sync_auth(x_sync_token: str):
         if not s.sync_token:

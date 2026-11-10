@@ -12,7 +12,7 @@ PORT = 8091
 BASE = f"http://127.0.0.1:{PORT}"
 tmp = tempfile.mkdtemp()
 env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DEEPSEEK_API_KEY")}
-env.update(DB_PATH=os.path.join(tmp, "ui.db"), CATALOG_PATH=os.path.join(ROOT, "data/catalog.csv"), SYNC_TOKEN="t")
+env.update(DB_PATH=os.path.join(tmp, "ui.db"), CATALOG_PATH=os.path.join(ROOT, "data/catalog.csv"), SYNC_TOKEN="t", SM_PUSH_MODE="mock")
 srv = subprocess.Popen([os.path.join(ROOT, ".venv/bin/uvicorn"), "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 for _ in range(50):
@@ -196,6 +196,42 @@ try:
         pg.wait_for_selector(".toast.bad")
         check(True, "bad number rejected with a toast")
 
+        # --- the sync panel: where the catalog stands, and a one-click install link
+        check(pg.locator("#sync-install").get_attribute("href") == "/box_builder_sm.user.js", "sync: the install link points at the script the app serves")
+        check("Chưa đồng bộ lần nào" in pg.inner_text("#sync-status"), "sync: says plainly that the kho has never been synced")
+        script_text = urllib.request.urlopen(BASE + "/box_builder_sm.user.js").read().decode()
+        check(script_text.startswith("// ==UserScript==") and f'const DEFAULT_APP = "{BASE}"' in script_text, "sync: the served script holds this app's address")
+
+        # --- backup and restore: a bad file is refused, a good one is previewed first, and restoring twice adds nothing
+        free3 = [o["id"] for o in json.load(urllib.request.urlopen(BASE + "/api/objects?status=free&per=3"))["items"]]
+        bk_dir = tempfile.mkdtemp()
+        bad_path, good_path = os.path.join(bk_dir, "bad.json"), os.path.join(bk_dir, "good.json")
+        open(bad_path, "w").write("{{{ not json")
+        json.dump({"format": "box-builder-backup", "version": 1, "boxes": [
+            {"module": "M5", "label": "Box A1", "count": 3, "status": "approved", "items": [{"pos": n + 1, "object_id": oid} for n, oid in enumerate(free3)]}],
+            "used": [], "automations": []}, open(good_path, "w"))
+        check(pg.is_disabled("#bk-preview") and pg.is_disabled("#bk-restore"), "backup: preview and restore start switched off")
+        pg.set_input_files("#bk-file", bad_path)
+        pg.wait_for_selector(".toast.bad:has-text('không phải JSON')", timeout=8000)
+        check(pg.is_disabled("#bk-preview"), "backup: a file that is not JSON is refused with a plain message")
+        pg.set_input_files("#bk-file", good_path)
+        pg.wait_for_function("!document.querySelector('#bk-preview').disabled")
+        check(pg.is_disabled("#bk-restore"), "backup: restore stays off until a preview has run")
+        pg.click("#bk-preview")
+        pg.wait_for_selector("#bk-body tr")
+        check("Sẽ thêm 1 hộp (3 món)" in pg.inner_text("#bk-summary") and "M5 Box A1" in pg.inner_text("#bk-body"), "backup: the preview says what would be added")
+        check(not any(b["module"] == "M5" for b in json.load(urllib.request.urlopen(BASE + "/api/state"))["boxes"]), "backup: a preview writes nothing")
+        pg.click("#bk-restore")
+        pg.wait_for_selector(".toast:has-text('Đã khôi phục 1 hộp')", timeout=15000)
+        st_bk = json.load(urllib.request.urlopen(BASE + "/api/state"))
+        got = next((b for b in st_bk["boxes"] if b["module"] == "M5"), None)
+        check(got is not None and got["status"] == "approved" and [i["id"] for i in got["items"]] == free3, "backup: the box came back complete and approved")
+        pg.set_input_files("#bk-file", good_path); pg.wait_for_function("!document.querySelector('#bk-preview').disabled"); pg.click("#bk-preview")
+        pg.wait_for_function("document.querySelector('#bk-body').innerText.includes('đã có hộp cùng tên')", timeout=8000)
+        check(pg.is_disabled("#bk-restore"), "backup: restoring the same file again would add nothing, so the button stays off")
+        dl = pg.locator("#bk-download").get_attribute("href")
+        check(dl == "/api/backup.json", "backup: the download link points at the export")
+
         # --- AI batch plan -> edit -> create
         pg.click("#b-section")
         check(pg.input_value("#b-labels") == "Box B2, Box B3, Box A1", "section preset fills the three box names")
@@ -246,10 +282,10 @@ try:
         # queue + log
         pg.click(".tab[data-view=auto]")
         try:
-            pg.wait_for_function("document.querySelector('#a-queue').innerText.includes('Sẵn sàng (3)')", timeout=8000)
+            pg.wait_for_function("document.querySelector('#a-queue').innerText.includes('Sẵn sàng (4)')", timeout=8000)
         except Exception:
             pass
-        check("Sẵn sàng (3)" in pg.inner_text("#a-queue"), "queue lists 3 ready boxes (the two batch boxes and the sectioned one, all auto-approved)")
+        check("Sẵn sàng (4)" in pg.inner_text("#a-queue"), "queue lists 4 ready boxes (two batch boxes, the sectioned one, and the restored backup box)")
         check("tự duyệt" in pg.inner_text("#a-log").lower(), "log mentions auto-approve")
         pg.screenshot(path=f"{OUT}/auto2.png", full_page=True)
 
@@ -315,6 +351,53 @@ try:
         pg.wait_for_selector(".toast.bad:has-text('Không kết nối được máy chủ')", timeout=8000)
         check(True, "a dropped connection says what to do, not 'Failed to fetch'")
         pg.unroute("**/api/used")
+
+        # --- the push, tried on the fake SM: the approved boxes become TaskBoxes there and show as pushed
+        pg.click(".tab[data-view=auto]")
+        pg.wait_for_selector("#a-smpush:not([hidden])", timeout=8000)
+        check("SM giả" in pg.inner_text("#smp-h") and "không đụng tới SM thật" in pg.inner_text("#a-smpush"), "fake push: the panel says it is a fake and touches no real SM")
+        ready_before = len(json.load(urllib.request.urlopen(BASE + "/api/queue"))["ready"])
+        pg.click("#smp-go")
+        pg.wait_for_selector("#smp-body tr", timeout=15000)
+        check(f"Tạo được {ready_before} hộp trong SM giả" in pg.inner_text("#smp-sum"), f"fake push: it created the {ready_before} ready boxes")
+        check(pg.locator("#smp-body .pill.st-free").count() == ready_before and "MBX-" in pg.inner_text("#smp-body"), "fake push: the table shows each box and its code in the fake")
+        pg.wait_for_function("!document.querySelector('#smp-list').innerText.includes('Chưa có hộp nào')", timeout=8000)
+        check(pg.locator("#smp-list li").count() == ready_before, "fake push: the list of what the fake holds matches")
+        check(len(json.load(urllib.request.urlopen(BASE + "/api/queue"))["ready"]) == 0, "fake push: nothing is left in the queue")
+        # the other steps on the same fake box: borrow before assigning is refused and says why, then the whole path, then the return
+        pg.locator("#smp-list input[type=checkbox]").first.check()
+        pg.click("#smp-moves [data-move=borrow]")
+        pg.wait_for_selector("#smp-body .pill:has-text('Không làm được')", timeout=8000)
+        check("Unassigned" in pg.inner_text("#smp-body"), "fake steps: borrowing a box nobody has been given is refused with the reason")
+        pg.fill("#smp-who", "An")
+        for move, word in (("assign", "Assigned"), ("borrow", "Borrowed"), ("floor", "On the floor")):
+            pg.locator("#smp-list input[type=checkbox]").first.check()
+            pg.click(f"#smp-moves [data-move={move}]")
+            pg.wait_for_function("w => document.querySelector('#smp-list').innerText.includes(w)", arg=word, timeout=8000)
+            check(word in pg.inner_text("#smp-list"), f"fake steps: the box is now {word}")
+        pg.fill("#smp-days", "0"); pg.click("#smp-old-preview")
+        pg.wait_for_selector("#smp-body .pill:has-text('Sẽ trả')", timeout=8000)
+        check("Returned" not in pg.inner_text("#smp-list") and not pg.is_disabled("#smp-old-go"), "fake steps: the preview returns nothing and switches the confirm button on")
+        pg.click("#smp-old-go")
+        pg.wait_for_function("document.querySelector('#smp-list').innerText.includes('Returned')", timeout=8000)
+        check("Đã trả 1 hộp" in pg.inner_text("#smp-sum"), "fake steps: confirming returns the old box")
+        pg.click(".tab[data-view=boxes]")
+        pg.wait_for_function("document.querySelectorAll('.pill.pushed').length >= 1", timeout=8000)
+        check(pg.locator(".pill.pushed").count() == ready_before, "fake push: the boxes now show 'Đã đẩy lên SM'")
+
+        # --- the paper for supporters opens in a new tab: approved boxes, sorted by shelf, with a print button
+        check(pg.locator("#print-link").get_attribute("href") == "/print/boxes", "print: the header has a link to the pick list")
+        pg.click(".tab[data-view=boxes]")
+        with pg.context.expect_page() as popup:
+            pg.click("#print-link")
+        paper = popup.value
+        paper.wait_for_load_state()
+        check(paper.locator("table").count() >= 2 and "Phiếu lấy đồ" in paper.inner_text("body"), "print: the page shows the approved boxes in tables")
+        check(paper.locator("button:has-text('In phiếu')").count() == 1, "print: it has one print button")
+        check(paper.locator("script").count() == 0, "print: the page runs no scripts")
+        paper.emulate_media(media="print")
+        check(paper.locator("button:has-text('In phiếu')").is_hidden(), "print: the button is hidden on paper")
+        paper.close()
 
         # --- optional: run axe-core on every tab when AXE_JS points at axe.min.js (kept out of the repo on purpose)
         axe_js = os.environ.get("AXE_JS")

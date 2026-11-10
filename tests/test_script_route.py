@@ -1,0 +1,51 @@
+"""The sync tool is served by the app so Tampermonkey installs it with one click, with the app's own address already in it."""
+import re
+
+from fastapi.testclient import TestClient
+
+from app import picker
+from app.main import create_app
+from tests.test_automation import make_client
+from tests.test_backend import env  # noqa: F401  (env is a fixture)
+
+
+def test_served_script_has_the_address_the_connect_line_and_update_links(env):
+    client, s, _ = make_client(env)
+    r = client.get("/box_builder_sm.user.js", headers={"host": "box-builder-guwc.onrender.com", "x-forwarded-proto": "https"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/javascript")
+    assert r.headers["cache-control"] == "no-cache"
+    t = r.text
+    assert t.startswith("// ==UserScript==")                                           # Tampermonkey recognises it
+    assert 'const DEFAULT_APP = "https://box-builder-guwc.onrender.com";' in t           # the address is filled in
+    assert "// @connect      box-builder-guwc.onrender.com" in t
+    assert "// @downloadURL  https://box-builder-guwc.onrender.com/box_builder_sm.user.js" in t
+    assert "// @updateURL    https://box-builder-guwc.onrender.com/box_builder_sm.user.js" in t
+    assert t.count("// @connect") >= 3 and "const DEFAULT_APP = \"\";" not in t
+
+
+def test_the_app_parameter_picks_the_address_and_bad_values_are_refused(env):
+    client, s, _ = make_client(env)
+    r = client.get("/box_builder_sm.user.js?app=https://box-builder-guwc.onrender.com")
+    assert 'const DEFAULT_APP = "https://box-builder-guwc.onrender.com";' in r.text
+    assert "?app=https://box-builder-guwc.onrender.com" in re.search(r"@downloadURL\s+(\S+)", r.text).group(1)
+    lan = client.get("/box_builder_sm.user.js?app=http://192.0.2.10:8080/")             # a trailing slash is tidied
+    assert 'const DEFAULT_APP = "http://192.0.2.10:8080";' in lan.text and "// @connect      192.0.2.10" in lan.text
+    for bad in ('https://x.com";alert(1);//', "javascript:alert(1)", "https://a.com/path", "https://a b.com", "ftp://a.com",
+                "https://a.com\nGM_xmlhttpRequest", "https://" + "a" * 5 + ".com:99999999", "//evil.com", "https://user@evil.com"):
+        got = client.get("/box_builder_sm.user.js", params={"app": bad})
+        assert got.status_code == 422, bad
+
+
+def test_the_script_holds_no_secret_and_is_the_same_file_as_in_the_repo(env):
+    s, cat = env
+    s.sync_token, s.deepseek_key, s.llm_mode = "SYNC-secret-TOKEN-9z8y", "sk-leaktest-0011223344556677", "mock"
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    t = client.get("/box_builder_sm.user.js").text
+    for secret in (s.sync_token, s.deepseek_key, s.db_path):
+        assert secret not in t
+    source = open("integrations/box_builder_sm.user.js", encoding="utf-8").read()
+    for name in ("GM_xmlhttpRequest", "/api/objects?page=", "/api/catalog/sync", "/api/sync/check"):
+        assert name in t and name in source
+    assert t.replace("// @connect      localhost\n", "") != source                       # only the header and the default address differ
+    body = re.sub(r"^// ==UserScript==.*?// ==/UserScript==\n", "", t, flags=re.S).replace(re.search(r'const DEFAULT_APP = "[^"]*";', t).group(0), 'const DEFAULT_APP = "";')
+    assert body == re.sub(r"^// ==UserScript==.*?// ==/UserScript==\n", "", source, flags=re.S)

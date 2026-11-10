@@ -22,10 +22,86 @@ class Invalid(Exception):
 
 
 # ----------------------------------------------------------------------------- reads
+# SM statuses in which a box no longer holds its objects. Anything else, including a status we have never seen, counts as
+# holding them: wrongly treating an object as taken costs a pick, wrongly treating it as free costs a duplicate.
+SM_ENDED = ("deactivated", "returned", "cancelled", "canceled", "discarded")
+
+
 def taken_ids(conn) -> set[str]:
     a = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
     b = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
-    return a | b
+    return a | b | set(sm_held(conn))
+
+
+def sm_held(conn) -> dict[str, dict]:
+    """Objects that a box in SM holds, as last read from SM: object id -> {sm_box_id, title, status}.
+    Boxes this app pushed itself are left out: their objects already belong to our own box."""
+    ours = {str(r[0]) for r in conn.execute("SELECT sm_box_id FROM sm_push")}
+    out: dict[str, dict] = {}
+    for r in conn.execute(
+        "SELECT i.object_id, b.sm_box_id, b.title, b.status, b.status_label FROM sm_box_items i "
+        "JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id ORDER BY b.created_at, b.sm_box_id"
+    ):
+        if r["sm_box_id"] in ours:
+            continue
+        out.setdefault(r["object_id"], {"sm_box_id": r["sm_box_id"], "title": r["title"], "status": r["status_label"] or r["status"]})
+    return out
+
+
+def sm_boxes_info(conn) -> dict | None:
+    r = conn.execute("SELECT v FROM catalog_snapshot WHERE k='sm_boxes'").fetchone()
+    return json.loads(r[0]) if r else None
+
+
+def save_sm_boxes(conn, boxes: list, now: float, allow_empty: bool = False) -> dict:
+    """Replace the snapshot of SM boxes. Only active boxes are kept, and only the fields below: never an assignee, holder or any
+    person's name, even if the sender includes them. Boxes with no usable id are skipped and counted."""
+    if not boxes and not allow_empty:
+        raise Invalid("Danh sách hộp SM trống nên bị bỏ qua (để tránh xoá nhầm). Nếu thật sự SM không có hộp nào, gửi allow_empty.")
+    keep, ignored_ended, invalid = {}, 0, 0
+    for b in boxes:
+        if not isinstance(b, dict):
+            invalid += 1
+            continue
+        bid = str(b.get("box_id") if b.get("box_id") is not None else "").strip()[:64]
+        status = str(b.get("status") or "").strip().lower()[:40]
+        if not bid:
+            invalid += 1
+            continue
+        if status in SM_ENDED:
+            ignored_ended += 1
+            continue
+        contents = b.get("contents") if isinstance(b.get("contents"), list) else []
+        if len(contents) > 200:
+            raise Invalid(f"Hộp SM {bid} có {len(contents)} món, nhiều hơn mức cho phép (200).")
+        items: dict[str, int] = {}
+        for c in contents:
+            if not isinstance(c, dict):
+                continue
+            oid = pad_id(c.get("object_id", ""))
+            if oid is None:
+                continue
+            try:
+                q = max(1, min(9999, int(c.get("quantity") or 1)))
+            except (TypeError, ValueError):
+                q = 1
+            items[oid] = max(items.get(oid, 0), q)
+        keep[bid] = ({"title": str(b.get("title") or "").strip()[:200], "status": status,
+                      "label": str(b.get("status_label") or "").strip()[:60], "created": str(b.get("created_at") or "").strip()[:40]}, items)
+    held = {oid for _, items in keep.values() for oid in items}
+    with tx(conn):
+        conn.execute("DELETE FROM sm_box_items")
+        conn.execute("DELETE FROM sm_boxes")
+        for bid, (meta, items) in keep.items():
+            conn.execute("INSERT INTO sm_boxes(sm_box_id, title, status, status_label, created_at, seen_at) VALUES(?,?,?,?,?,?)",
+                         (bid, meta["title"], meta["status"], meta["label"], meta["created"], now))
+            for oid, q in items.items():
+                conn.execute("INSERT INTO sm_box_items(sm_box_id, object_id, qty) VALUES(?,?,?)", (bid, oid, q))
+        info = {"synced_at": now, "received": len(boxes), "active": len(keep), "objects_held": len(held),
+                "ignored_ended": ignored_ended, "skipped_invalid": invalid}
+        conn.execute("INSERT INTO catalog_snapshot(k, v) VALUES('sm_boxes', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
+                     (json.dumps(info),))
+    return info
 
 
 def get_box(conn, box_id: int) -> object:
@@ -47,6 +123,9 @@ def owner_of(conn, oid: str) -> str:
         return f"{r['module']} / {r['label']}"
     if conn.execute("SELECT 1 FROM external_used WHERE object_id=?", (oid,)).fetchone():
         return "danh sách đã dùng trong bảng tính"
+    held = sm_held(conn).get(oid)
+    if held:
+        return f"hộp SM {held['title'] or held['sm_box_id']}"
     return ""
 
 
@@ -87,7 +166,7 @@ def state(conn, catalog: Catalog) -> dict:
     return {
         "rev": rev_first,
         "catalog": catalog.info(),
-        "stats": {"catalog": len(cat), "in_boxes": in_boxes, "external": external,
+        "stats": {"catalog": len(cat), "in_boxes": in_boxes, "external": external, "in_sm": len(set(sm_held(conn)) & set(cat)),
                   "free": max(0, len(cat) - len(taken_ids(conn) & set(cat))), "boxes": len(boxes),
                   "gone": len(claimed - set(cat))},     # claimed objects SM no longer lists as available
         "boxes": boxes,
@@ -147,12 +226,16 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
     pushed_titles = {b["title"] for b in st["boxes"] if b["pushed"]}
     ready, blocked, seen = [], [], set()
     cat = catalog.items()
+    held = sm_held(conn)
     for tb in taskboxes(conn, catalog, ("approved",), pending_only=True, st=st):
         reasons = []
         for c in tb["contents"]:
             it = cat.get(c["object_id"])
             if it is None:
                 reasons.append(f"{c['object_id']} không còn tồn kho ở SM")
+            elif c["object_id"] in held:
+                h = held[c["object_id"]]
+                reasons.append(f"{c['object_id']} đã nằm trong hộp SM {h['title'] or h['sm_box_id']}")
             elif c["quantity"] > min(max_qty, it.stock) or c["quantity"] < 1:
                 reasons.append(f"{c['object_id']}: số lượng {c['quantity']} vượt mức cho phép (tối đa {min(max_qty, it.stock)})")
         if not tb["title"].strip():
@@ -168,7 +251,7 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
 
 
 # ----------------------------------------------------------------------------- object browser
-OBJECT_STATUSES = ("free", "draft", "approved", "pushed", "external")
+OBJECT_STATUSES = ("free", "draft", "approved", "pushed", "external", "sm")
 
 
 def _holders(conn) -> tuple[dict, set]:
@@ -182,11 +265,13 @@ def _holders(conn) -> tuple[dict, set]:
     return held, external
 
 
-def object_status(oid: str, held: dict, external: set) -> tuple[str, str]:
+def object_status(oid: str, held: dict, external: set, sm: dict | None = None) -> tuple[str, str]:
     if oid in held:
         return held[oid]["status"], held[oid]["box"]
     if oid in external:
         return "external", "bảng tính"
+    if sm and oid in sm:
+        return "sm", f"hộp SM {sm[oid]['title'] or sm[oid]['sm_box_id']}"
     return "free", ""
 
 
@@ -195,6 +280,7 @@ def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status:
     (the counts ignore the status filter so the filter chips can show all of them)."""
     from .catalog import fold
     held, external = _holders(conn)
+    sm = sm_held(conn)
     words = [w for w in fold(q).split() if w]
     rows, counts = [], {s: 0 for s in OBJECT_STATUSES}
     for it in catalog.items().values():
@@ -202,7 +288,7 @@ def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status:
             continue
         if words and not all(w in it.blob or w in it.id for w in words):
             continue
-        st, holder = object_status(it.id, held, external)
+        st, holder = object_status(it.id, held, external, sm)
         counts[st] += 1
         if status and st != status:
             continue
@@ -231,12 +317,13 @@ def objects_view(conn, catalog: Catalog, q: str = "", category: str = "", status
 def coverage(conn, catalog: Catalog) -> list[dict]:
     """Per category: how many usable objects exist, how many are still free, how many are taken."""
     held, external = _holders(conn)
+    sm = sm_held(conn)
     by: dict[str, dict] = {}
     for it in catalog.items().values():
         c = it.category or "(chưa phân loại)"
         e = by.setdefault(c, {"name": c, "total": 0, "free": 0, "used": 0})
         e["total"] += 1
-        if it.id in held or it.id in external:
+        if it.id in held or it.id in external or it.id in sm:
             e["used"] += 1
         else:
             e["free"] += 1
@@ -543,3 +630,188 @@ def load_snapshot(conn) -> tuple[list[dict], float] | None:
         return None
     d = json.loads(r[0])
     return d["rows"], d["synced_at"]
+
+
+# ----------------------------------------------------------------------------- backup: export everything the app owns, import without overwriting
+BACKUP_FORMAT = "box-builder-backup"
+BACKUP_VERSION = 1
+_SOURCES = ("llm", "manual", "fill", "import")
+
+
+def export_backup(conn) -> dict:
+    """Boxes with their items, pushed records, used-in-sheet IDs and automation switches. Never secrets, the catalog or the SM snapshot."""
+    from . import automation
+    pushed = {r["box_id"]: {"sm_box_id": r["sm_box_id"], "pushed_at": r["pushed_at"]} for r in conn.execute("SELECT * FROM sm_push")}
+    boxes = []
+    for b in conn.execute("SELECT * FROM boxes ORDER BY module, label, id").fetchall():
+        boxes.append({
+            "module": b["module"], "label": b["label"], "theme": b["theme"], "categories": json.loads(b["categories"]),
+            "code": b["code"], "anchor": b["anchor"], "count": b["count"], "status": b["status"], "owner": b["owner"],
+            "items": [{"pos": i["pos"], "object_id": i["object_id"], "qty": i["qty"], "locked": bool(i["locked"]), "source": i["source"]}
+                      for i in box_items(conn, b["id"])],
+            "pushed": pushed.get(b["id"]),
+        })
+    used = [{"object_id": r["object_id"], "note": r["note"]} for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
+    switches = [{"key": k, "enabled": v["enabled"], "config": v["config"]} for k, v in automation.switches(conn).items()]
+    return {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "boxes": boxes, "used": used, "automations": switches}
+
+
+def _text(v, limit: int) -> str:
+    return str(v).strip()[:limit] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
+
+
+def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = True) -> dict:
+    """Merge a backup into this app. Nothing is overwritten: a box whose module and name exist is skipped, an object that is already
+    taken (another box, the sheet list, an SM box) or no longer in the kho is skipped, and a pushed record is restored only for a box
+    that came in complete. Each box is written atomically. With dry_run nothing is written: the report is what would happen."""
+    from . import automation
+    if not isinstance(data, dict) or data.get("format") != BACKUP_FORMAT:
+        raise Invalid("Đây không phải tệp sao lưu của Box builder.")
+    if data.get("version") != BACKUP_VERSION:
+        raise Invalid(f"Phiên bản sao lưu {_text(data.get('version'), 10) or '?'} chưa được hỗ trợ (cần {BACKUP_VERSION}).")
+    boxes, used, switches = data.get("boxes"), data.get("used", []), data.get("automations", [])
+    if not isinstance(boxes, list) or len(boxes) > 500 or not isinstance(used, list) or len(used) > 20000 or not isinstance(switches, list):
+        raise Invalid("Tệp sao lưu sai cấu trúc hoặc quá lớn.")
+    live = catalog.items()
+    holders = {r["object_id"]: f"{r['module']} / {r['label']}" for r in conn.execute(
+        "SELECT i.object_id, b.module, b.label FROM box_items i JOIN boxes b ON b.id = i.box_id")}
+    for r in conn.execute("SELECT object_id FROM external_used"):
+        holders.setdefault(r[0], "danh sách đã dùng trong bảng tính")
+    for oid, h in sm_held(conn).items():
+        holders.setdefault(oid, f"hộp SM {h['title'] or h['sm_box_id']}")
+    existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes")}
+    taken_now: set[str] = set()                                       # objects this file has already given to a box
+    out = []
+    for raw in boxes:
+        entry = {"module": "", "label": "", "result": "skipped", "reason": "", "items_total": 0, "items_added": 0, "items_skipped": [],
+                 "final_status": "", "pushed_restored": False}
+        out.append(entry)
+        if not isinstance(raw, dict):
+            entry["reason"] = "mục này không phải một hộp"
+            continue
+        module, label = _text(raw.get("module"), 21), _text(raw.get("label"), 41)
+        entry["module"], entry["label"] = module[:20], label[:40]
+        count = raw.get("count")
+        if not module or not label or len(module) > 20 or len(label) > 40:
+            entry["reason"] = "thiếu hoặc sai Module hay tên hộp"
+            continue
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 60:
+            entry["reason"] = "số món phải từ 1 đến 60"
+            continue
+        if (module, label) in existing:
+            entry["reason"] = "đã có hộp cùng tên"
+            continue
+        rows, seen_pos = [], set()
+        raw_items = raw.get("items") if isinstance(raw.get("items"), list) else []
+        entry["items_total"] = len(raw_items)
+        for it in raw_items[:60]:
+            oid = pad_id(it.get("object_id", "")) if isinstance(it, dict) else None
+            pos = it.get("pos") if isinstance(it, dict) else None
+            if oid is None or isinstance(pos, bool) or not isinstance(pos, int) or not 1 <= pos <= count or pos in seen_pos:
+                entry["items_skipped"].append({"object_id": oid or "?", "reason": "dòng không hợp lệ"})
+                continue
+            if oid not in live:
+                entry["items_skipped"].append({"object_id": oid, "reason": "không còn trong kho"})
+                continue
+            if oid in holders:
+                entry["items_skipped"].append({"object_id": oid, "reason": f"đã nằm trong {holders[oid]}"})
+                continue
+            seen_pos.add(pos)
+            holders[oid] = f"{module} / {label}"                      # later boxes in this same file cannot take it again
+            taken_now.add(oid)
+            q = it.get("qty")
+            q = max(1, min(max_qty, live[oid].stock, q if isinstance(q, int) and not isinstance(q, bool) else 1))
+            src = it.get("source") if it.get("source") in _SOURCES else "import"
+            rows.append((pos, oid, q, 1 if it.get("locked") is True else 0, src))
+        entry["items_added"] = len(rows)
+        complete = len(rows) == count
+        status = "approved" if raw.get("status") == "approved" and complete else "draft"
+        entry["final_status"] = status
+        pushed = raw.get("pushed") if isinstance(raw.get("pushed"), dict) else None
+        sm_id = _text(pushed.get("sm_box_id"), 64) if pushed else ""
+        restore_push = bool(sm_id) and status == "approved"
+        entry["pushed_restored"] = restore_push
+        cats = raw.get("categories") if isinstance(raw.get("categories"), list) else []
+        cats = [_text(c, 60) for c in cats[:200] if _text(c, 60)]
+        entry["result"] = "added"
+        entry["reason"] = "" if complete else f"mới có {len(rows)}/{count} món nên vào ở trạng thái Nháp"
+        existing.add((module, label))
+        if dry_run:
+            continue
+        now = time.time()
+        try:
+            with tx(conn):
+                cur = conn.execute(
+                    "INSERT INTO boxes(module,label,theme,categories,code,anchor,count,status,message,owner,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                    (module, label, _text(raw.get("theme"), 300), json.dumps(cats), _text(raw.get("code"), 40), _text(raw.get("anchor"), 120),
+                     count, status, "Khôi phục từ bản sao lưu" if status == "draft" else "", _text(raw.get("owner"), 40), now, now))
+                bid = cur.fetchone()[0]
+                for pos, oid, q, locked, src in rows:
+                    conn.execute("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,?,?)", (bid, pos, oid, q, locked, src))
+                if restore_push:
+                    conn.execute("INSERT INTO sm_push(box_id, sm_box_id, pushed_at) VALUES(?,?,?)", (bid, sm_id, now))
+        except IntegrityError:                                         # someone took an object a moment ago: this box is left out whole
+            entry.update(result="skipped", reason="một món vừa bị hộp khác lấy, hộp này được bỏ qua", items_added=0, pushed_restored=False)
+    # IDs already used in the sheet: skipped when a box holds them (now or from this file), when already listed, or repeated in the file
+    in_boxes = {r[0] for r in conn.execute("SELECT object_id FROM box_items")} | taken_now
+    already = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
+    fresh, skipped, seen = [], 0, set()
+    for u in used:
+        oid = pad_id(u.get("object_id", "")) if isinstance(u, dict) else None
+        if oid is None or oid in in_boxes or oid in already or oid in seen:
+            skipped += 1
+            continue
+        seen.add(oid)
+        fresh.append((oid, _text(u.get("note"), 60)))
+    if not dry_run and fresh:
+        with tx(conn):
+            for oid, note in fresh:
+                conn.execute("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", (oid, note))
+    # automation switches: only those that were never changed here, so a restore does not undo someone's choice
+    stored = {r[0] for r in conn.execute("SELECT k FROM automations")}
+    applied, kept = [], []
+    for sw in switches:
+        key = _text(sw.get("key"), 40) if isinstance(sw, dict) else ""
+        if key not in automation.META or key in stored:
+            kept.append(key or "?")
+            continue
+        cfg = sw.get("config") if isinstance(sw.get("config"), dict) else {}
+        cfg = {k: v for k, v in cfg.items() if k in automation.META[key]["limits"]}
+        try:
+            if not dry_run:
+                automation.set_switch(conn, key, bool(sw.get("enabled")), cfg or None)
+            applied.append(key)
+        except automation.BadSetting:
+            kept.append(key)
+    return {"dry_run": dry_run, "boxes": out,
+            "totals": {"boxes_added": sum(1 for e in out if e["result"] == "added"), "boxes_skipped": sum(1 for e in out if e["result"] != "added"),
+                       "items_added": sum(e["items_added"] for e in out), "items_skipped": sum(len(e["items_skipped"]) for e in out)},
+            "used": {"added": len(fresh), "skipped": skipped}, "automations": {"applied": applied, "kept": kept}}
+
+
+def sm_report(conn, catalog: Catalog) -> dict:
+    """What the last read of SM says, for the people who plan boxes: how many boxes and objects SM holds, this app's own unpushed
+    boxes that contain an object an SM box holds (conflicts), and objects that two or more SM boxes hold at once (doubles)."""
+    info = sm_boxes_info(conn)
+    held = sm_held(conn)
+    cat = catalog.items()
+    name = lambda oid: (cat[oid].vi or cat[oid].name) if oid in cat else ""
+    by_obj: dict[str, list[dict]] = {}
+    for r in conn.execute("SELECT i.object_id, b.sm_box_id, b.title FROM sm_box_items i JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id "
+                          "ORDER BY i.object_id, b.created_at, b.sm_box_id"):
+        by_obj.setdefault(r["object_id"], []).append({"sm_box_id": r["sm_box_id"], "title": r["title"] or r["sm_box_id"]})
+    doubles = [{"id": oid, "name": name(oid), "boxes": [b["title"] for b in bs]} for oid, bs in by_obj.items() if len(bs) > 1]
+    pushed = {r[0] for r in conn.execute("SELECT box_id FROM sm_push")}
+    conflicts = []
+    for b in conn.execute("SELECT id, module, label, status FROM boxes ORDER BY module, label").fetchall():
+        if b["id"] in pushed:
+            continue
+        clash = [{"id": i["object_id"], "name": name(i["object_id"]), "sm_box": held[i["object_id"]]["title"] or held[i["object_id"]]["sm_box_id"]}
+                 for i in box_items(conn, b["id"]) if i["object_id"] in held]
+        if clash:
+            conflicts.append({"box_id": b["id"], "box": f"{b['module']} / {b['label']}", "status": b["status"], "objects": clash})
+    return {"synced_at": info["synced_at"] if info else None, "boxes": info["active"] if info else 0, "objects_held": len(held),
+            "doubles": doubles[:200], "conflicts": conflicts}
+

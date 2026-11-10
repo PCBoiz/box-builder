@@ -180,6 +180,20 @@ def _schema(pg: bool) -> list[str]:
         """CREATE TABLE IF NOT EXISTS external_used(
               object_id TEXT PRIMARY KEY,
               note      TEXT NOT NULL DEFAULT '')""",
+        # what Scenario Manager says its boxes hold, as last read by the userscript (read only, active boxes only, no people)
+        f"""CREATE TABLE IF NOT EXISTS sm_boxes(
+              sm_box_id     TEXT PRIMARY KEY,
+              title         TEXT NOT NULL DEFAULT '',
+              status        TEXT NOT NULL DEFAULT '',
+              status_label  TEXT NOT NULL DEFAULT '',
+              created_at    TEXT NOT NULL DEFAULT '',
+              seen_at       {real} NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS sm_box_items(
+              sm_box_id  TEXT NOT NULL REFERENCES sm_boxes(sm_box_id) ON DELETE CASCADE,
+              object_id  TEXT NOT NULL,
+              qty        INTEGER NOT NULL DEFAULT 1,
+              PRIMARY KEY(sm_box_id, object_id))""",
+        "CREATE INDEX IF NOT EXISTS ix_sm_box_items_object ON sm_box_items(object_id)",
         # on/off switches for the automations (only rows that were ever changed; defaults live in app/automation.py)
         f"""CREATE TABLE IF NOT EXISTS automations(
               k          TEXT PRIMARY KEY,

@@ -141,6 +141,16 @@ def alerts(conn, catalog: Catalog, taken: set[str]) -> list[dict]:
         if hours >= cfg["stale_hours"]:
             out.append({"kind": "stale", "level": "warn",
                         "msg": f"Kho SM cập nhật lần cuối cách đây {hours:.0f} giờ (ngưỡng {cfg['stale_hours']} giờ)."})
+    from . import service
+    rep = service.sm_report(conn, catalog)
+    if rep["conflicts"]:
+        n = sum(len(c["objects"]) for c in rep["conflicts"])
+        out.append({"kind": "sm_conflict", "level": "bad",
+                    "msg": f"{n} món trong {len(rep['conflicts'])} hộp của bạn đã nằm trong hộp khác ở SM: "
+                           + "; ".join(f"{c['box']} ({', '.join(o['id'] for o in c['objects'][:3])})" for c in rep["conflicts"][:3])})
+    if rep["doubles"]:
+        out.append({"kind": "sm_doubles", "level": "warn",
+                    "msg": f"{len(rep['doubles'])} món đang nằm trong hai hộp SM trở lên: " + ", ".join(d["id"] for d in rep["doubles"][:6]) + (" ..." if len(rep["doubles"]) > 6 else "")})
     items = catalog.items()
     claimed = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
     gone = sorted(claimed - set(items))
@@ -196,5 +206,13 @@ def todo(conn, catalog: Catalog, max_qty: int) -> list[dict]:
     info = catalog.info()
     if info["source"] != "live":
         add("sync", "warn", "Kho chưa đồng bộ với SM. Mở SM, rồi bấm Đồng bộ kho ngay ở khung Box builder.", "SM")
+    rep = service.sm_report(conn, catalog)
+    if rep["conflicts"]:
+        add("sm_conflict", "bad", f"{len(rep['conflicts'])} hộp có món đã nằm trong hộp khác ở SM. Mở hộp và thay các món đó.", "Hộp")
+    stale = sw["catalog_watch"]["config"]["stale_hours"] * 3600
+    if rep["synced_at"] is None:
+        add("sm_boxes", "info", "Chưa đọc các hộp đang có trong SM, nên món đang nằm trong hộp SM vẫn có thể bị chọn trùng. Dùng công cụ đồng bộ trong SM.", "SM")
+    elif time.time() - rep["synced_at"] > stale:
+        add("sm_boxes", "warn", "Danh sách hộp đang có trong SM đã cũ. Mở SM và đồng bộ lại để tránh chọn trùng.", "SM")
     return out
 

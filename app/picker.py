@@ -15,6 +15,8 @@ from .settings import Settings
 
 MAX_ATTEMPTS = 3          # 1 normal call + 2 repair calls, then code fills the rest
 POOL_LIMIT = 2500         # never send more catalog lines than this to the model
+MANY_OBJECTS = 15         # a box this big (B2, B3) is asked for objects that combine into many actions
+ANCHOR_MAX = 80           # the anchor name goes into the prompt, so it is cut to this many characters
 
 SYSTEM = (
     "You prepare object lists for robot manipulation scenarios. Choose exactly {need} objects{for_box}.\n"
@@ -23,6 +25,7 @@ SYSTEM = (
     "stack items, set up a table, scoop or pour, use a tool on an item, hand an item over).\n\n"
     "Selection rules:\n"
     "- {setting}\n"
+    "{extra_rules}"
     "- Choose versatile objects, not one-off or highly specialised ones. Include a few containers or surfaces "
     "(tray, bowl, basket, box, cup, plate) and a few tools (spoon, scoop, tongs, brush), plus smaller items that "
     "can go into, onto or be used with them.\n"
@@ -38,11 +41,48 @@ SYSTEM = (
 )
 
 
-def build_prompts(pool: list[Item], current: list[Item], need: int, count: int, theme: str, module: str, label: str):
-    setting = (f"All objects come from one coherent everyday setting: {theme.strip()}." if theme.strip()
-               else "All objects come from one coherent everyday setting that you choose yourself.")
+ANCHOR_RULES = (
+    "- The box is set up around the anchor object \"{anchor}\" (a large fixed object that stays where it is). "
+    "Choose objects that relate to the anchor and to each other.\n"
+    "- Together the objects must allow at least 10 to 12 different meaningful actions (for example: put the pan on "
+    "the stove, switch the stove on, pour oil into the pan). Prefer a mix of containers or surfaces, tools, and "
+    "consumable or small items that go with them.\n"
+)
+MANY_ACTIONS_RULE = "- Prefer objects that combine into many different meaningful actions, not objects that only sit side by side.\n"
+
+
+def clean_anchor(name: str) -> str:
+    """The anchor name is typed by a person and lands inside the prompt: one line, no braces or quotes, at most
+    ANCHOR_MAX characters, so it can neither break the template nor add instruction lines."""
+    s = re.sub(r"[{}\"\x00-\x1f\x7f]", " ", name or "")
+    return " ".join(s.split())[:ANCHOR_MAX].strip()
+
+
+def anchor_of(catalog: Catalog, field: str) -> tuple[str, str]:
+    """(anchor object id, English name) from a box's 'anchor' field. An id the catalog does not hold (it only holds
+    usable objects) gives an empty name; a free-text field is the name as typed."""
+    anchor_id, name = service.split_anchor(field or "")
+    if anchor_id:
+        it = catalog.get(anchor_id)
+        name = it.name if it else ""
+    return anchor_id, name
+
+
+def build_prompts(pool: list[Item], current: list[Item], need: int, count: int, theme: str, module: str, label: str,
+                  *, anchor: str = ""):
+    anchor = clean_anchor(anchor)
+    if theme.strip():
+        setting = f"All objects come from one coherent everyday setting: {theme.strip()}."
+    elif anchor:
+        setting = f"All objects come from one coherent everyday setting: the area around the anchor object ({anchor})."
+    else:
+        setting = "All objects come from one coherent everyday setting that you choose yourself."
     for_box = f" to complete ONE box of {count} objects" if current else " for ONE box"
-    system = SYSTEM.format(need=need, setting=setting, for_box=for_box)
+    if anchor:
+        extra_rules = ANCHOR_RULES.format(anchor=anchor)
+    else:
+        extra_rules = MANY_ACTIONS_RULE if count >= MANY_OBJECTS else ""
+    system = SYSTEM.format(need=need, setting=setting, for_box=for_box, extra_rules=extra_rules)
     user = f"Task: choose {need} objects for {label} of module {module}.\n"
     if current:
         user += ("\nThe box already contains these objects (do not repeat them). Choose objects that complement "
@@ -97,7 +137,7 @@ class MockLLM:
     def complete(self, system: str, user: str, ctx: dict) -> str:
         pool, need, theme = ctx["pool"], ctx["need"], ctx["theme"]
         rng = random.Random(ctx.get("seed", 0))
-        words = [w for w in fold(theme).split() if len(w) >= 3]
+        words = [w for w in fold(theme or ctx.get("anchor", "")).split() if len(w) >= 3]
         scored = [(sum(w in p.blob for w in words), p) for p in pool]
         hits = [p for s, p in sorted(scored, key=lambda t: -t[0]) if s > 0]
         if len(hits) < need:                      # no/low theme match: draw from a few random categories
@@ -227,6 +267,9 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
         with _db(s) as conn:
             box = service.get_box(conn, box_id)
         cats = json.loads(box["categories"])
+        anchor_id, anchor_name = anchor_of(catalog, box["anchor"])
+        if anchor_id:                       # the anchor is a big fixed object, not something to put in the box
+            avoid = {*avoid, anchor_id}
         info = []
         sem = _semaphore(s.max_parallel_llm)
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -251,9 +294,10 @@ def run_generation(s: Settings, catalog: Catalog, llm, box_id: int, avoid=(), po
                 rng = random.Random(box_id * 1000 + attempt)
                 sample = pool if len(pool) <= POOL_LIMIT else rng.sample(pool, POOL_LIMIT)
                 current = [catalog.get(r["object_id"]) for r in have if catalog.get(r["object_id"])]
-                system, user = build_prompts(sample, current, len(free), box["count"], box["theme"], box["module"], box["label"])
+                system, user = build_prompts(sample, current, len(free), box["count"], box["theme"], box["module"],
+                                             box["label"], anchor=anchor_name)
                 ctx = {"pool": sample, "need": len(free), "theme": box["theme"], "current": current,
-                       "seed": box_id * 1000 + attempt}
+                       "anchor": anchor_name, "seed": box_id * 1000 + attempt}
                 reply = llm.complete(system, user, ctx)                      # no DB connection is held here
                 good = validate(parse_reply(reply), {p.id: p for p in sample}, len(free), s.max_qty)
                 with _db(s) as conn:

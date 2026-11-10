@@ -149,6 +149,10 @@ function renderLedger(d) {
     bar.append(seg(stats.external, "ext", "", `Đã dùng trong bảng tính: ${stats.external}`));
     legend.append(h("li", {}, h("i", { class: "ext" }), h("b", {}, "Đã dùng trong bảng tính"), `${fmt(stats.external)} món`));
   }
+  if (stats.in_sm) {
+    bar.append(seg(stats.in_sm, "sm", "", `Trong hộp SM: ${stats.in_sm}`));
+    legend.append(h("li", {}, h("i", { class: "sm" }), h("b", {}, "Trong hộp SM"), `${fmt(stats.in_sm)} món`));
+  }
   bar.append(seg(Math.max(stats.free, 0.0001), "free", "", `Còn trống: ${stats.free}`));
   bar.setAttribute("aria-label", `${fmt(stats.free)} trên ${fmt(stats.catalog)} món còn trống`);
 }
@@ -423,7 +427,11 @@ function setupGate() {
     catch { $("#gate-err").hidden = false; }
   });
 }
-function updateExport() { $("#export").href = "/api/export.csv" + (code ? "?access_code=" + encodeURIComponent(code) : ""); }
+function updateExport() {
+  const q = code ? "?access_code=" + encodeURIComponent(code) : "";
+  $("#export").href = "/api/export.csv" + q;
+  $("#print-link").href = "/print/boxes" + q;
+}
 
 function setupNewBox() {
   const theme = $("#f-theme");
@@ -523,7 +531,7 @@ function setupTabs() {
 }
 
 /* ------------------------------------------------------------------ object browser */
-const OBJ_STATUS = { free: "Còn trống", draft: "Trong hộp nháp", approved: "Đã duyệt", pushed: "Đã đẩy lên SM", external: "Đã dùng (bảng tính)" };
+const OBJ_STATUS = { free: "Còn trống", draft: "Trong hộp nháp", approved: "Đã duyệt", pushed: "Đã đẩy lên SM", external: "Đã dùng (bảng tính)", sm: "Trong hộp SM" };
 const ov = { q: "", status: "", category: "", sort: "id", page: 1, sel: new Set(), res: null, cov: [], covAll: false, seq: 0 };
 const MAX_PICK = 60;
 
@@ -656,14 +664,14 @@ function setupObjects() {
 }
 
 /* ------------------------------------------------------------------ automations */
-let auto = null, queue = null, plan = null;
+let auto = null, queue = null, plan = null, smReport = null;
 
 let lastAnnounced = null;
 
 async function refreshAuto() {
   try {
-    const [a, q] = await Promise.all([api("/api/automations"), api("/api/queue")]);
-    auto = a; queue = q;
+    const [a, q, r] = await Promise.all([api("/api/automations"), api("/api/queue"), api("/api/sm/boxes/report")]);
+    auto = a; queue = q; smReport = r;
   } catch (e) { if (e.status === 401) showGate(); return; }
   const n = auto.alerts.length + auto.todo.length, badge = $("#alert-badge");
   badge.hidden = n === 0;
@@ -676,8 +684,38 @@ async function refreshAuto() {
   if (view === "auto") renderAuto();
 }
 
+function renderSyncStatus() {
+  const c = data && data.catalog, el = $("#sync-status");
+  if (!c || !el) return;
+  if (c.source !== "live") { el.textContent = "Chưa đồng bộ lần nào: kho đang dùng file CSV, nên số lượng có thể cũ."; el.className = "hint warnline"; return; }
+  const min = Math.max(0, Math.round((Date.now() / 1000 - c.synced_at) / 60));
+  el.textContent = `Đã đồng bộ với SM ${min < 1 ? "vừa xong" : min < 60 ? min + " phút trước" : Math.round(min / 60) + " giờ trước"}: ${fmt(c.usable)} món dùng được.`;
+  el.className = "hint";
+}
+
+function renderSmBoxes() {
+  const r = smReport;
+  if (!r) return;
+  const sum = $("#smb-sum");
+  if (!r.synced_at) {
+    sum.textContent = "Chưa đọc các hộp đang có trong SM. Khi công cụ đồng bộ trong SM gửi danh sách, món đang nằm trong hộp SM sẽ không bị chọn trùng.";
+  } else {
+    const min = Math.max(0, Math.round((Date.now() / 1000 - r.synced_at) / 60));
+    sum.textContent = `Đã đọc ${min < 1 ? "vừa xong" : min < 60 ? min + " phút trước" : Math.round(min / 60) + " giờ trước"}: ${fmt(r.boxes)} hộp đang dùng trong SM, giữ ${fmt(r.objects_held)} món.`;
+  }
+  const fill = (listId, headId, rows) => {
+    $(listId).replaceChildren(...rows);
+    $(listId).hidden = $(headId).hidden = rows.length === 0;
+  };
+  fill("#smb-conf", "#smb-conf-h", r.conflicts.map((c) => h("li", {}, h("b", {}, c.box),
+    ": " + c.objects.map((o) => `${o.id}${o.name ? " " + o.name : ""} (đang ở ${o.sm_box})`).join(", "))));
+  fill("#smb-dbl", "#smb-dbl-h", r.doubles.slice(0, 50).map((d) => h("li", {}, h("b", {}, d.id), `${d.name ? " " + d.name : ""}: ${d.boxes.join(", ")}`)));
+}
+
 function renderAuto() {
   if (!auto) return;
+  renderSyncStatus();
+  renderSmBoxes();
   $("#a-todo").replaceChildren(...(auto.todo.length
     ? auto.todo.map((t) => h("li", { class: t.level }, h("b", { class: "where" }, t.where), t.msg))
     : [h("li", { class: "ok" }, "Không có bước nào đang chờ bạn.")]));
@@ -806,6 +844,131 @@ function setupBatch() {
   $("#b-module").value = store.get("bb_module");
 }
 
+/* ------------------------------------------------------------------ the push, tried on a fake SM (only when the server runs in that mode) */
+async function loadFakeSm() {
+  if (cfg.sm_push_mode !== "mock") return;
+  try {
+    const r = await api("/api/sm/mock");
+    $("#smp-list").replaceChildren(...(r.boxes.length ? r.boxes.map((b) => h("li", {},
+      h("label", { class: "pick" }, h("input", { type: "checkbox", value: b.box_id, "aria-label": `Chọn ${b.title}` }), h("b", {}, b.title)),
+      ` · ${b.status_label} · ${b.objects} món${b.assignee ? " · người nhận " + b.assignee : ""}${b.holder ? " · đang giữ " + b.holder : ""}`))
+      : [h("li", {}, "Chưa có hộp nào.")]));
+  } catch (e) { fail(e); }
+}
+
+function showFakeResults(r, okText) {
+  const rows = r.results.length ? r.results : [];
+  $("#smp-body").replaceChildren(...rows.map((x) => h("tr", {}, h("td", {}, x.title || x.box_id),
+    h("td", {}, h("span", { class: "pill " + (x.ok ? "st-free" : "st-external") }, x.ok ? okText : "Không làm được")),
+    h("td", {}, x.ok ? (x.sm_box_id ? `Mã trong SM giả: ${x.sm_box_id}` : `Trạng thái: ${x.status_label}`) : x.error))));
+  $("#smp-wrap").hidden = rows.length === 0;
+}
+
+function setupSmPush() {
+  const panel = $("#a-smpush");
+  panel.hidden = cfg.sm_push_mode !== "mock";
+  if (panel.hidden) return;
+  const sum = $("#smp-sum");
+  const say = (t) => { sum.hidden = !t; sum.textContent = t || ""; };
+  const refresh = async () => { await poll(true); await refreshAuto(); await loadFakeSm(); };
+  $("#smp-go").addEventListener("click", async () => {
+    const btn = $("#smp-go");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/sm/push", { method: "POST", body: { assignee: $("#smp-who").value.trim(), borrow_now: $("#smp-borrow").checked } });
+      say(r.results.length ? `Tạo được ${r.created} hộp trong SM giả, ${r.failed} hộp không tạo được.` : "Không có hộp nào sẵn sàng để đẩy.");
+      showFakeResults(r, "Đã tạo");
+      await refresh();
+    } catch (e) { fail(e); } finally { btn.disabled = false; }
+  });
+  for (const b of document.querySelectorAll("#smp-moves [data-move]")) {
+    b.addEventListener("click", async () => {
+      const ids = [...document.querySelectorAll("#smp-list input:checked")].map((i) => i.value);
+      if (!ids.length) return toast("Hãy chọn ít nhất một hộp trong danh sách.", "bad");
+      b.disabled = true;
+      try {
+        const r = await api("/api/sm/moves", { method: "POST", body: { action: b.dataset.move, box_ids: ids, person: $("#smp-who").value.trim() } });
+        const done = r.results.filter((x) => x.ok).length;
+        say(`${done} hộp xong, ${r.results.length - done} hộp không làm được.`);
+        showFakeResults(r, "Xong");
+        await loadFakeSm();
+      } catch (e) { fail(e); } finally { b.disabled = false; }
+    });
+  }
+  const days = () => Math.max(0, parseInt($("#smp-days").value, 10) || 0);
+  $("#smp-old-preview").addEventListener("click", async () => {
+    try {
+      const r = await api("/api/sm/moves", { method: "POST", body: { action: "return_old", days: days(), person: $("#smp-who").value.trim() } });
+      say(r.boxes.length ? `Có ${r.boxes.length} hộp ở sàn đã tạo từ ${days()} ngày trở lên. Bấm Xác nhận trả để trả.` : "Không có hộp nào ở sàn đủ lâu để trả.");
+      $("#smp-body").replaceChildren(...r.boxes.map((b) => h("tr", {}, h("td", {}, b.title), h("td", {}, h("span", { class: "pill st-draft" }, "Sẽ trả")), h("td", {}, `Tạo cách đây ${b.days_old} ngày`))));
+      $("#smp-wrap").hidden = r.boxes.length === 0;
+      $("#smp-old-go").disabled = r.boxes.length === 0;
+    } catch (e) { fail(e); }
+  });
+  $("#smp-old-go").addEventListener("click", async () => {
+    const btn = $("#smp-old-go");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/sm/moves", { method: "POST", body: { action: "return_old", days: days(), person: $("#smp-who").value.trim(), confirm: true } });
+      const done = r.results.filter((x) => x.ok).length;
+      say(`Đã trả ${done} hộp, ${r.results.length - done} hộp không trả được.`);
+      showFakeResults(r, "Đã trả");
+      await loadFakeSm();
+    } catch (e) { fail(e); }
+  });
+  loadFakeSm();
+}
+
+/* ------------------------------------------------------------------ backup and restore */
+function setupBackup() {
+  const file = $("#bk-file"), prev = $("#bk-preview"), rest = $("#bk-restore"), sum = $("#bk-summary");
+  let parsed = null;
+  $("#bk-download").href = "/api/backup.json" + (code ? "?access_code=" + encodeURIComponent(code) : "");
+  const clear = () => { $("#bk-table-wrap").hidden = true; sum.hidden = true; rest.disabled = true; };
+  file.addEventListener("change", async () => {
+    clear(); parsed = null; prev.disabled = true;
+    const f = file.files && file.files[0];
+    if (!f) return;
+    if (f.size > 10 * 1024 * 1024) return toast("Tệp lớn hơn 10 MB nên không dùng được.", "bad");
+    try { parsed = JSON.parse((await f.text()).replace(/^\uFEFF/, "")); }
+    catch { return toast("Tệp này không phải JSON hợp lệ. Hãy chọn tệp đã tải từ nút Tải bản sao lưu.", "bad"); }
+    prev.disabled = false;
+  });
+  const show = (r) => {
+    const t = r.totals;
+    sum.hidden = false;
+    sum.textContent = `${r.dry_run ? "Sẽ thêm" : "Đã thêm"} ${t.boxes_added} hộp (${t.items_added} món), bỏ qua ${t.boxes_skipped} hộp và ${t.items_skipped} món. ` +
+      `Món đã dùng trong bảng tính: thêm ${r.used.added}. Thiết lập áp dụng: ${r.automations.applied.length}.`;
+    $("#bk-body").replaceChildren(...r.boxes.map((b) => {
+      const skipped = b.items_skipped.slice(0, 3).map((i) => `${i.object_id} (${i.reason})`).join("; ") + (b.items_skipped.length > 3 ? `; và ${b.items_skipped.length - 3} món khác` : "");
+      const note = [b.reason, skipped].filter(Boolean).join(". ");
+      return h("tr", {}, h("td", {}, `${b.module} ${b.label}`), h("td", {}, h("span", { class: "pill " + (b.result === "added" ? "st-free" : "st-external") }, b.result === "added" ? "Thêm" : "Bỏ qua")),
+        h("td", { class: "num" }, `${b.items_added}/${b.items_total}`), h("td", {}, note));
+    }));
+    $("#bk-table-wrap").hidden = !r.boxes.length;
+  };
+  prev.addEventListener("click", async () => {
+    if (!parsed) return;
+    prev.disabled = true;
+    try {
+      const r = await api("/api/backup/import?dry_run=true", { method: "POST", body: parsed });
+      show(r);
+      rest.disabled = !(r.totals.boxes_added || r.used.added || r.automations.applied.length);
+    } catch (e) { fail(e); } finally { prev.disabled = false; }
+  });
+  rest.addEventListener("click", async () => {
+    if (!parsed) return;
+    rest.disabled = prev.disabled = true;
+    try {
+      const r = await api("/api/backup/import?dry_run=false", { method: "POST", body: parsed });
+      show(r);
+      toast(`Đã khôi phục ${r.totals.boxes_added} hộp.`);
+      await poll(true);
+      await refreshAuto();
+    } catch (e) { fail(e); rest.disabled = false; } finally { prev.disabled = false; }
+  });
+}
+
 /* ------------------------------------------------------------------ help for people who are new to the tool */
 const normModule = (v) => { const t = v.trim(); return /^m\d+$/i.test(t) ? t.toUpperCase() : t; };   // m8 -> M8, other tab names as typed
 
@@ -893,7 +1056,7 @@ async function init() {
   chip.hidden = false;
   chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
-  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp();
+  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush();
   updateExport();
   await poll(true);
   if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });

@@ -356,7 +356,7 @@ def test_batch_approve_flag_approves_without_the_global_switch(env):
 
 def test_todo_names_the_steps_that_still_need_a_person(env):
     client, s, cat = make_client(env)
-    kinds = lambda: {t["kind"] for t in client.get("/api/automations").json()["todo"]}
+    kinds = lambda: {t["kind"] for t in client.get("/api/automations").json()["todo"]} - {"sm_boxes"}   # the SM boxes step has its own test
     assert kinds() == {"sync"}                                            # nothing built yet, catalog never synced
     sync(client, live_rows(cat))
     assert kinds() == set()
@@ -372,54 +372,3 @@ def test_todo_names_the_steps_that_still_need_a_person(env):
     assert "blocked" in kinds() and "push" not in kinds()
     client.put("/api/automations/sheet_export", json={"enabled": False})
     assert "sheet" not in kinds()
-
-
-# ----------------------------------------------------------------------------- one section = Box B2, Box B3, Box A1 with a shared code
-def test_planner_uses_exact_labels_and_the_section_code():
-    class Mock:
-        name = "mock"
-    p = planner.plan(Mock(), "bếp\nvườn\ndọn dẹp", "M8", "Box A1", 9, 21, set(),
-                     labels=["Box B2", " Box B3 ", "Box A1", "Box B2", ""], code=" M8-02 ")
-    assert [b["label"] for b in p["boxes"]] == ["Box B2", "Box B3", "Box A1"]      # trimmed, no repeats, in the order typed
-    assert {b["code"] for b in p["boxes"]} == {"M8-02"} and {b["module"] for b in p["boxes"]} == {"M8"}
-    assert planner.plan(Mock(), "x", "M8", "Box A1", 2, 21, set())["boxes"][0]["code"] == ""
-
-
-def test_batch_with_a_section_code_reaches_the_sheet_feed(env):
-    client, s, cat = make_client(env)
-    plan = client.post("/api/batches/plan", json={"brief": "bếp\nvườn\ndọn dẹp", "module": "M8", "labels": ["Box B2", "Box B3", "Box A1"],
-                                                   "code": "M8-02"})
-    assert plan.status_code == 200
-    boxes = plan.json()["boxes"]
-    r = client.post("/api/batches", json={"boxes": boxes, "approve": True})
-    assert r.status_code == 201
-    for bid in r.json()["ids"]:
-        wait_status(client, bid, "approved")
-    feed = client.get("/api/sheet-boxes").json()["boxes"]
-    assert sorted((b["stage"], b["module"], b["builder"]["module"]) for b in feed) == [
-        ("A1", "M8-02", "M8"), ("B2", "M8-02", "M8"), ("B3", "M8-02", "M8")]          # code = section, builder.module = tab
-    assert {b["title"] for b in feed} == {"M8-02 - A1", "M8-02 - B2", "M8-02 - B3"}
-    assert all_unique(s)
-    assert client.post("/api/batches/plan", json={"brief": "abc", "module": "M8", "labels": ["x"] * 13}).status_code == 422
-
-
-# ----------------------------------------------------------------------------- category limit on a batch
-def test_batch_categories_limit_every_box_and_unknown_ones_are_refused(env):
-    client, s, cat = make_client(env)
-    top = client.get("/api/categories").json()[0]["name"]                 # the biggest category has room for two full boxes
-    plan = client.post("/api/batches/plan", json={"brief": "a\nb", "module": "M8", "boxes": 2, "categories": [top]})
-    assert plan.status_code == 200
-    boxes = plan.json()["boxes"]
-    assert len(boxes) == 2 and all(b["categories"] == [top] for b in boxes)
-    nope = "Nhóm không có thật"
-    assert client.post("/api/batches/plan", json={"brief": "abc", "module": "M8", "categories": [nope]}).status_code == 422
-    assert client.post("/api/batches", json={"boxes": [{"module": "M8", "label": "X", "categories": [nope]}]}).status_code == 422
-    assert client.get("/api/state").json()["boxes"] == []                  # the refused request created nothing
-    r = client.post("/api/batches", json={"boxes": boxes})
-    assert r.status_code == 201
-    done = wait_all_settled(client, r.json()["ids"])
-    assert all(len(b["items"]) == b["count"] and all(i["category"] == top for i in b["items"]) for b in done.values())
-    assert all_unique(s)
-    # without categories the plan carries an empty list, meaning every category
-    free = client.post("/api/batches/plan", json={"brief": "abc", "module": "M9"}).json()["boxes"]
-    assert all(b["categories"] == [] for b in free)

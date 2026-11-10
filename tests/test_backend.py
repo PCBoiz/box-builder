@@ -24,7 +24,7 @@ def env(request, tmp_path):
     target = str(tmp_path / "t.db") if request.param == "sqlite" else PG_URL
     if request.param == "postgres":
         c = db.connect(target)
-        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push, automations, automation_log CASCADE")
+        c.execute("DROP TABLE IF EXISTS box_items, boxes, external_used, meta, catalog_snapshot, sm_push, automations, automation_log, sm_boxes, sm_box_items CASCADE")
         c.close()
     s = Settings(db_path=target, catalog_path=str(tmp_path / "catalog.csv"), llm_mode="mock")
     shutil.copy(REAL_CSV, s.catalog_path)

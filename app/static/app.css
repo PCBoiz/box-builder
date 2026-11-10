@@ -129,10 +129,12 @@ input::placeholder, textarea::placeholder { color: #7b8a86; }
 }
 .bar span { min-width: 3px; background: var(--c); }
 .bar span.ext { background: repeating-linear-gradient(45deg, #6f7f79 0 3px, #a9b4b0 3px 6px); }
+.bar span.sm { background: repeating-linear-gradient(135deg, #2f6fa0 0 3px, #8db6d4 3px 6px); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 13px; }
 .legend li { display: inline-flex; align-items: center; gap: 7px; }
 .legend i { width: 12px; height: 12px; border-radius: 3px; background: var(--c); }
 .legend i.ext { background: repeating-linear-gradient(45deg, #6f7f79 0 3px, #a9b4b0 3px 6px); }
+.legend i.sm { background: repeating-linear-gradient(135deg, #2f6fa0 0 3px, #8db6d4 3px 6px); }
 .legend b { font-weight: 600; }
 
 /* ------------------------------------------------------------------ the tray */
@@ -434,3 +436,10 @@ svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-widt
 .textsize button:disabled { opacity: .4; cursor: default; }
 @media (max-width: 900px) { .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .steps { grid-template-columns: 1fr; } }
+.plain { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13.5px; }
+.hint.warnline { padding: 8px 10px; }
+.pill.st-sm { background: #d9e8f4; color: #13395a; }
+#a-smboxes h3 { margin: 6px 0 2px; font-size: 13px; }
+.days { width: 72px; }
+.qlist li .pick { display: inline-flex; align-items: center; gap: 8px; font-weight: 400; }
+.qlist li .pick input { width: auto; }

@@ -4,12 +4,17 @@
  * What it does: reads the APPROVED boxes from the Box builder app and writes their Object IDs and quantities
  * into the box block of the matching tab (tab = Module, e.g. M8 / M17).
  *
+ * It also has one read-only helper: the menu item "Lấy ID đã dùng trong bảng" (showUsedIds) collects every Object ID
+ * already sitting in the Box B2 / B3 / A1 blocks of all module tabs (M1, M2, ...) and shows them in a dialog, one per line,
+ * to copy into the app's box "Đã dùng trong bảng tính". It only reads the sheet; it never writes, clears or changes anything.
+ *
  * Safety rules (hard-coded, not settings):
  *   - It only READS from the app. It never changes the app and never talks to Scenario Manager.
  *   - It writes ONLY into cells that are completely empty. A block that already holds anything is skipped and reported.
  *   - It never clears, deletes or overwrites a cell, and never touches any other cell.
  *   - Every run first shows a preview and asks for confirmation (menu use). The optional timer skips the question
  *     but follows exactly the same rules.
+ *   - The used-IDs helper (collectUsedIds_, showUsedIds) calls no write method at all.
  *
  * Install: Extensions > Apps Script > paste this file > set APP_URL (and ACCESS_CODE if the app has one) > Save.
  * Reload the sheet; a "Box builder" menu appears. The first run asks you to authorise it (it needs this spreadsheet
@@ -36,6 +41,9 @@ const CONFIG = {
   // tab with a different spacing is skipped instead of written to the wrong place.
   SECTION_STRIDE: 25,
   MAX_QTY: 3,                                          // same cap as the earlier Make scenario
+  // Used only by the read-only "used IDs" helper: a block has 21 data rows, and a tab is walked for at most 60 sections.
+  BLOCK_ROWS: 21,
+  MAX_SECTIONS: 60,
 };
 
 function onOpen() {
@@ -43,6 +51,8 @@ function onOpen() {
     .addItem('Điền các box đã duyệt vào bảng (xem trước)', 'fillFromApp')
     .addItem('Bật tự động mỗi 30 phút', 'installTimer')
     .addItem('Tắt tự động', 'removeTimer')
+    .addSeparator()
+    .addItem('Lấy ID đã dùng trong bảng', 'showUsedIds')
     .addToUi();
 }
 
@@ -168,6 +178,82 @@ function describe_(plan) {
   plan.same.forEach(function (s) { lines.push('ĐÃ CÓ ' + s); });
   plan.skipped.forEach(function (s) { lines.push('BỎ QUA ' + s); });
   return lines.length ? lines.join('\n') : 'Chưa có box nào ở trạng thái Đã duyệt.';
+}
+
+// ------------------------------------------------------------------ used Object IDs (read only, never writes)
+/**
+ * Every Object ID already in the workbook, so the team can paste them into the app's "Đã dùng trong bảng tính" box.
+ * For each tab and each stage in CONFIG.STAGES it walks the sections (n = 1, 2, ...): a section exists only when the
+ * block title ("Box B2 - 21 Objects") sits where it should, and the walk of that stage stops at the first section without
+ * one (at most CONFIG.MAX_SECTIONS). In an existing section it reads the 21 ID cells and keeps the 5 or 6 digit ones.
+ * `read(tab, a1)` returns a 2-D array, or null when the tab does not exist; injected so it can be tested.
+ * Returns { ids: sorted unique 6-digit strings, perTab: { tab: number of distinct IDs on that tab }, tabsMissing: [tabs not found] }.
+ */
+function collectUsedIds_(tabNames, read) {
+  read = read || readRange_;
+  const all = {}, perTab = {}, tabsMissing = [];
+  (tabNames || []).forEach(function (tab) {
+    const own = {};
+    let exists = true;
+    Object.keys(CONFIG.STAGES).forEach(function (stage) {
+      if (!exists) return;
+      const cfg = CONFIG.STAGES[stage];
+      const want = 'box ' + String(stage).toLowerCase();
+      for (let n = 1; n <= CONFIG.MAX_SECTIONS; n++) {
+        const first = cfg.firstRow + CONFIG.SECTION_STRIDE * (n - 1);
+        const title = read(tab, colShift_(cfg.idCol, -1) + (first - 2));
+        if (title === null || title === undefined) { exists = false; return; }       // no such tab
+        const text = title[0] && title[0][0] !== null && title[0][0] !== undefined ? String(title[0][0]).toLowerCase() : '';
+        if (text.indexOf(want) < 0) return;                                          // no title: this stage ends here
+        const cells = read(tab, cfg.idCol + first + ':' + cfg.idCol + (first + CONFIG.BLOCK_ROWS - 1)) || [];
+        cells.forEach(function (row) {
+          const id = usedIdOf_(row && row[0]);
+          if (id) { own[id] = true; all[id] = true; }
+        });
+      }
+    });
+    if (exists) perTab[tab] = Object.keys(own).length; else tabsMissing.push(tab);
+  });
+  return { ids: Object.keys(all).sort(), perTab: perTab, tabsMissing: tabsMissing };
+}
+
+/** A cell value -> 6-digit ID, or '' when it is not one. Accepts 5 or 6 digits, with an optional leading apostrophe and spaces. */
+function usedIdOf_(v) {
+  const s = (v === null || v === undefined ? '' : String(v)).trim().replace(/^'/, '').trim();
+  return /^\d{5,6}$/.test(s) ? pad6_(s) : '';
+}
+
+/** Only module tabs (M1, M8, M17 ...) are scanned; anything else (REF, notes, ...) is left alone. */
+function moduleTabNames_(names) {
+  return names.filter(function (n) { return /^M\d+$/.test(String(n)); });
+}
+
+function escapeHtml_(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** The dialog body for a collectUsedIds_ result. Everything that comes from the sheet is escaped. */
+function usedIdsHtml_(res) {
+  const ids = res.ids || [], tabs = Object.keys(res.perTab || {}), missing = res.tabsMissing || [];
+  const withIds = tabs.filter(function (t) { return res.perTab[t] > 0; }).length;
+  const head = ids.length
+    ? 'Tìm thấy ' + ids.length + ' ID từ ' + withIds + ' tab (đã quét ' + tabs.length + ' tab).'
+    : 'Không tìm thấy ID nào (đã quét ' + tabs.length + ' tab).';
+  return '<div style="font-family:Arial,sans-serif;font-size:13px">' +
+    '<p>' + escapeHtml_(head) + '</p>' +
+    '<p>Bấm "Chọn tất cả", sao chép (Ctrl+C), rồi dán vào ô "Đã dùng trong bảng tính" của app.</p>' +
+    '<textarea id="ids" readonly style="width:100%;height:190px;font-family:monospace">' + escapeHtml_(ids.join('\n')) + '</textarea>' +
+    '<p><button type="button" onclick="var t=document.getElementById(\'ids\');t.focus();t.select();">Chọn tất cả</button></p>' +
+    (missing.length ? '<p>Không đọc được tab: ' + escapeHtml_(missing.join(', ')) + '</p>' : '') +
+    '</div>';
+}
+
+/** Menu entry: show every Object ID already used in the workbook. Reads only. */
+function showUsedIds() {
+  const names = SpreadsheetApp.getActive().getSheets().map(function (s) { return s.getName(); });
+  const res = collectUsedIds_(moduleTabNames_(names));
+  const html = HtmlService.createHtmlOutput(usedIdsHtml_(res)).setWidth(420).setHeight(360);
+  SpreadsheetApp.getUi().showModalDialog(html, 'ID đã dùng trong bảng tính');
 }
 
 // ------------------------------------------------------------------ the only place that writes

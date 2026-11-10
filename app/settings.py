@@ -39,6 +39,7 @@ class Settings:
     access_code: str = ""             # optional shared passcode for the whole app
     sectors: str = "Hanoi-GPI"        # only objects from these SM sectors are ever used (comma list; empty = all)
     sync_token: str = ""              # secret the userscript sends to push the live SM catalog (empty = sync disabled)
+    sm_push_mode: str = "off"         # off | mock. 'mock' pushes ready boxes to a fake SM held in memory. There is no real mode.
     image_hosts: str = ""             # hosts an object picture may come from (comma list; empty = the default host set in images.py)
 
     @property
@@ -62,5 +63,6 @@ class Settings:
             access_code=os.getenv("ACCESS_CODE", ""),
             sync_token=os.getenv("SYNC_TOKEN", ""),
             sectors=os.getenv("SECTORS", cls.sectors),
+            sm_push_mode="mock" if os.getenv("SM_PUSH_MODE", "").strip().lower() == "mock" else "off",
             image_hosts=os.getenv("IMAGE_HOSTS", ""),
         )
