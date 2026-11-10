@@ -62,6 +62,7 @@ class Catalog:
         self._live: dict[str, Item] | None = None
         self.sectors: tuple[str, ...] = ()        # empty = every sector; the app sets it from SECTORS
         self.image_hosts: tuple[str, ...] = images.DEFAULT_HOSTS
+        self.image_ttl_s: int = 55 * 60           # the app sets it from IMAGE_TTL_MINUTES
         self._live_info: dict = {}
         self._load()
 
@@ -161,6 +162,14 @@ class Catalog:
         if self._live is None:
             return {"source": "csv", "usable": n, "synced_at": None}
         return {"source": "live", "usable": n, **self._live_info}
+
+    def image_expiry(self, url) -> float | None:
+        """When this picture link should stop being asked for (epoch seconds), or None if it never expires."""
+        synced = self._live_info.get("synced_at") if self._live is not None else None
+        try:
+            return images.expiry_for(url, synced, self.image_ttl_s)
+        except Exception:                      # whatever a link looks like, the object list must still be served
+            return None
 
     def get(self, oid: str) -> Item | None:
         return self.items().get(oid)

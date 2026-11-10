@@ -29,6 +29,8 @@ the whole flow for free. The picks are not meaningful. Add the key for real sele
 4. **Copy IDs** and **Copy quantities** give 21 lines each, in STT order, ready to paste into the Object ID
    and SL columns. Set the Object ID cells to *Plain text* first so `004702` keeps its zeros.
 5. **Already used in the sheet**: paste IDs that are already in your workbook so new boxes avoid them.
+   Add the day those boxes were made: with **Dùng lại món của hộp cũ** on (30 days by default), objects of boxes older than that, in SM or in
+   this list, are free again. IDs with no day are always held.
 6. **Export CSV** (top right) lists every box and object.
 7. **Import boxes from a CSV** (Automations tab, under Backup): columns `module`, `box`, `object_id`, optionally `stt`, `qty`, `code`, `anchor`
    (the file from **Export CSV** works as is). Boxes come in as drafts, objects held elsewhere are skipped and named, bad rows are listed
@@ -123,8 +125,9 @@ the sheet out of its reach), so it says which one is waiting. The number on the 
 
 **Sections.** A tab in the sheet holds several sections (M8-01, M8-02, ...), each with its own Box B2, Box B3 and Box A1.
 In the batch form, "Một section: B2, B3, A1" fills the three names and "Mã section" takes the code (for example M8-02).
-The sheet script then writes that section's rows (25 rows per section) and checks first that the block title is
-really there, so a tab with different spacing is skipped, not written to the wrong place.
+The sheet script finds that section by counting the block titles ("Box B2 - 21 Objects") down the tab, so tabs whose
+sections are 25, 26 or 23 rows apart all work (checked against the real workbook: M8 and M17 are 26 apart, M5 goes 25 then 23).
+It writes only into empty cells, and a section whose title is not there is skipped and reported, never guessed.
 
 **Syncing the kho from SM.** `integrations/box_builder_sm.user.js` is a small Tampermonkey script for your signed-in SM tab. It reads
 SM's object list (GET only), keeps the chosen sector, and posts the compact rows to `/api/catalog/sync` with the sync token typed
@@ -140,6 +143,10 @@ catalog sync (any of the keys `image_url`, `img`, `thumbnail`, `image`, `photo`,
 keeps it only if it is an https URL on an allowed host (`IMAGE_HOSTS`, default the SM host) or a path on that host. It never
 fetches the picture: the viewer's browser loads it, so a picture that needs an SM login shows only for people signed in to SM.
 A missing or broken picture shows a neutral icon. Every object also has an "Mở trong SM" link to its SM page.
+SM's picture links are signed and last about an hour. The app reads the end time from the link itself (`Expires=` or `X-Amz-Date` plus
+`X-Amz-Expires`), sends it as `img_exp`, and the page stops asking for a picture once that time has passed: it shows an empty frame
+with the tip "Đồng bộ lại kho trong SM". A signed link that says nothing is trusted for `IMAGE_TTL_MINUTES` (default 55) after the
+catalog was read. The printed pick list leaves expired pictures out.
 
 Safety is unchanged: the server never writes to SM and holds no SM credentials (`tests/test_safety.py` enforces it).
 The userscript still creates TaskBoxes only after your confirm click; the sheet script still writes only empty cells.

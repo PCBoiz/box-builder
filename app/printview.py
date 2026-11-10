@@ -12,6 +12,8 @@ import html
 import re
 import unicodedata
 
+from . import images
+
 __all__ = ["render_pick_list", "collect_rows", "sort_key_for_slot", "safe_image_url", "NO_SLOT_TEXT"]
 
 NO_SLOT_TEXT = "chưa rõ vị trí"
@@ -118,7 +120,8 @@ def _rows_of(box: dict) -> list[dict]:
         rows.append({
             "stt": pos if isinstance(pos, int) and not isinstance(pos, bool) else n,
             "id": _text(it.get("id")), "name": _text(it.get("name")), "vi": _text(it.get("vi")),
-            "slot": _text(it.get("slot")), "qty": _int(it.get("qty")), "img": safe_image_url(it.get("img")),
+            "slot": _text(it.get("slot")), "qty": _int(it.get("qty")),
+            "img": "" if images.is_expired(it.get("img_exp")) else safe_image_url(it.get("img")),
         })
     return sorted(rows, key=lambda r: sort_key_for_slot(r["slot"]))
 

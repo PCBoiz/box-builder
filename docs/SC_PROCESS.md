@@ -15,6 +15,16 @@ A unit has one anchor object (a big object such as a fridge, microwave, bed or w
 - A1 is for the next morning's shift and holds about 10 to 14 objects.
 - Do the order B2, then B3, then A1.
 
+## Reusing objects (rule given by the user, 2026-11-10)
+An object that sits in an older box may be used again when that box is far enough from the day the new box is made (for example one week
+or one month). The app does this with the switch "Dùng lại món của hộp cũ" (Automations tab): on by default, 30 days, 1 to 365 days, off means
+nothing is ever reused.
+- Boxes read from SM: the box's created date decides. A box made more than N days ago holds nothing. A date the app cannot read keeps the box holding.
+- IDs used in the sheet: the sheet has no dates, so the paste form asks for the day the boxes were made (empty = today). An ID with no known day
+  is never reused. Pasting an ID again with a later day refreshes its day, never moves it back.
+- Boxes made in this app keep their objects: the database refuses one object in two boxes. Retiring old app boxes is not built yet.
+- Not decided yet: whether the same module or shift should wait longer than the rest of the team.
+
 ## Times (work day 2:30 to 11:30)
 | Box | Collector works with it |
 |---|---|

@@ -119,6 +119,10 @@
       <p class="hint">Dán các Object ID đã có trong bảng tính để các hộp mới không chọn trùng.</p>
       <textarea id="u-text" rows="3" placeholder="004702&#10;004700&#10;004699" aria-label="Object ID đã dùng"></textarea>
       <input id="u-note" maxlength="60" placeholder="Lấy từ đâu, ví dụ M17 Box A1" aria-label="Ghi chú">
+      <label class="field-label" for="u-since">Ngày tạo của các hộp này (để trống là hôm nay)</label>
+      <input id="u-since" type="date" min="2000-01-01" aria-describedby="u-since-hint">
+      <p class="hint" id="u-since-hint">Món của hộp tạo đã lâu sẽ dùng lại được sau số ngày đặt ở tab Tự động hoá (mục "Dùng lại món của hộp cũ").
+        Để trống là tính từ hôm nay, nên món được giữ thêm vài ngày. Nếu các món đến từ nhiều hộp tạo khác ngày, hãy dán riêng từng nhóm với ngày của nhóm đó.</p>
       <button class="btn wide" type="submit">Đánh dấu đã dùng</button>
       <details id="u-list-wrap" class="u-list" hidden>
         <summary><span id="u-count"></span></summary>
@@ -140,6 +144,8 @@
 
   <section class="panel">
     <h2>Danh sách đồ trong kho</h2>
+    <p id="o-imgtip" class="hint warnline" role="status" hidden><span id="o-imgtip-text"></span>
+      <button type="button" class="btn small" id="o-imgtip-go">Xem cách đồng bộ</button></p>
     <div class="o-tools">
       <input id="o-q" type="search" placeholder="Tìm theo tên hoặc ID" aria-label="Tìm đồ theo tên hoặc ID" autocomplete="off">
       <select id="o-cat" aria-label="Lọc theo nhóm đồ"><option value="">Tất cả nhóm</option></select>
@@ -203,6 +209,7 @@
       <li>Bấm nút đó, nhập <b>Mã đồng bộ</b> (người quản lý có), bấm <b>Kiểm tra kết nối</b>, rồi <b>Đồng bộ kho ngay</b>.</li>
     </ol>
     <p class="hint">Công cụ chỉ đọc từ SM, không tạo hay sửa gì trong SM. Hộp chỉ được tạo trong SM sau khi bạn bấm xác nhận.</p>
+    <p class="hint">Ảnh của món do SM cấp có hạn khoảng một giờ. Khi hết hạn, ảnh hiện khung trống cho đến lần đồng bộ kho sau.</p>
   </section>
 
   <section class="panel" id="a-smpush" aria-labelledby="smp-h" hidden>
@@ -242,6 +249,7 @@
   <section class="panel" id="a-smboxes" aria-labelledby="smb-h">
     <h2 id="smb-h">Hộp đang có trong SM</h2>
     <p id="smb-sum" class="hint" role="status">Đang tải...</p>
+    <p id="smb-reuse" class="hint" hidden></p>
     <h3 id="smb-conf-h" hidden>Hộp của bạn có món đã nằm trong hộp khác ở SM</h3>
     <ul id="smb-conf" class="qlist bad" hidden></ul>
     <h3 id="smb-dbl-h" hidden>Món đang nằm trong hai hộp SM trở lên</h3>

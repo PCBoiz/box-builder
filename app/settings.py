@@ -41,6 +41,7 @@ class Settings:
     sync_token: str = ""              # secret the userscript sends to push the live SM catalog (empty = sync disabled)
     sm_push_mode: str = "off"         # off | mock. 'mock' pushes ready boxes to a fake SM held in memory. There is no real mode.
     image_hosts: str = ""             # hosts an object picture may come from (comma list; empty = the default host set in images.py)
+    image_ttl_minutes: int = 55       # how long a signed SM picture link is trusted when the link does not say (SM's last about an hour)
 
     @property
     def sector_list(self) -> tuple[str, ...]:
@@ -65,4 +66,5 @@ class Settings:
             sectors=os.getenv("SECTORS", cls.sectors),
             sm_push_mode="mock" if os.getenv("SM_PUSH_MODE", "").strip().lower() == "mock" else "off",
             image_hosts=os.getenv("IMAGE_HOSTS", ""),
+            image_ttl_minutes=min(1440, max(1, _int("IMAGE_TTL_MINUTES", cls.image_ttl_minutes))),
         )

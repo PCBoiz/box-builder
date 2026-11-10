@@ -36,7 +36,8 @@ def test_report_lists_conflicts_and_doubles_and_leaves_our_pushed_boxes_out_of_c
     mine_ids, pushed_ids = box_ids(client, mine), box_ids(client, pushed)
     other = usable_ids(cat)[-3:]
     rep0 = client.get("/api/sm/boxes/report").json()
-    assert rep0 == {"synced_at": None, "boxes": 0, "objects_held": 0, "doubles": [], "conflicts": []}
+    assert rep0 == {"synced_at": None, "boxes": 0, "objects_held": 0, "doubles": [], "conflicts": [],
+                    "reuse": {"on": True, "days": 30, "old_boxes": 0, "undated_boxes": 0, "freed_objects": 0}}
     clash = mine_ids[0]
     push_snapshot(client, [sm_box("SM-10", "Ours", pushed_ids), sm_box("SM-20", "Tabletop 20", [clash, other[0]]),
                            sm_box("SM-30", "Tabletop 30", [other[0], other[1]])])

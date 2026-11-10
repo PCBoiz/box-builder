@@ -1,5 +1,6 @@
 """Domain operations on boxes and the claim ledger. Every write runs inside one BEGIN IMMEDIATE
 transaction, so "check it is free, then take it" can never interleave with another user."""
+import datetime
 import json
 import re
 import time
@@ -27,23 +28,74 @@ class Invalid(Exception):
 SM_ENDED = ("deactivated", "returned", "cancelled", "canceled", "discarded")
 
 
-def taken_ids(conn) -> set[str]:
+_AUTO = object()                        # "work the cutoff out from the switch"
+
+
+def when_of(text) -> float | None:
+    """Epoch seconds from a date as SM writes it ('2026-11-10T08:00:00Z', '2026-11-10 08:00:00', '2026-11-10'), or None when it cannot be read.
+    A date without a zone is taken as UTC."""
+    t = str(text if text is not None else "").strip()
+    if not t:
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    if d.year < 2000:                       # a placeholder such as 0001-01-01 or 1970-01-01 is not a real box date: unreadable, so the box keeps holding
+        return None
+    return d.timestamp()
+
+
+def reuse_cutoff(conn, now: float | None = None) -> float | None:
+    """Boxes made before this moment no longer keep their objects (the "Dùng lại món của hộp cũ" switch: N days back from now).
+    None when the switch is off, so nothing is ever reused."""
+    from . import automation
+    sw = automation.switches(conn)["reuse_old"]
+    if not sw["enabled"]:
+        return None
+    return (time.time() if now is None else now) - sw["config"]["days"] * 86400
+
+
+def external_binding(conn, cutoff=_AUTO) -> set[str]:
+    """IDs the sheet list still keeps back: every one, unless the reuse switch is on and the boxes that used the ID were made before
+    the cutoff. An ID with no date (added_at 0) is never reused: wrongly treating it as free would cost a duplicate."""
+    if cutoff is _AUTO:
+        cutoff = reuse_cutoff(conn)
+    if cutoff is None:
+        return {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
+    return {r[0] for r in conn.execute("SELECT object_id FROM external_used WHERE added_at <= 0 OR added_at >= ?", (cutoff,))}
+
+
+def taken_ids(conn, cutoff=_AUTO) -> set[str]:
+    if cutoff is _AUTO:
+        cutoff = reuse_cutoff(conn)
     a = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
-    b = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
-    return a | b | set(sm_held(conn))
+    return a | external_binding(conn, cutoff) | set(sm_held(conn, cutoff))
 
 
-def sm_held(conn) -> dict[str, dict]:
+def sm_held(conn, cutoff=_AUTO) -> dict[str, dict]:
     """Objects that a box in SM holds, as last read from SM: object id -> {sm_box_id, title, status}.
-    Boxes this app pushed itself are left out: their objects already belong to our own box."""
+    Boxes this app pushed itself are left out: their objects already belong to our own box. With the reuse switch on, a box made
+    before the cutoff holds nothing any more (a date that cannot be read counts as recent: it keeps its objects)."""
+    if cutoff is _AUTO:
+        cutoff = reuse_cutoff(conn)
     ours = {str(r[0]) for r in conn.execute("SELECT sm_box_id FROM sm_push")}
     out: dict[str, dict] = {}
+    dates: dict[str, float | None] = {}                   # each distinct date text is parsed once, not once per object row
     for r in conn.execute(
-        "SELECT i.object_id, b.sm_box_id, b.title, b.status, b.status_label FROM sm_box_items i "
+        "SELECT i.object_id, b.sm_box_id, b.title, b.status, b.status_label, b.created_at FROM sm_box_items i "
         "JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id ORDER BY b.created_at, b.sm_box_id"
     ):
         if r["sm_box_id"] in ours:
             continue
+        if cutoff is not None:
+            if r["created_at"] not in dates:
+                dates[r["created_at"]] = when_of(r["created_at"])
+            when = dates[r["created_at"]]
+            if when is not None and when < cutoff:
+                continue
         out.setdefault(r["object_id"], {"sm_box_id": r["sm_box_id"], "title": r["title"], "status": r["status_label"] or r["status"]})
     return out
 
@@ -120,7 +172,7 @@ def owner_of(conn, oid: str) -> str:
     ).fetchone()
     if r:
         return f"{r['module']} / {r['label']}"
-    if conn.execute("SELECT 1 FROM external_used WHERE object_id=?", (oid,)).fetchone():
+    if oid in external_binding(conn):
         return "danh sách đã dùng trong bảng tính"
     held = sm_held(conn).get(oid)
     if held:
@@ -147,7 +199,7 @@ def state(conn, catalog: Catalog) -> dict:
                 "name": c.name if c else "(không còn trong kho)",
                 "vi": c.vi if c else "", "category": c.category if c else "",
                 "slot": c.slot if c else "", "stock": c.stock if c else 0,
-                "img": c.img if c else "", "detail": images.detail_url(it["object_id"]),
+                "img": c.img if c else "", "img_exp": catalog.image_expiry(c.img) if c and c.img else None, "detail": images.detail_url(it["object_id"]),
             })
         boxes.append({
             "id": b["id"], "module": b["module"], "label": b["label"], "theme": b["theme"],
@@ -157,17 +209,25 @@ def state(conn, catalog: Catalog) -> dict:
             "pushed": pushed.get(b["id"]),
         })
     in_boxes = conn.execute("SELECT COUNT(*) FROM box_items").fetchone()[0]
-    ext_ids = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
-    external = len(ext_ids & set(cat))            # only IDs that are usable objects change the free count
-    used = [{"id": r["object_id"], "note": r["note"]}
-            for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
+    cutoff = reuse_cutoff(conn)
     claimed = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
+    catset = set(cat)
+    ext = external_binding(conn, cutoff)
+    sm_ids = set(sm_held(conn, cutoff))
+    # an object in a box counts as that box's, as in the object list; the sheet list and SM only count what no box has
+    external = len((ext - claimed) & catset)
+    used = [{"id": r["object_id"], "note": r["note"], "added_at": r["added_at"] if r["added_at"] > 0 else 0,
+             "since": time.strftime("%Y-%m-%d", time.gmtime(r["added_at"])) if r["added_at"] > 0 else "",
+             "reusable": cutoff is not None and 0 < r["added_at"] < cutoff and r["object_id"] in catset
+                         and r["object_id"] not in claimed and r["object_id"] not in sm_ids}
+            for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
     return {
         "rev": rev_first,
+        "now": time.time(),
         "catalog": catalog.info(),
-        "stats": {"catalog": len(cat), "in_boxes": in_boxes, "external": external, "in_sm": len(set(sm_held(conn)) & set(cat)),
-                  "free": max(0, len(cat) - len(taken_ids(conn) & set(cat))), "boxes": len(boxes),
-                  "gone": len(claimed - set(cat))},     # claimed objects SM no longer lists as available
+        "stats": {"catalog": len(cat), "in_boxes": in_boxes, "external": external, "in_sm": len((sm_ids - claimed) & catset),
+                  "free": max(0, len(cat) - len(taken_ids(conn, cutoff) & catset)), "boxes": len(boxes),
+                  "gone": len(claimed - catset)},     # claimed objects SM no longer lists as available
         "boxes": boxes,
         "used": used,
     }
@@ -225,7 +285,9 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
     pushed_titles = {b["title"] for b in st["boxes"] if b["pushed"]}
     ready, blocked, seen = [], [], set()
     cat = catalog.items()
-    held = sm_held(conn)
+    cutoff = reuse_cutoff(conn)
+    held = sm_held(conn, cutoff)
+    sheet = external_binding(conn, cutoff)
     for tb in taskboxes(conn, catalog, ("approved",), pending_only=True, st=st):
         reasons = []
         for c in tb["contents"]:
@@ -235,6 +297,8 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
             elif c["object_id"] in held:
                 h = held[c["object_id"]]
                 reasons.append(f"{c['object_id']} đã nằm trong hộp SM {h['title'] or h['sm_box_id']}")
+            elif c["object_id"] in sheet:
+                reasons.append(f"{c['object_id']} đã có trong danh sách đã dùng ở bảng tính")
             elif c["quantity"] > min(max_qty, it.stock) or c["quantity"] < 1:
                 reasons.append(f"{c['object_id']}: số lượng {c['quantity']} vượt mức cho phép (tối đa {min(max_qty, it.stock)})")
         if not tb["title"].strip():
@@ -253,15 +317,14 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
 OBJECT_STATUSES = ("free", "draft", "approved", "pushed", "external", "sm")
 
 
-def _holders(conn) -> tuple[dict, set]:
+def _holders(conn, cutoff=_AUTO) -> tuple[dict, set]:
     """object_id -> {box_id, box, status, pushed}; plus the set of IDs marked as used in the workbook."""
     held = {}
     pushed = {r["box_id"] for r in conn.execute("SELECT box_id FROM sm_push")}
     for r in conn.execute("SELECT i.object_id, b.id, b.module, b.label, b.status FROM box_items i JOIN boxes b ON b.id=i.box_id"):
         status = "pushed" if r["id"] in pushed else ("approved" if r["status"] == "approved" else "draft")
         held[r["object_id"]] = {"box_id": r["id"], "box": f"{r['module']} / {r['label']}", "status": status}
-    external = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
-    return held, external
+    return held, external_binding(conn, cutoff)
 
 
 def object_status(oid: str, held: dict, external: set, sm: dict | None = None) -> tuple[str, str]:
@@ -278,8 +341,9 @@ def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status:
     """Every catalog object that matches the filters, in the requested order, plus a count per status
     (the counts ignore the status filter so the filter chips can show all of them)."""
     from .catalog import fold
-    held, external = _holders(conn)
-    sm = sm_held(conn)
+    cutoff = reuse_cutoff(conn)
+    held, external = _holders(conn, cutoff)
+    sm = sm_held(conn, cutoff)
     words = [w for w in fold(q).split() if w]
     rows, counts = [], {s: 0 for s in OBJECT_STATUSES}
     for it in catalog.items().values():
@@ -309,14 +373,18 @@ def objects_view(conn, catalog: Catalog, q: str = "", category: str = "", status
     per = max(1, min(200, per))
     page = max(1, page)
     total = len(rows)
+    shown = rows[(page - 1) * per: page * per]
+    for r in shown:                                      # only the rows that are sent: the end time of a picture link is worked out for these
+        r["img_exp"] = catalog.image_expiry(r["img"]) if r["img"] else None
     return {"total": total, "page": page, "per": per, "pages": max(1, -(-total // per)),
-            "counts": counts, "items": rows[(page - 1) * per: page * per]}
+            "counts": counts, "items": shown, "now": time.time()}              # now: img_exp is a server time, the page corrects for its own clock
 
 
 def coverage(conn, catalog: Catalog) -> list[dict]:
     """Per category: how many usable objects exist, how many are still free, how many are taken."""
-    held, external = _holders(conn)
-    sm = sm_held(conn)
+    cutoff = reuse_cutoff(conn)
+    held, external = _holders(conn, cutoff)
+    sm = sm_held(conn, cutoff)
     by: dict[str, dict] = {}
     for it in catalog.items().values():
         c = it.category or "(chưa phân loại)"
@@ -589,27 +657,60 @@ def create_batch(conn, specs: list[dict], default_count: int, owner: str) -> lis
 
 
 # ----------------------------------------------------------------------------- IDs already used in the workbook
-def import_used(conn, text: str, note: str, catalog: Catalog) -> dict:
+def parse_since(since: str | None, now: float | None = None) -> float:
+    """'2026-10-15' -> epoch seconds (noon UTC of that day). Empty -> now. A date in the future or one that cannot be read is refused."""
+    now = time.time() if now is None else now
+    t = (since or "").strip()
+    if not t:
+        return now
+    try:
+        d = datetime.datetime.strptime(t, "%Y-%m-%d").replace(hour=12, tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise Invalid("Ngày phải có dạng năm-tháng-ngày, ví dụ 2026-10-15.")
+    if d.year < 2000:
+        raise Invalid("Năm chưa đúng. Hãy nhập đủ 4 số, ví dụ 2026-10-15.")
+    if d.timestamp() > now + 86400:
+        raise Invalid("Ngày tạo hộp không thể ở tương lai.")
+    return min(d.timestamp(), now)
+
+
+def import_used(conn, text: str, note: str, catalog: Catalog, since: str | None = None) -> dict:
+    """Mark IDs as used in the sheet. `since` is the day the boxes that used them were made (default today): with the reuse
+    switch on, they are free again once that day is more than N days back.
+    An ID that is already listed keeps what it has, unless a day is given: then an ID with no day takes it, and a later day replaces an
+    earlier one (never the other way round). That also holds for an ID that sits in a box here, so removing it from the box cannot free
+    an ID the sheet used more recently. Leaving the day empty never changes a listed ID."""
+    from . import automation
+    given = bool((since or "").strip())
+    when = parse_since(since)
     ids, bad = [], []
     for tok in re.split(r"[\s,;]+", text.strip()):
         if not tok:
             continue
         oid = pad_id(tok)
         (ids if oid else bad).append(oid or tok)
-    added, in_box = 0, []
+    in_box = []
     with tx(conn):
         in_boxes = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
-        listed = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
-        new = []
+        listed = {r[0]: r["added_at"] for r in conn.execute("SELECT object_id, added_at FROM external_used")}
+        new, later, kept = [], [], 0
         for oid in dict.fromkeys(ids):
             if oid in in_boxes:
                 in_box.append(oid)
-            elif oid not in listed:
-                new.append((oid, note.strip()))
-        conn.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", new)
-        added = len(new)
+            if oid in listed:
+                if given and (listed[oid] <= 0 or when > listed[oid]):
+                    later.append((when, note.strip(), oid))
+                else:
+                    kept += 1
+            elif oid not in in_boxes:
+                new.append((oid, note.strip(), when))
+        conn.executemany("INSERT INTO external_used(object_id, note, added_at) VALUES(?,?,?) ON CONFLICT (object_id) DO NOTHING", new)
+        conn.executemany("UPDATE external_used SET added_at=?, note=COALESCE(NULLIF(?, ''), note) WHERE object_id=?", later)
+        sw = automation.switches(conn)["reuse_old"]
     unknown = [o for o in ids if catalog.get(o) is None]
-    return {"added": added, "already_in_a_box": in_box, "not_in_catalog": unknown, "unreadable": bad}
+    reusable_on = time.strftime("%Y-%m-%d", time.gmtime(when + sw["config"]["days"] * 86400)) if sw["enabled"] else ""
+    return {"added": len(new), "refreshed": len(later), "kept": kept, "reusable_on": reusable_on,
+            "already_in_a_box": in_box, "not_in_catalog": unknown, "unreadable": bad}
 
 
 def remove_used(conn, oid: str) -> None:
@@ -652,7 +753,7 @@ def export_backup(conn) -> dict:
                       for i in box_items(conn, b["id"])],
             "pushed": pushed.get(b["id"]),
         })
-    used = [{"object_id": r["object_id"], "note": r["note"]} for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
+    used = [{"object_id": r["object_id"], "note": r["note"], "added_at": r["added_at"]} for r in conn.execute("SELECT * FROM external_used ORDER BY object_id")]
     switches = [{"key": k, "enabled": v["enabled"], "config": v["config"]} for k, v in automation.switches(conn).items()]
     return {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "boxes": boxes, "used": used, "automations": switches}
@@ -677,8 +778,8 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
     live = catalog.items()
     holders = {r["object_id"]: f"{r['module']} / {r['label']}" for r in conn.execute(
         "SELECT i.object_id, b.module, b.label FROM box_items i JOIN boxes b ON b.id = i.box_id")}
-    for r in conn.execute("SELECT object_id FROM external_used"):
-        holders.setdefault(r[0], "danh sách đã dùng trong bảng tính")
+    for oid in external_binding(conn):
+        holders.setdefault(oid, "danh sách đã dùng trong bảng tính")
     for oid, h in sm_held(conn).items():
         holders.setdefault(oid, f"hộp SM {h['title'] or h['sm_box_id']}")
     existing = {(r["module"], r["label"]) for r in conn.execute("SELECT module, label FROM boxes")}
@@ -762,18 +863,30 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
             entry.update(result="skipped", reason="một món vừa bị hộp khác lấy, hộp này được bỏ qua", items_added=0, pushed_restored=False)
     # IDs already used in the sheet: skipped when a box holds them (now or from this file), when already listed, or repeated in the file
     in_boxes = {r[0] for r in conn.execute("SELECT object_id FROM box_items")} | taken_now
-    already = {r[0] for r in conn.execute("SELECT object_id FROM external_used")}
-    fresh, skipped, seen = [], 0, set()
+    already = {r[0]: r["added_at"] for r in conn.execute("SELECT object_id, added_at FROM external_used")}
+    fresh, later, skipped, seen = [], [], 0, set()
     for u in used:
         oid = pad_id(u.get("object_id", "")) if isinstance(u, dict) else None
-        if oid is None or oid in in_boxes or oid in already or oid in seen:
+        if oid is None or oid in seen:
             skipped += 1
             continue
         seen.add(oid)
-        fresh.append((oid, _text(u.get("note"), 60)))
-    if not dry_run and fresh:
+        at = u.get("added_at")
+        # only a day that can be real counts (2000 or later, not in the future); anything else means "no day known", which never expires
+        at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) and 946684800 <= at < time.time() + 86400 else 0.0
+        if oid in already:                                           # a later day in the backup refreshes it, as pasting with a day does
+            if at > 0 and (already[oid] <= 0 or at > already[oid]):
+                later.append((at, _text(u.get("note"), 60), oid))
+            else:
+                skipped += 1
+        elif oid in in_boxes:
+            skipped += 1
+        else:
+            fresh.append((oid, _text(u.get("note"), 60), at))
+    if not dry_run and (fresh or later):
         with tx(conn):
-            conn.executemany("INSERT INTO external_used(object_id, note) VALUES(?,?) ON CONFLICT (object_id) DO NOTHING", fresh)
+            conn.executemany("INSERT INTO external_used(object_id, note, added_at) VALUES(?,?,?) ON CONFLICT (object_id) DO NOTHING", fresh)
+            conn.executemany("UPDATE external_used SET added_at=?, note=COALESCE(NULLIF(?, ''), note) WHERE object_id=?", later)
     # automation switches: only those that were never changed here, so a restore does not undo someone's choice
     stored = {r[0] for r in conn.execute("SELECT k FROM automations")}
     applied, kept = [], []
@@ -793,7 +906,7 @@ def import_backup(conn, data, catalog: Catalog, max_qty: int, dry_run: bool = Tr
     return {"dry_run": dry_run, "boxes": out,
             "totals": {"boxes_added": sum(1 for e in out if e["result"] == "added"), "boxes_skipped": sum(1 for e in out if e["result"] != "added"),
                        "items_added": sum(e["items_added"] for e in out), "items_skipped": sum(len(e["items_skipped"]) for e in out)},
-            "used": {"added": len(fresh), "skipped": skipped}, "automations": {"applied": applied, "kept": kept}}
+            "used": {"added": len(fresh), "skipped": skipped, "refreshed": len(later)}, "automations": {"applied": applied, "kept": kept}}
 
 
 # ----------------------------------------------------------------------------- import boxes from a CSV
@@ -948,14 +1061,27 @@ def import_boxes_csv(conn, text: str, catalog: Catalog, max_qty: int, size_for, 
 
 def sm_report(conn, catalog: Catalog) -> dict:
     """What the last read of SM says, for the people who plan boxes: how many boxes and objects SM holds, this app's own unpushed
-    boxes that contain an object an SM box holds (conflicts), and objects that two or more SM boxes hold at once (doubles)."""
+    boxes that contain an object an SM box holds (conflicts), and objects that two or more SM boxes hold at once (doubles).
+    With the reuse switch on, boxes made before the cutoff hold nothing; `reuse` says how many boxes and objects that frees."""
     info = sm_boxes_info(conn)
-    held = sm_held(conn)
+    cutoff = reuse_cutoff(conn)
+    held = sm_held(conn, cutoff)
+    sheet = external_binding(conn, cutoff)
     cat = catalog.items()
     name = lambda oid: (cat[oid].vi or cat[oid].name) if oid in cat else ""
+    ours = {str(r[0]) for r in conn.execute("SELECT sm_box_id FROM sm_push")}          # boxes this app made in SM: they never held anything through SM
     by_obj: dict[str, list[dict]] = {}
-    for r in conn.execute("SELECT i.object_id, b.sm_box_id, b.title FROM sm_box_items i JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id "
+    old_boxes, undated, old_objects = set(), set(), set()
+    for r in conn.execute("SELECT i.object_id, b.sm_box_id, b.title, b.created_at FROM sm_box_items i JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id "
                           "ORDER BY i.object_id, b.created_at, b.sm_box_id"):
+        when = when_of(r["created_at"])
+        if r["sm_box_id"] not in ours:
+            if when is None:
+                undated.add(r["sm_box_id"])
+            elif cutoff is not None and when < cutoff:
+                old_boxes.add(r["sm_box_id"])
+                old_objects.add(r["object_id"])
+                continue                                                     # an old box holds nothing, so it makes no double
         by_obj.setdefault(r["object_id"], []).append({"sm_box_id": r["sm_box_id"], "title": r["title"] or r["sm_box_id"]})
     doubles = [{"id": oid, "name": name(oid), "boxes": [b["title"] for b in bs]} for oid, bs in by_obj.items() if len(bs) > 1]
     pushed = {r[0] for r in conn.execute("SELECT box_id FROM sm_push")}
@@ -963,10 +1089,14 @@ def sm_report(conn, catalog: Catalog) -> dict:
     for b in conn.execute("SELECT id, module, label, status FROM boxes ORDER BY module, label").fetchall():
         if b["id"] in pushed:
             continue
-        clash = [{"id": i["object_id"], "name": name(i["object_id"]), "sm_box": held[i["object_id"]]["title"] or held[i["object_id"]]["sm_box_id"]}
-                 for i in box_items(conn, b["id"]) if i["object_id"] in held]
+        clash = [{"id": i["object_id"], "name": name(i["object_id"]),
+                  "sm_box": (held[i["object_id"]]["title"] or held[i["object_id"]]["sm_box_id"]) if i["object_id"] in held else "danh sách đã dùng trong bảng tính"}
+                 for i in box_items(conn, b["id"]) if i["object_id"] in held or i["object_id"] in sheet]
         if clash:
             conflicts.append({"box_id": b["id"], "box": f"{b['module']} / {b['label']}", "status": b["status"], "objects": clash})
+    from . import automation
+    sw = automation.switches(conn)["reuse_old"]
+    reuse = {"on": cutoff is not None, "days": sw["config"]["days"], "old_boxes": len(old_boxes), "undated_boxes": len(undated),
+             "freed_objects": len({o for o in old_objects if o in cat} - taken_ids(conn, cutoff))}      # only objects nothing else still holds
     return {"synced_at": info["synced_at"] if info else None, "boxes": info["active"] if info else 0, "objects_held": len(held),
-            "doubles": doubles[:200], "conflicts": conflicts}
-
+            "doubles": doubles[:200], "conflicts": conflicts, "reuse": reuse}

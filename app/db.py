@@ -192,9 +192,11 @@ def _schema(pg: bool) -> list[str]:
               box_id     BIGINT PRIMARY KEY REFERENCES boxes(id) ON DELETE CASCADE,
               sm_box_id  TEXT NOT NULL,
               pushed_at  {real} NOT NULL)""",
-        """CREATE TABLE IF NOT EXISTS external_used(
+        # added_at: when the boxes that used this object were made (epoch seconds); 0 = unknown, which never expires
+        f"""CREATE TABLE IF NOT EXISTS external_used(
               object_id TEXT PRIMARY KEY,
-              note      TEXT NOT NULL DEFAULT '')""",
+              note      TEXT NOT NULL DEFAULT '',
+              added_at  {real} NOT NULL DEFAULT 0)""",
         # what Scenario Manager says its boxes hold, as last read by the userscript (read only, active boxes only, no people)
         f"""CREATE TABLE IF NOT EXISTS sm_boxes(
               sm_box_id     TEXT PRIMARY KEY,
@@ -224,7 +226,8 @@ def _schema(pg: bool) -> list[str]:
 
 
 # columns added after the first release: older databases get them on start
-_ADD_COLUMNS = [("boxes", "code", "TEXT NOT NULL DEFAULT ''"), ("boxes", "anchor", "TEXT NOT NULL DEFAULT ''")]
+_ADD_COLUMNS = [("boxes", "code", "TEXT NOT NULL DEFAULT ''"), ("boxes", "anchor", "TEXT NOT NULL DEFAULT ''"),
+                ("external_used", "added_at", "{real} NOT NULL DEFAULT 0")]
 
 
 def init(target: str) -> None:
@@ -240,6 +243,7 @@ def init(target: str) -> None:
         for stmt in _schema(pg):
             conn.execute(stmt)
         for table, col, ddl in _ADD_COLUMNS:
+            ddl = ddl.replace("{real}", "DOUBLE PRECISION" if pg else "REAL")
             if pg:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}")
             elif col not in [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]:

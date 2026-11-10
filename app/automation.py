@@ -33,6 +33,12 @@ META = {
         "enabled": True, "config": {"stale_hours": 24, "low_stock": 20},
         "limits": {"stale_hours": (1, 720), "low_stock": (1, 500)},
     },
+    "reuse_old": {
+        "title": "Dùng lại món của hộp cũ",
+        "desc": "Món nằm trong một hộp SM (hoặc trong danh sách đã dùng ở bảng tính) được coi là trống lại khi hộp đó đã tạo cách đây quá số ngày dưới đây, "
+                "vì hộp đã xa ngày làm hộp mới. Tắt thì mọi món đã dùng đều bị giữ mãi. Món trong hộp của app này luôn được giữ.",
+        "enabled": True, "config": {"days": 30}, "limits": {"days": (1, 365)},
+    },
     "auto_heal": {
         "title": "Tự thay món biến mất khỏi kho SM",
         "desc": "Khi đồng bộ kho cho thấy SM không còn một món trong hộp chưa đẩy lên SM, món đó được thay bằng món khác "
@@ -146,7 +152,7 @@ def alerts(conn, catalog: Catalog, taken: set[str]) -> list[dict]:
     if rep["conflicts"]:
         n = sum(len(c["objects"]) for c in rep["conflicts"])
         out.append({"kind": "sm_conflict", "level": "bad",
-                    "msg": f"{n} món trong {len(rep['conflicts'])} hộp của bạn đã nằm trong hộp khác ở SM: "
+                    "msg": f"{n} món trong {len(rep['conflicts'])} hộp của bạn đã nằm trong hộp khác ở SM hoặc trong danh sách đã dùng ở bảng tính: "
                            + "; ".join(f"{c['box']} ({', '.join(o['id'] for o in c['objects'][:3])})" for c in rep["conflicts"][:3])})
     if rep["doubles"]:
         out.append({"kind": "sm_doubles", "level": "warn",
@@ -208,7 +214,7 @@ def todo(conn, catalog: Catalog, max_qty: int) -> list[dict]:
         add("sync", "warn", "Kho chưa đồng bộ với SM. Mở SM, rồi bấm Đồng bộ kho ngay ở khung Box builder.", "SM")
     rep = service.sm_report(conn, catalog)
     if rep["conflicts"]:
-        add("sm_conflict", "bad", f"{len(rep['conflicts'])} hộp có món đã nằm trong hộp khác ở SM. Mở hộp và thay các món đó.", "Hộp")
+        add("sm_conflict", "bad", f"{len(rep['conflicts'])} hộp có món đã nằm trong hộp khác ở SM hoặc trong danh sách đã dùng ở bảng tính. Mở hộp và thay các món đó.", "Hộp")
     stale = sw["catalog_watch"]["config"]["stale_hours"] * 3600
     if rep["synced_at"] is None:
         add("sm_boxes", "info", "Chưa đọc các hộp đang có trong SM, nên món đang nằm trong hộp SM vẫn có thể bị chọn trùng. Dùng công cụ đồng bộ trong SM.", "SM")

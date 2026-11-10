@@ -27,11 +27,11 @@ for i in range(100):                                                            
 HAS_VI = {"on": False}
 # two pretend SM boxes shaped like the real /api/boxes, with fields the app must never receive
 SM_BOXES = [
-    {"box_id": "SMB-1", "title": "M8-01 - A1", "status": "assigned", "status_label": "Assigned", "created_at": "2026-11-10T08:00:00Z",
+    {"box_id": "SMB-1", "title": "M8-01 - A1", "status": "assigned", "status_label": "Assigned", "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
      "assignee": "Tran Thi Assignee", "holder": None, "created_by_name": "Nguyen Van Creator", "people": ["Pham Van People"], "history": [{"to": "assigned"}],
      "contents": [{"object_id": objects[2]["id"][1:], "quantity": 1, "name": "x", "available": 3, "short": False},
                   {"object_id": objects[3]["id"][1:], "quantity": 2, "name": "y", "available": 3, "short": False}]},
-    {"box_id": "SMB-2", "title": "M8-02 - B2", "status": "deactivated", "status_label": "Returned", "created_at": "2026-11-09T08:00:00Z",
+    {"box_id": "SMB-2", "title": "M8-02 - B2", "status": "deactivated", "status_label": "Returned", "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400)),
      "assignee": None, "holder": "Le Van Holder", "contents": [{"object_id": objects[4]["id"][1:], "quantity": 1}]},
 ]
 env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DEEPSEEK_API_KEY")}

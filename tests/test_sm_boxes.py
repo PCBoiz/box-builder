@@ -1,4 +1,6 @@
 """The snapshot of boxes that SM holds: objects in them are never picked, added or pushed again, and no person is stored."""
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,7 +13,7 @@ TOK = {"X-Sync-Token": "tok"}
 
 
 def sm_box(box_id, title, ids, status="assigned", qty=1, **extra):
-    return {"box_id": box_id, "title": title, "status": status, "status_label": status.title(), "created_at": "2026-11-10T08:00:00Z",
+    return {"box_id": box_id, "title": title, "status": status, "status_label": status.title(), "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "contents": [{"object_id": i, "quantity": qty} for i in ids], **extra}
 
 

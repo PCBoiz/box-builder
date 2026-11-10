@@ -21,7 +21,8 @@ usable = [r for r in rows if r[6].strip() == "ACTIVE" and r[2].strip() and r[7].
 objects = [{"id": f"O{r[0].strip().zfill(6)}", "iid": int(r[0]), "name": r[1], "type": "Obj", "status": "ACTIVE", "quantity": int(r[7]), "loan_reserved": 0,
             "transfer_reserved": 0, "location": r[5], "sector": "Hanoi-GPI", "image_url": ""} for r in usable]
 ALL_IDS = sorted(o["id"][1:] for o in objects)
-sm = MockSM({o["id"][1:]: o["quantity"] for o in objects}, {o["id"][1:]: o["name"] for o in objects})
+sm = MockSM({o["id"][1:]: o["quantity"] for o in objects}, {o["id"][1:]: o["name"] for o in objects},
+           clock=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))        # boxes made now: the reuse rule must treat them as recent
 PAGE = 2                                                     # SM answers two boxes per page, so the script has to follow has_next
 SECRETS = ("Tran Thi Assignee", "Le Van Holder", "Nguyen Van Creator", "Pham Van People", "Hoang Thi Receiver", "Pham Van Returner")
 

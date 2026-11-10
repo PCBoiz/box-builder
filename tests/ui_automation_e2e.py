@@ -158,7 +158,7 @@ try:
         # --- automations tab
         pg.click(".tab[data-view=auto]")
         pg.wait_for_selector(".sw-row")
-        check(pg.locator(".sw-row").count() == 6, "six switches")
+        check(pg.locator(".sw-row").count() == 7, "seven switches")
         check(not pg.locator("#sw-auto_approve").is_checked(), "auto-approve starts OFF")
         check(pg.locator("#sw-sheet_export").is_checked(), "sheet export starts ON")
         check(pg.locator("#a-alerts li").count() >= 1, "an alert is listed (catalog not synced with SM)")
@@ -180,7 +180,15 @@ try:
         except Exception:
             pass
         check(pg.evaluate("document.activeElement.id") == "sw-sheet_export", "keyboard focus stays on the switch after it saves")
-        check(pg.locator(".sw-state[aria-hidden=true]").count() == 6, "the visual On/Off text is hidden from screen readers (the switch already says it)")
+        check(pg.locator(".sw-state[aria-hidden=true]").count() == 7, "the visual On/Off text is hidden from screen readers (the switch already says it)")
+        reuse_row = pg.locator(".sw-row:has(#sw-reuse_old)")
+        check(pg.locator("#sw-reuse_old").is_checked() and "Dùng lại món của hộp cũ" in reuse_row.inner_text() and "ngày" in reuse_row.inner_text(), "reuse: the switch is on and says what it does")
+        check(reuse_row.locator("input[type=number]").input_value() == "30", "reuse: thirty days by default")
+        reuse_row.locator("input[type=number]").fill("14"); reuse_row.locator("input[type=number]").press("Tab")
+        pg.wait_for_selector(".toast:has-text('Đã lưu')", timeout=8000)
+        check({x["key"]: x for x in json.load(urllib.request.urlopen(BASE + "/api/automations"))["switches"]}["reuse_old"]["config"]["days"] == 14, "reuse: the number of days is saved")
+        reuse_row.locator("input[type=number]").fill("30"); reuse_row.locator("input[type=number]").press("Tab")
+        pg.wait_for_function("document.querySelector('#sw-reuse_old').closest('.sw-row').querySelector('input[type=number]').value === '30'")
         # turning the watch off removes every alert: that change is announced once, in the live region
         pg.evaluate("document.querySelector('#sr-live').textContent = ''")      # drop the text from the earlier switch
         pg.locator("label.sw[for=sw-catalog_watch]").click()
@@ -345,6 +353,12 @@ try:
         for r in rows[:3]: r["image_url"] = f"https://sm.config.inc/media/ok-{r['id']}.png"
         rows[3]["image_url"] = "https://sm.config.inc/media/missing.png"
         rows[4]["image_url"] = "https://evil.example.com/steal.png"            # must never reach the page
+        stale_id, fresh_id = rows[5]["id"], rows[6]["id"]
+        rows[5]["image_url"] = f"https://sm.config.inc/media/old-{stale_id}.png?Expires={int(time.time()) - 600}&Signature=abc"      # ran out ten minutes ago
+        rows[6]["image_url"] = f"https://sm.config.inc/media/fresh-{fresh_id}.png?Expires={int(time.time()) + 3000}&Signature=abc"  # about fifty minutes left
+        stale_hits = []
+        pg.route("https://sm.config.inc/media/old-*", lambda route: (stale_hits.append(route.request.url), route.abort()))
+        pg.route("https://sm.config.inc/media/fresh-*", lambda route: route.fulfill(status=200, content_type="image/png", body=png()))
         pg.route("https://sm.config.inc/media/ok-*", lambda route: route.fulfill(status=200, content_type="image/png", body=png()))
         pg.route("https://sm.config.inc/media/missing.png", lambda route: route.fulfill(status=404, body="no"))
         evil_hits = []
@@ -364,6 +378,21 @@ try:
         check(pg.locator(f"#o-body .bbt[data-id='{dead}'] img").count() == 0 and pg.locator(f"#o-body .bbt[data-id='{dead}'] svg.bbt-ph").count() == 1,
               "a dead picture URL falls back to the placeholder")
         check(not evil_hits, f"a picture from a foreign host was never requested {evil_hits}")
+        # signed SM links run out: the page does not ask for an expired one, says why, and a link with time left still loads
+        stale = pg.locator(f"#o-body .bbt[data-id='{stale_id}']")
+        check(stale.locator("img").count() == 0 and stale.locator("svg.bbt-ph").count() == 1 and "bbt-expired" in (stale.get_attribute("class") or ""),
+              "expired link: placeholder, no picture element")
+        check("hết hạn" in (stale.get_attribute("title") or "") and "Đồng bộ lại kho trong SM" in (stale.get_attribute("title") or ""), "expired link: the tooltip says what to do")
+        check(not stale_hits, f"expired link: the picture was never requested {stale_hits}")
+        check(pg.evaluate("id => { const im = document.querySelector(`#o-body .bbt[data-id=\"${id}\"] img`); return !!im && im.naturalWidth > 0; }", fresh_id), "a link with time left still loads")
+        check(pg.locator("#o-imgtip").is_visible() and "1 ảnh ở trang này đã hết hạn" in pg.inner_text("#o-imgtip-text") and "Đồng bộ kho ngay" in pg.inner_text("#o-imgtip-text"),
+              f"one tip above the table explains it: {pg.inner_text('#o-imgtip-text')!r}")
+        pg.click("#o-imgtip-go")
+        pg.wait_for_selector("#view-auto:not([hidden])", timeout=8000)
+        check(pg.locator("#a-sync").is_visible() and "Ảnh của món do SM cấp có hạn" in pg.inner_text("#a-sync"), "the tip's button leads to the sync steps, which say pictures last about an hour")
+        check(pg.evaluate("document.activeElement && document.activeElement.id") == "sync-h", "the tip's button moves focus to the sync steps (its own view is hidden)")
+        pg.click(".tab[data-view=objects]")
+        pg.wait_for_function(f"document.querySelector('#o-body .bbt[data-id=\"{with_pic[0]}\"] img')", timeout=10000)
         pg.locator(f"#o-body .bbt[data-id='{with_pic[0]}']").click()
         pg.wait_for_selector("dialog.bbt-dlg[open]")
         link = pg.locator("dialog.bbt-dlg a").get_attribute("href")
@@ -393,6 +422,26 @@ try:
         pg.wait_for_selector(".toast.bad:has-text('Không kết nối được máy chủ')", timeout=8000)
         check(True, "a dropped connection says what to do, not 'Failed to fetch'")
         pg.unroute("**/api/used")
+
+        # --- reuse rule on the used form: the day the boxes were made, and an old day makes the object usable again
+        old_day = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 45 * 86400))
+        some = [o["id"] for o in json.load(urllib.request.urlopen(BASE + "/api/objects?status=free&per=2"))["items"]]
+        check(pg.locator("#u-since").get_attribute("type") == "date" and "để trống là hôm nay" in pg.inner_text("#used"), "reuse: the used form asks for the day the boxes were made")
+        pg.fill("#u-text", some[0]); pg.fill("#u-since", old_day); pg.click("#used button[type=submit]")
+        pg.wait_for_selector(".toast:has-text('Đã đánh dấu 1 món')", timeout=8000)
+        pg.wait_for_function("document.querySelector('#u-count').innerText.includes('đủ cũ để dùng lại')", timeout=8000)
+        check("1 món đã đủ cũ để dùng lại" in pg.inner_text("#u-count"), f"reuse: the list says the old one is usable again: {pg.inner_text('#u-count')!r}")
+        st_old = next(o["status"] for o in json.load(urllib.request.urlopen(BASE + f"/api/objects?q={some[0]}&per=5"))["items"] if o["id"] == some[0])
+        check(st_old == "free", "reuse: an ID used by boxes 45 days ago is still free")
+        pg.fill("#u-text", some[1]); pg.click("#used button[type=submit]")                       # no day: today
+        end, st_new = time.time() + 8, ""
+        while time.time() < end and st_new != "external":                                         # wait for the state itself (the first paste's toast may still be on screen)
+            time.sleep(0.2)
+            st_new = next(o["status"] for o in json.load(urllib.request.urlopen(BASE + f"/api/objects?q={some[1]}&per=5"))["items"] if o["id"] == some[1])
+        pg.wait_for_function("document.querySelector('#u-text').value === ''", timeout=8000)
+        check(st_new == "external" and pg.input_value("#u-since") == "", f"reuse: an ID used today is held, and the day field was cleared after the paste (status {st_new!r}, field {pg.input_value('#u-since')!r})")
+        for oid in some:
+            urllib.request.urlopen(urllib.request.Request(f"{BASE}/api/used/{oid}", method="DELETE"))       # leave the later checks as they were
 
         # --- the push, tried on the fake SM: the approved boxes become TaskBoxes there and show as pushed
         pg.click(".tab[data-view=auto]")

@@ -5,6 +5,8 @@ window.BBThumbs = (function () {
   const NS = "http://www.w3.org/2000/svg";
   const PX = { sm: 36, md: 64 };
   const failed = new Set();          // URLs that failed once: never requested again in this page session
+  let skew = 0;                      // server clock minus this browser's clock, in seconds: img_exp is a server time, a fast laptop clock must not blank the pictures
+  const stats = { expired: 0 };      // thumbnails left as a placeholder because their link ran out (the page shows one tip for them)
   let dlg = null, opener = null;
 
   function h(tag, attrs, ...kids) {  // same shape as the helper in app.js
@@ -40,13 +42,15 @@ window.BBThumbs = (function () {
     const src = typeof obj.img === "string" ? obj.img.trim() : "";
     const el = h("span", { "data-id": id });
     let live = false;
-    const none = () => {             // no usable picture: same size, not a button, id as tooltip
+    const none = (why) => {          // no usable picture: same size, not a button, id as tooltip
       live = false;
-      el.className = "bbt bbt-" + size;
-      el.title = id;
+      el.className = "bbt bbt-" + size + (why === "expired" ? " bbt-expired" : "");
+      el.title = why === "expired" ? id + " · Ảnh hết hạn. Đồng bộ lại kho trong SM để xem ảnh." : id;
       for (const a of ["role", "tabindex", "aria-label", "aria-haspopup"]) el.removeAttribute(a);
       el.replaceChildren(placeholder());
     };
+    // The server works out when a signed SM link stops working (obj.img_exp, epoch seconds). Past that, the picture is not even asked for.
+    if (src && typeof obj.img_exp === "number" && Date.now() / 1000 + skew >= obj.img_exp) { stats.expired += 1; none("expired"); return el; }
     if (!src || failed.has(src)) { none(); return el; }
     const bad = () => { failed.add(src); none(); };
     const img = h("img", {
@@ -106,5 +110,7 @@ window.BBThumbs = (function () {
     dlg.showModal();
   }
 
-  return { thumb };
+  // The server sends its own time with every answer that carries img_exp; call this before drawing thumbnails from that answer.
+  const setServerNow = (n) => { if (typeof n === "number" && isFinite(n)) skew = n - Date.now() / 1000; };
+  return { thumb, setServerNow, expiredCount: () => stats.expired, resetExpired: () => { stats.expired = 0; } };
 })();

@@ -1,6 +1,6 @@
 const fs=require('fs'); const vm=require('vm');
 const ctx={console,String,Number,Math,Object,JSON,parseInt,RegExp}; vm.createContext(ctx);
-vm.runInContext(fs.readFileSync('integrations/google_sheets_apps_script.gs','utf8')+'\nthis.buildPlan_=buildPlan_;this.describe_=describe_;this.CONFIG=CONFIG;this.sectionOf_=sectionOf_;this.colShift_=colShift_;this.collectUsedIds_=collectUsedIds_;this.usedIdOf_=usedIdOf_;this.moduleTabNames_=moduleTabNames_;this.usedIdsHtml_=usedIdsHtml_;this.escapeHtml_=escapeHtml_;this.showUsedIds=showUsedIds;this.onOpen=onOpen;',ctx);
+vm.runInContext(fs.readFileSync('integrations/google_sheets_apps_script.gs','utf8')+'\nthis.buildPlan_=buildPlan_;this.describe_=describe_;this.CONFIG=CONFIG;this.sectionOf_=sectionOf_;this.colShift_=colShift_;this.collectUsedIds_=collectUsedIds_;this.usedIdOf_=usedIdOf_;this.moduleTabNames_=moduleTabNames_;this.usedIdsHtml_=usedIdsHtml_;this.escapeHtml_=escapeHtml_;this.showUsedIds=showUsedIds;this.onOpen=onOpen;this.readRange_=readRange_;this.blockStarts_=blockStarts_;',ctx);
 
 // code = the SM section code the box carries (taskbox.module); tab = the sheet tab (builder.module)
 const mk=(tab,label,stage,ids,qty=1,code)=>({module:code||tab,stage,contents:ids.map(i=>({object_id:i,quantity:qty})),builder:{module:tab,label}});
@@ -74,6 +74,33 @@ if(p.writes[0].idRange!=='S4:S15'||p.writes[0].qtyRange!=='V4:V15') fail('12-obj
 if(p.writes[0].ids.length!==12||p.writes[0].qtys.length!==12) fail('12 rows written');
 // but a stray cell inside the 12 rows still blocks the write
 sheet.M8['S10']='123456'; p=ctx.buildPlan_([mk('M8','Box A1','A1',ids12)],read); if(p.writes.length) fail('stray cell inside the block');
+// sections that are not 25 rows apart are found by their titles (the real workbook: M8 and M17 are 26 apart, M5 goes 25 then 23)
+const lay=(tab,rows)=>{ sheet[tab]={}; rows.forEach(r=>{ sheet[tab]['D'+r]='Box B2 - 21 Objects'; sheet[tab]['K'+r]='Box B3 - 21 Objects'; sheet[tab]['R'+r]='Box A1 - 21 Objects'; }); };
+lay('M8',[2,28,54,80]);
+p=ctx.buildPlan_([mk('M8','Box B2','B2',ids21,1,'M8-03'),mk('M8','Box A1','A1',ids21,1,'M8-04'),mk('M8','Box B3','B3',ids21,1,'M8-02')],read);
+if(p.writes.length!==3||p.skipped.length) fail('26-row spacing '+JSON.stringify(p.skipped));
+const w26=Object.fromEntries(p.writes.map(x=>[x.name,x]));
+if(w26['M8 / Box B2 (section 3)'].idRange!=='E56:E76'||w26['M8 / Box B2 (section 3)'].qtyRange!=='H56:H76') fail('26-row section 3 '+JSON.stringify(Object.keys(w26)));
+if(w26['M8 / Box A1 (section 4)'].idRange!=='S82:S102'||w26['M8 / Box B3 (section 2)'].idRange!=='L30:L50') fail('26-row sections 4 and 2');
+lay('M5',[2,27,52,77,102,125,148]);
+p=ctx.buildPlan_([mk('M5','Box B2','B2',ids21,1,'M5-06'),mk('M5','Box A1','A1',ids21,1,'M5-07'),mk('M5','Box B3','B3',ids21,1,'M5-08')],read);
+const w5=Object.fromEntries(p.writes.map(x=>[x.name,x]));
+if(w5['M5 / Box B2 (section 6)']?.idRange!=='E127:E147'||w5['M5 / Box A1 (section 7)']?.idRange!=='S150:S170') fail('25 then 23 spacing '+JSON.stringify(p));
+if(p.skipped.length!==1||!/không thấy khối "Box B3" của section 8 \(tab chỉ có 7 khối\)/.test(p.skipped[0])) fail('section 8 does not exist: '+p.skipped.join('|'));
+// the 23-row blocks of M5 are tight: 21 rows fit, the next title is right under them
+// a note that merely mentions the box in the title column is not a block title
+lay('M8',[2]); sheet.M8['D40']='xem Box B2 ở trên'; sheet.M8['D41']='   box b2 - 21 objects';
+p=ctx.buildPlan_([mk('M8','Box B2','B2',ids21,1,'M8-02')],read);
+if(p.writes.length!==1||p.writes[0].idRange!=='E43:E63') fail('only a title that starts with the box name counts (spaces and case ignored) '+JSON.stringify(p));
+// a box that would run over the next block's title is refused, one that fits is written
+lay('M8',[2,24]);
+p=ctx.buildPlan_([mk('M8','Box B2','B2',ids21,1,'M8-01'),mk('M8','Box B3','B3',ids21.slice(0,20),1,'M8-01')],read);
+if(p.writes.length!==1||p.writes[0].name!=='M8 / Box B3'||p.writes[0].idRange!=='L4:L23') fail('overrun guard '+JSON.stringify(p));
+if(p.skipped.length!==1||!/không vừa khối này/.test(p.skipped[0])) fail('overrun message '+p.skipped.join('|'));
+// two stages on one tab are found independently: a missing B3 title does not hide B2 or A1
+lay('M8',[2,27]); delete sheet.M8['K27'];
+p=ctx.buildPlan_([mk('M8','Box B2','B2',ids21,1,'M8-02'),mk('M8','Box B3','B3',ids21,1,'M8-02'),mk('M8','Box A1','A1',ids21,1,'M8-02')],read);
+if(p.writes.length!==2||p.skipped.length!==1||!/Box B3/.test(p.skipped[0])) fail('independent stages '+JSON.stringify(p));
 console.log('apps script plan tests OK');
 
 // ====================================================================== used Object IDs (read-only helper)
@@ -130,25 +157,20 @@ sheet.M5={}; for(let s=1;s<=70;s++){ title('M5',s,'B2'); put('M5',s,'B2',0,Strin
 // ---- collectUsedIds_ on several tabs
 calls=[];
 let r=ctx.collectUsedIds_(['M8','M17','M3','M4','M99'],safeRead);
-eq(r.ids,['004700','004701','004703','004720','004800','004900','005000','005001','005100','005101','012345','017000','017001'],'ids sorted, unique, padded');
-eq(r.perTab,{M8:11,M17:3,M3:0,M4:0},'perTab counts distinct ids per tab (004700 counted on both tabs, once in ids)');
+eq(r.ids,['004700','004701','004703','004720','004800','004900','005000','005001','005100','005101','005102','005300','012345','017000','017001'],'ids sorted, unique, padded (a block title after a gap still counts)');
+eq(r.perTab,{M8:13,M17:3,M3:0,M4:0},'perTab counts distinct ids per tab (004700 counted on both tabs, once in ids)');
 eq(r.tabsMissing,['M99'],'a tab that does not exist is reported');
-['4702','1234567','999999','005002','005102','005200','005300','777777','123456','424242','N/A'].forEach(x=>{
+['4702','1234567','999999','005002','005200','777777','123456','424242','N/A'].forEach(x=>{
   if(r.ids.some(i=>i.indexOf(x)>=0||i===x)) fail('must not collect '+x); });
 if(r.ids.some(i=>!/^\d{6}$/.test(i))) fail('every id is 6 digits');
-// read-only proof for the pure function: only the injected read is used, and only for single cells or one 21-row column
-if(!calls.length||calls.some(c=>!/^[A-Za-z0-9]+![A-Z]+\d+(:[A-Z]+\d+)?$/.test(c))) fail('odd read calls '+calls.join(' '));
-calls.filter(c=>c.indexOf(':')>0).forEach(c=>{ const m=c.match(/!([A-Z]+)(\d+):([A-Z]+)(\d+)$/); if(m[1]!==m[3]||(+m[4])-(+m[2])!==20) fail('id read must be 21 rows in one column: '+c); });
-// the title is read before the ids of that section, one column left of the id column
-if(calls.indexOf('M8!D2')<0||calls.indexOf('M8!K2')<0||calls.indexOf('M8!R2')<0||calls.indexOf('M8!E4:E24')<0||calls.indexOf('M8!S54:S74')<0) fail('title / id ranges '+calls.filter(c=>c.indexOf('M8')===0).join(' '));
-// B3 stops at section 2 (no title at K27): section 3's B3 title (K52) and ids (L54:L74) and everything after are never read
-if(calls.indexOf('M8!K27')<0) fail('B3 title of section 2 should have been checked');
-if(calls.some(c=>/^M8!(K52|L54)/.test(c))) fail('B3 walk must stop at the first missing title');
-// B2 stops at section 4 (no title at D77): the title after the gap (D102) is never reached
-if(calls.indexOf('M8!D77')<0) fail('B2 title of section 4 should have been checked');
-if(calls.some(c=>/^M8!(D102|E104)/.test(c))) fail('B2 walk must stop at the first missing title');
-// a tab with no titles: only the three first-section title cells are read, no ids
-if(calls.filter(c=>c.indexOf('M3!')===0).join(' ')!=='M3!D2 M3!K2 M3!R2') fail('tab without titles: '+calls.filter(c=>c.indexOf('M3!')===0).join(' '));
+// read-only proof for the pure function: only the injected read is used, and only for whole columns starting at row 1
+if(!calls.length||calls.some(c=>!/^[A-Za-z0-9]+![A-Z]+1:[A-Z]+\d+$/.test(c))) fail('odd read calls '+calls.join(' '));
+calls.forEach(c=>{ const m=c.match(/!([A-Z]+)1:([A-Z]+)(\d+)$/); if(m[1]!==m[2]||+m[3]!==ctx.CONFIG.SCAN_ROWS) fail('a read must be one whole column of SCAN_ROWS rows: '+c); });
+// per tab and stage: the title column once, the id column once when the stage has a block on the tab
+const sc=ctx.CONFIG.SCAN_ROWS, m8=calls.filter(c=>c.indexOf('M8!')===0);
+eq(m8,['D','E','K','L','R','S'].map(c=>'M8!'+c+'1:'+c+sc),'M8 reads: 3 title columns and 3 id columns, once each, in stage order');
+// a tab with no titles: only the three title columns are read, no ids
+eq(calls.filter(c=>c.indexOf('M3!')===0),['D','K','R'].map(c=>'M3!'+c+'1:'+c+sc),'tab without titles reads only its title columns');
 // a missing tab costs one read
 if(calls.filter(c=>c.indexOf('M99!')===0).length!==1) fail('missing tab must stop at the first read');
 
@@ -156,8 +178,7 @@ if(calls.filter(c=>c.indexOf('M99!')===0).length!==1) fail('missing tab must sto
 calls=[]; r=ctx.collectUsedIds_(['M5'],safeRead);
 eq(r.perTab,{M5:60},'cap: 60 sections'); eq(r.ids.length,60,'cap: 60 ids'); eq(r.ids[0],'100001','cap first'); eq(r.ids[59],'100060','cap last');
 if(r.ids.indexOf('100061')>=0) fail('section 61 must not be read');
-if(calls.indexOf('M5!D1477')<0||calls.indexOf('M5!E1479:E1499')<0) fail('section 60 should be read (D1477, E1479:E1499)');
-if(calls.some(c=>/^M5!(D1502|E1504)/.test(c))) fail('section 61 must not even be looked at: '+calls.filter(c=>/^M5!(D15|E15)/.test(c)).join(' '));
+// the 61st and later sections are not read even though their titles are on the tab (the scan reaches section 64)
 
 // ---- edge cases of the pure function
 eq(ctx.collectUsedIds_([],safeRead),{ids:[],perTab:{},tabsMissing:[]},'no tabs');
@@ -180,7 +201,7 @@ title('m3',1,'B2'); put('m3',1,'B2',0,'999991');
 sheet.M2={}; // module tab with no titles
 let opened=[], touched=[];
 const mkRange=(tab,a1)=>guard('range',{getValues:()=>{ touched.push(tab); return read(tab,a1); }});
-const mkSheet=(tab)=>guard('sheet',{getName:()=>tab,getRange:(a1)=>mkRange(tab,a1)});
+const mkSheet=(tab)=>guard('sheet',{getName:()=>tab,getMaxRows:()=>2000,getRange:(a1)=>mkRange(tab,a1)});
 const tabsOrder=['M8','REF','M17','M2','Sheet1','m3','Mx','M'];
 const fakeSs=guard('spreadsheet',{getSheets:()=>tabsOrder.map(mkSheet),getSheetByName:(n)=>sheet[n]?mkSheet(n):null});
 let menu=null;
@@ -223,6 +244,16 @@ if(h.indexOf('&lt;i&gt;M9&lt;/i&gt;')<0||h.indexOf('M&#39;1&amp;2')<0) fail('tab
 const tags=(h.match(/<\/?[a-zA-Z][^>]*>/g)||[]).map(t=>t.replace(/^<\/?([a-zA-Z]+).*$/,'$1'));
 if(tags.some(t=>['div','p','textarea','button'].indexOf(t)<0)) fail('unexpected tag: '+tags.join(','));
 eq(ctx.escapeHtml_('<&>"\''),'&lt;&amp;&gt;&quot;&#39;','escapeHtml_');
+
+// ---- readRange_ never asks for rows past the end of the grid (that would throw in Google Sheets)
+{ const asked=[]; const mkGrid=(maxRows)=>({getMaxRows:()=>maxRows,getRange:(a1)=>({getValues:()=>{ asked.push(a1); return [[a1]]; }})});
+  ctx.SpreadsheetApp={getActive:()=>({getSheetByName:(n)=>n==='T'?mkGrid(249):null})};
+  eq(ctx.readRange_('T','D1:D1600'),[['D1:D249']],'clipped to the last row'); eq(ctx.readRange_('T','D1:D100'),[['D1:D100']],'inside the grid: as asked');
+  eq(ctx.readRange_('T','D250:D300'),[],'entirely past the end: nothing'); eq(ctx.readRange_('T','E7'),[['E7']],'a single cell is passed through');
+  eq(ctx.readRange_('NOPE','D1:D10'),null,'no tab'); eq(asked,['D1:D249','D1:D100','E7'],'only reads inside the grid reached Sheets'); }
+// blockStarts_ on its own
+reset(); sheet.M1={}; [2,27,52].forEach(r=>{ sheet.M1['D'+r]='Box B2 - 21 Objects'; });
+eq(ctx.blockStarts_('M1','B2',read),[4,29,54],'block starts are the rows two under the titles'); eq(ctx.blockStarts_('M1','A1',read),[],'no A1 titles'); eq(ctx.blockStarts_('M99','B2',read),null,'no tab');
 
 // ---- static proof: the read-only helper never even mentions a write method
 ['collectUsedIds_','usedIdOf_','moduleTabNames_','usedIdsHtml_','escapeHtml_','showUsedIds'].forEach(n=>{

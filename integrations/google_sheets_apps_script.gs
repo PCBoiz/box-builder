@@ -24,24 +24,24 @@
 const CONFIG = {
   APP_URL: 'https://box-builder-guwc.onrender.com',   // no trailing slash
   ACCESS_CODE: '',                                     // leave empty if the app has no access code
-  // Where each box stage lives on the tab. firstRow..firstRow+count-1 in idCol / qtyCol.
-  // Read from the sheet itself (tab M8, row 2 block titles, row 3 sub-headers, data rows 4-24):
+  // Where each box stage lives on the tab: the column of the Object ID and of the quantity (SL), checked against the real workbook
+  // (every module tab: block title in row 2 of each section, sub-headers in row 3, data from row 4):
   //   Box B2 = columns C:I   (Object ID in E, SL in H)
   //   Box B3 = columns J:P   (Object ID in L, SL in O)
   //   Box A1 = columns Q:W   (Object ID in S, SL in V)
-  // The same layout holds on M8 and M17. Add other stages here only when you know their columns.
+  // Add other stages here only when you know their columns.
   STAGES: {
-    B2: { idCol: 'E', qtyCol: 'H', firstRow: 4 },
-    B3: { idCol: 'L', qtyCol: 'O', firstRow: 4 },
-    A1: { idCol: 'S', qtyCol: 'V', firstRow: 4 },
+    B2: { idCol: 'E', qtyCol: 'H' },
+    B3: { idCol: 'L', qtyCol: 'O' },
+    A1: { idCol: 'S', qtyCol: 'V' },
   },
-  // A tab holds several sections one under another (M8-01, M8-02, ...), each 25 rows tall, with its own B2, B3 and A1 blocks.
-  // The box's section code (for example M8-02) picks the section: rows start at firstRow + SECTION_STRIDE * (n - 1).
-  // Before writing, the script also checks that the block title ("Box B2 - 21 Objects") really sits above those rows, so a
-  // tab with a different spacing is skipped instead of written to the wrong place.
-  SECTION_STRIDE: 25,
+  // A tab holds several sections one under another (M8-01, M8-02, ...), each with its own B2, B3 and A1 blocks. The spacing is NOT
+  // the same on every tab (25 rows on most, 26 on M8 and M17, 23 after the fifth section of M5), so a section is found by counting
+  // the block titles ("Box B2 - 21 Objects") down the tab: the box's section code (for example M8-02) picks the 2nd title of its stage,
+  // and its rows start two rows under that title. A section whose title is not there is skipped and reported, never guessed.
+  SCAN_ROWS: 1600,                                     // how far down a tab the block titles are looked for (60 sections of 26 rows)
   MAX_QTY: 3,                                          // same cap as the earlier Make scenario
-  // Used only by the read-only "used IDs" helper: a block has 21 data rows, and a tab is walked for at most 60 sections.
+  // Used only by the read-only "used IDs" helper: a block has 21 data rows, and at most 60 sections of a tab are read.
   BLOCK_ROWS: 21,
   MAX_SECTIONS: 60,
 };
@@ -114,18 +114,20 @@ function buildPlan_(boxes, read) {
     const n = b.contents.length;
     const sec = sectionOf_(b.module, tab);               // b.module is the SM section code, e.g. M8-02
     if (sec === null) { plan.skipped.push(name + ': mã section "' + b.module + '" không khớp tab ' + tab); return; }
-    const first = cfg.firstRow + CONFIG.SECTION_STRIDE * (sec - 1), last = first + n - 1;
     const label = name + (sec > 1 ? ' (section ' + sec + ')' : '');
+    const starts = blockStarts_(tab, stage, read);
+    if (starts === null) { plan.skipped.push(name + ': không có tab "' + tab + '"'); return; }
+    if (sec > starts.length) {
+      plan.skipped.push(label + ': không thấy khối "Box ' + stage + '" của section ' + sec + ' (tab chỉ có ' + starts.length + ' khối) nên không ghi'); return;
+    }
+    const first = starts[sec - 1], last = first + n - 1;
+    if (starts[sec] !== undefined && last >= starts[sec] - 2) {          // the next block's title would be overwritten
+      plan.skipped.push(label + ': ' + n + ' món không vừa khối này (khối sau bắt đầu ở dòng ' + (starts[sec] - 2) + ') nên không ghi'); return;
+    }
     const idRange = cfg.idCol + first + ':' + cfg.idCol + last;
     const qtyRange = cfg.qtyCol + first + ':' + cfg.qtyCol + last;
     const ids = read(tab, idRange), qtys = read(tab, qtyRange);
     if (!ids || !qtys) { plan.skipped.push(name + ': không có tab "' + tab + '"'); return; }
-    const titleCell = colShift_(cfg.idCol, -1) + (first - 2);
-    const title = read(tab, titleCell);
-    const titleText = title && title[0] ? String(title[0][0]).toLowerCase() : '';
-    if (titleText.indexOf('box ' + String(stage).toLowerCase()) < 0) {
-      plan.skipped.push(label + ': không thấy khối "Box ' + stage + '" ở ' + titleCell + ' nên không ghi'); return;
-    }
     const flat = function (v) { return v.map(function (r) { return String(r[0]).trim(); }); };
     const curIds = flat(ids), curQty = flat(qtys);
     const want = b.contents.map(function (c) { return pad6_(c.object_id); });
@@ -143,6 +145,25 @@ function buildPlan_(boxes, read) {
     }
   });
   return plan;
+}
+
+/**
+ * First data row of every block of one stage on a tab, top to bottom: the row two under each block title ("Box B2 - 21 Objects"),
+ * looked for in the column left of the Object ID column. Counting titles (not a fixed row step) is what makes tabs with different
+ * spacing work. Returns null when the tab does not exist, [] when it has no title for the stage.
+ */
+function blockStarts_(tab, stage, read) {
+  const cfg = CONFIG.STAGES[stage];
+  const col = colShift_(cfg.idCol, -1);
+  const rows = read(tab, col + '1:' + col + CONFIG.SCAN_ROWS);
+  if (rows === null || rows === undefined) return null;
+  const want = 'box ' + String(stage).toLowerCase();
+  const starts = [];
+  rows.forEach(function (r, i) {
+    const text = r && r[0] !== null && r[0] !== undefined ? String(r[0]).trim().toLowerCase() : '';
+    if (text.indexOf(want) === 0) starts.push(i + 3);                  // row index i+1 is the title, the data starts two rows lower
+  });
+  return starts.slice(0, CONFIG.MAX_SECTIONS);
 }
 
 /** 'M8-02' on tab 'M8' -> 2. No code, or the code equals the tab -> 1. A code for another tab -> null (never guess). */
@@ -169,7 +190,13 @@ function pad6_(x) { x = String(x).trim(); return /^\d+$/.test(x) ? ('000000' + x
 
 function readRange_(tab, a1) {
   const sh = SpreadsheetApp.getActive().getSheetByName(tab);
-  return sh ? sh.getRange(a1).getValues() : null;
+  if (!sh) return null;
+  const m = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(a1);
+  const maxRows = sh.getMaxRows();
+  if (m && Number(m[4]) > maxRows) {                       // a range past the end of the grid would throw: read only what exists
+    return Number(m[2]) > maxRows ? [] : sh.getRange(m[1] + m[2] + ':' + m[3] + maxRows).getValues();
+  }
+  return sh.getRange(a1).getValues();
 }
 
 function describe_(plan) {
@@ -183,9 +210,9 @@ function describe_(plan) {
 // ------------------------------------------------------------------ used Object IDs (read only, never writes)
 /**
  * Every Object ID already in the workbook, so the team can paste them into the app's "Đã dùng trong bảng tính" box.
- * For each tab and each stage in CONFIG.STAGES it walks the sections (n = 1, 2, ...): a section exists only when the
- * block title ("Box B2 - 21 Objects") sits where it should, and the walk of that stage stops at the first section without
- * one (at most CONFIG.MAX_SECTIONS). In an existing section it reads the 21 ID cells and keeps the 5 or 6 digit ones.
+ * For each tab and each stage in CONFIG.STAGES it finds the blocks by their titles ("Box B2 - 21 Objects", see blockStarts_;
+ * at most CONFIG.MAX_SECTIONS per stage), reads the Object ID column once, and in each block keeps the 5 or 6 digit values of
+ * the 21 ID cells. Two reads per tab and stage, so a whole workbook takes about a hundred reads.
  * `read(tab, a1)` returns a 2-D array, or null when the tab does not exist; injected so it can be tested.
  * Returns { ids: sorted unique 6-digit strings, perTab: { tab: number of distinct IDs on that tab }, tabsMissing: [tabs not found] }.
  */
@@ -198,19 +225,16 @@ function collectUsedIds_(tabNames, read) {
     Object.keys(CONFIG.STAGES).forEach(function (stage) {
       if (!exists) return;
       const cfg = CONFIG.STAGES[stage];
-      const want = 'box ' + String(stage).toLowerCase();
-      for (let n = 1; n <= CONFIG.MAX_SECTIONS; n++) {
-        const first = cfg.firstRow + CONFIG.SECTION_STRIDE * (n - 1);
-        const title = read(tab, colShift_(cfg.idCol, -1) + (first - 2));
-        if (title === null || title === undefined) { exists = false; return; }       // no such tab
-        const text = title[0] && title[0][0] !== null && title[0][0] !== undefined ? String(title[0][0]).toLowerCase() : '';
-        if (text.indexOf(want) < 0) return;                                          // no title: this stage ends here
-        const cells = read(tab, cfg.idCol + first + ':' + cfg.idCol + (first + CONFIG.BLOCK_ROWS - 1)) || [];
-        cells.forEach(function (row) {
-          const id = usedIdOf_(row && row[0]);
+      const starts = blockStarts_(tab, stage, read);
+      if (starts === null) { exists = false; return; }                               // no such tab
+      if (!starts.length) return;                                                    // no block of this stage on the tab
+      const column = read(tab, cfg.idCol + '1:' + cfg.idCol + CONFIG.SCAN_ROWS) || [];
+      starts.forEach(function (first) {
+        for (let i = first - 1; i < first - 1 + CONFIG.BLOCK_ROWS && i < column.length; i++) {
+          const id = usedIdOf_(column[i] && column[i][0]);
           if (id) { own[id] = true; all[id] = true; }
-        });
-      }
+        }
+      });
     });
     if (exists) perTab[tab] = Object.keys(own).length; else tabsMissing.push(tab);
   });

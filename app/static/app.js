@@ -163,8 +163,12 @@ function renderUsed(d) {
   $("#u-count").textContent = `${fmt(d.used.length)} món đã đánh dấu là đã dùng`;
   const ul = $("#u-list");
   ul.replaceChildren(...d.used.slice(0, 400).map((u) =>
-    h("li", {}, h("button", { type: "button", title: (u.note ? u.note + ". " : "") + "Bấm để trả món này về kho", "aria-label": `Trả ${u.id} về kho`,
+    h("li", { class: u.reusable ? "reusable" : "" }, h("button", { type: "button",
+      title: [u.note, u.added_at ? "Hộp tạo ngày " + new Date(u.added_at * 1000).toLocaleDateString("vi-VN") : "Chưa rõ ngày tạo hộp, nên luôn được giữ", u.reusable ? "Đã đủ cũ, món này dùng lại được" : "", "Bấm để trả món này về kho"].filter(Boolean).join(". "),
+      "aria-label": `Trả ${u.id} về kho${u.reusable ? " (đã đủ cũ, dùng lại được)" : ""}`,
       onclick: () => api("/api/used/" + u.id, { method: "DELETE" }).then(() => poll(true)).catch(fail) }, u.id, icon("x")))));
+  const free = d.used.filter((u) => u.reusable).length;
+  $("#u-count").textContent += free ? `, trong đó ${fmt(free)} món đã đủ cũ để dùng lại` : "";
 }
 
 const colorOf = (b) => PALETTE[(b.id - 1) % PALETTE.length];
@@ -398,6 +402,7 @@ async function poll(force) {
     if (d.unchanged) return;
     rev = d.rev;
     data = d;
+    BBThumbs.setServerNow(d.now);                      // picture end times are server times
     renderKho();
     renderLedger(d);
     renderUsed(d);
@@ -462,16 +467,24 @@ function setupUsed() {
     const text = $("#u-text").value;
     if (!text.trim()) return toast("Hãy dán ít nhất một Object ID.", "bad");
     try {
-      const r = await api("/api/used", { method: "POST", body: { text, note: $("#u-note").value } });
+      const r = await api("/api/used", { method: "POST", body: { text, note: $("#u-note").value, since: $("#u-since").value } });
       const bits = [`Đã đánh dấu ${fmt(r.added)} món là đã dùng.`];
+      if (r.refreshed) bits.push(`${fmt(r.refreshed)} món đã có, được ghi ngày mới.`);
+      if (r.kept) bits.push(`${fmt(r.kept)} món đã có trong danh sách, giữ nguyên ngày cũ. Muốn đổi, chọn ngày ở ô ngày.`);
+      if (r.reusable_on && (r.added || r.refreshed)) bits.push(`Dùng lại được từ ${new Date(r.reusable_on + "T12:00:00Z").toLocaleDateString("vi-VN")}.`);
       if (r.already_in_a_box.length) bits.push(`${r.already_in_a_box.length} món đã nằm trong một hộp ở đây.`);
       if (r.not_in_catalog.length) bits.push(`${r.not_in_catalog.length} món không có trong kho.`);
       if (r.unreadable.length) bits.push(`Không đọc được: ${r.unreadable.slice(0, 4).join(", ")}.`);
       toast(bits.join(" "));
       $("#u-text").value = "";
+      $("#u-since").value = "";                           // the day is for this paste only: a stale day must never free the next batch
       await poll(true);
-    } catch (err) { fail(err); }
+    } catch (err) {
+      fail(err);
+      if (/ngày|năm/i.test(err.message || "")) { $("#u-since").setAttribute("aria-invalid", "true"); $("#u-since").focus(); }
+    }
   });
+  $("#u-since").addEventListener("input", () => $("#u-since").removeAttribute("aria-invalid"));
 }
 
 /* One category picker, used by the new-box form and the batch form. Returns a function that redraws it. */
@@ -543,6 +556,7 @@ async function loadObjects(withCoverage) {
     const res = await api("/api/objects?" + qs);
     if (my !== ov.seq) return;                           // a newer request is already on its way
     ov.res = res;
+    BBThumbs.setServerNow(res.now);
   } catch (e) { return fail(e); }
   if (ov.page > ov.res.pages) { ov.page = ov.res.pages; return loadObjects(false); }
   if (withCoverage) { renderCoverage(); fillCategories(); }
@@ -581,8 +595,15 @@ function renderObjects() {
     h("button", { type: "button", class: "fchip" + (ov.status === k ? " on" : ""), "aria-pressed": String(ov.status === k),
       onclick: () => { ov.status = k; ov.page = 1; loadObjects(false); } }, label, h("small", {}, fmt(n)))));
 
+  BBThumbs.resetExpired();
   $("#o-body").replaceChildren(...(r.items.length ? r.items.map(objRow)
     : [h("tr", {}, h("td", { colspan: 8, class: "none" }, "Không có món nào khớp bộ lọc này."))]));
+  const gone = BBThumbs.expiredCount();            // pictures whose SM link ran out (SM lets them be seen for about an hour)
+  $("#o-imgtip").hidden = !gone;
+  if (gone) {                                         // write the text only when it changed, so a screen reader is not told again on every redraw
+    const text = `${fmt(gone)} ảnh ở trang này đã hết hạn, vì SM chỉ cho xem ảnh khoảng một giờ. Mở SM và bấm "Đồng bộ kho ngay" để có ảnh mới.`;
+    if ($("#o-imgtip-text").textContent !== text) $("#o-imgtip-text").textContent = text;
+  }
   const freeHere = r.items.filter((o) => o.status === "free");
   const all = $("#o-all");
   all.disabled = !freeHere.length;
@@ -703,6 +724,15 @@ function renderSmBoxes() {
     const min = Math.max(0, Math.round((Date.now() / 1000 - r.synced_at) / 60));
     sum.textContent = `Đã đọc ${min < 1 ? "vừa xong" : min < 60 ? min + " phút trước" : Math.round(min / 60) + " giờ trước"}: ${fmt(r.boxes)} hộp đang dùng trong SM, giữ ${fmt(r.objects_held)} món.`;
   }
+  const ru = r.reuse;
+  const reuseEl = $("#smb-reuse");
+  if (ru && r.synced_at) {
+    reuseEl.hidden = false;
+    reuseEl.textContent = !ru.on
+      ? "Đang tắt việc dùng lại món của hộp cũ, nên mọi món trong hộp SM đều được giữ."
+      : `Hộp SM tạo cách đây hơn ${ru.days} ngày không còn giữ món (trong SM chúng vẫn nằm ở hộp cũ): ${fmt(ru.old_boxes)} hộp, nhờ đó ${fmt(ru.freed_objects)} món được tính là trống để làm hộp mới.` +
+        (ru.undated_boxes ? ` ${fmt(ru.undated_boxes)} hộp không đọc được ngày tạo nên vẫn giữ món.` : "");
+  } else reuseEl.hidden = true;
   const fill = (listId, headId, rows) => {
     $(listId).replaceChildren(...rows);
     $(listId).hidden = $(headId).hidden = rows.length === 0;
@@ -757,7 +787,7 @@ function renderAuto() {
     h("li", {}, h("time", {}, new Date(e.at * 1000).toLocaleString("vi-VN")), e.msg)) : [h("li", { class: "none" }, "Chưa có hoạt động nào.")]));
 }
 
-const CFG_LABEL = { stale_hours: "Cảnh báo khi kho cũ hơn (giờ)", low_stock: "Cảnh báo khi một nhóm còn dưới (món)" };
+const CFG_LABEL = { stale_hours: "Cảnh báo khi kho cũ hơn (giờ)", low_stock: "Cảnh báo khi một nhóm còn dưới (món)", days: "Dùng lại món của hộp tạo cách đây hơn (ngày)" };
 
 function switchRow(sw) {
   const id = "sw-" + sw.key;
@@ -782,7 +812,7 @@ function switchRow(sw) {
     return h("label", { class: "cfg" }, CFG_LABEL[k] || k,
       h("input", { type: "number", min: lo, max: hi, value: v, onchange: async (e) => {
         try { await api("/api/automations/" + sw.key, { method: "PUT", body: { config: { [k]: parseInt(e.target.value, 10) } } }); toast("Đã lưu."); }
-        catch (err) { fail(err); }
+        catch (err) { e.target.value = v; fail(err); }                       // refused: show the saved number again
         await refreshAuto();
       } }));
   });
@@ -862,6 +892,16 @@ function showFakeResults(r, okText) {
     h("td", {}, h("span", { class: "pill " + (x.ok ? "st-free" : "st-external") }, x.ok ? okText : "Không làm được")),
     h("td", {}, x.ok ? (x.sm_box_id ? `Mã trong SM giả: ${x.sm_box_id}` : `Trạng thái: ${x.status_label}`) : x.error))));
   $("#smp-wrap").hidden = rows.length === 0;
+}
+
+function setupImgTip() {
+  $("#o-imgtip-go").addEventListener("click", () => {
+    showView("auto");
+    const head = $("#sync-h");                         // the button hides with its view: put focus and the screen where the steps are
+    head.tabIndex = -1;
+    head.focus();
+    head.scrollIntoView({ block: "start" });
+  });
 }
 
 function setupSyncInstall() {
@@ -1153,7 +1193,7 @@ async function init() {
   chip.hidden = false;
   chip.textContent = cfg.llm === "mock" ? "Chọn thử, chưa nối mô hình" : `DeepSeek ${cfg.model}`;
   chip.classList.toggle("warn", cfg.llm === "mock");
-  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall(); setupCsvImport();
+  setupGate(); setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall(); setupCsvImport(); setupImgTip();
   updateExport();
   await poll(true);
   if (!$("#gate").hidden) await new Promise((r) => { const t = setInterval(() => { if ($("#gate").hidden) { clearInterval(t); r(); } }, 300); });
@@ -1163,6 +1203,7 @@ async function init() {
   schedule();
   setInterval(renderKho, 30000);
   setInterval(refreshAuto, 60000);
+  setInterval(() => { if (!document.hidden) poll(true); }, 5 * 60 * 1000);       // numbers that depend on the clock (days since a box, picture links) catch up within minutes
   document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(true); });
 }
 init();

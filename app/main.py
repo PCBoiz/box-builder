@@ -79,6 +79,7 @@ class AddItem(BaseModel):
 class UsedIds(BaseModel):
     text: str
     note: str = ""
+    since: str = Field(default="", max_length=10)      # the day the boxes that used these IDs were made, year-month-day; empty = today
 
 
 class PlanBody(BaseModel):
@@ -123,6 +124,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     engine = llm or picker.make_llm(s)
     cat.sectors = s.sector_list
     cat.image_hosts = images.hosts_from_env(s.image_hosts)
+    cat.image_ttl_s = s.image_ttl_minutes * 60
     boot = db.connect(s.db_path)                  # a live snapshot saved earlier survives restarts (it lives in the database)
     try:
         snap = service.load_snapshot(boot)
@@ -321,7 +323,8 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     def search(q: str, c=Depends(conn_dep)):
         taken = service.taken_ids(c)
         return [{"id": i.id, "name": i.name, "vi": i.vi, "category": i.category, "stock": i.stock, "img": i.img,
-                 "detail": images.detail_url(i.id)} for i in cat.search(q, exclude=taken, limit=15)]
+                 "img_exp": cat.image_expiry(i.img) if i.img else None, "detail": images.detail_url(i.id)}
+                for i in cat.search(q, exclude=taken, limit=15)]
 
     @app.post("/api/boxes", dependencies=[Depends(auth)], status_code=201)
     def create_box(b: NewBox, c=Depends(conn_dep)):
@@ -392,7 +395,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
 
     @app.post("/api/used", dependencies=[Depends(auth)])
     def import_used(body: UsedIds, c=Depends(conn_dep)):
-        return service.import_used(c, body.text, body.note, cat)
+        return service.import_used(c, body.text, body.note, cat, body.since)
 
     @app.delete("/api/used/{oid}", dependencies=[Depends(auth)])
     def remove_used(oid: str, c=Depends(conn_dep)):
