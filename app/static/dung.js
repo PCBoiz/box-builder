@@ -49,6 +49,9 @@
     byApp: "app điền",                                       // next to a món the app put in because the AI found no valid one
     checkByApp: "Xem kỹ các món app điền.",
     stepReady: "Có hộp để lấy",
+    jump: "Xuống Duyệt hộp",                              // a phone, a long box: the button is far down
+    khoLow: ["Kho còn ", " món trống."],
+    khoShort: ["Kho chỉ còn ", " món trống. Chưa đủ cho một hộp."],
     // the panel "Hôm nay"
     clock: (now, tail) => `Bây giờ ${now}. ${tail}`,
     clockNext: (what, at) => `Tiếp theo: ${what} lúc ${at}.`,
@@ -116,7 +119,7 @@
   /* ---------------------------------------------------------------- state */
   const S = {
     person: null, open: false, stages: [], boxes: [], rev: -1, ttl: 0, skew: 0, day: "",
-    loaded: false, failed: false, focusNew: null,
+    loaded: false, failed: false, focusNew: null, free: null,
   };
   const P = {                                             // the plan: server = last answer, rows = what the person edits, base = the answer the rows were last synced with
     server: null, rows: [], base: null, failed: false, sig: null,
@@ -160,10 +163,11 @@
   }
 
   /* ---------------------------------------------------------------- the one polite message (also the live region) */
-  let sayTimer = 0, sayShow = 0;
-  function say(msg, bad) {
+  let sayTimer = 0, sayShow = 0, sayUntil = 0;
+  function say(msg, bad, kho) {                          // kho: the sentence about the kho, which never holds back another message of its own kind
     const el = $("#live");
     clearTimeout(sayTimer); clearTimeout(sayShow);
+    if (!kho) sayUntil = Date.now() + 9000;
     el.textContent = "";                                 // a cleared region announces a repeated sentence again
     el.classList.toggle("is-bad", !!bad);
     sayShow = setTimeout(() => { el.textContent = msg; }, 60);
@@ -197,12 +201,14 @@
       S.failed = false;
       if (d.unchanged) {                                   // nothing new: keep the last full answer, only the clock moved
         renderBanner();
+        renderKho();                                       // a sentence about the kho that waited for a quiet moment
         if (wasFailed) say(T.back);
         renderTimed();
         return;
       }
       S.rev = d.rev; S.person = d.person; S.open = !!d.open_mode; S.stages = d.stages || [];
       S.ttl = Number(d.ttl_hours) || 0;
+      S.free = typeof d.free_objects === "number" ? d.free_objects : null;
       S.skew = typeof d.now === "number" ? d.now - Date.now() / 1000 : 0;
       S.boxes = [...d.boxes].sort(newestFirst);
       S.day = vnDay(serverNow());
@@ -305,13 +311,44 @@
       h("label", { for: `k-${i}` }, h("span", { class: "d-kind" }, s.label), s.count ? h("span", { class: "d-count" }, `${s.count} món`) : null))));
     if (hadFocus) $("input[name=kind]", root).focus();
   }
+  const LAST_MODULE = "bb_last_module";                   // the only thing this page keeps in the browser: the last Module the person typed
+  function lastModule() {
+    try { return String(localStorage.getItem(LAST_MODULE) || "").trim().toUpperCase().slice(0, 20); } catch { return ""; }     // storage can be blocked: then nothing is remembered
+  }
+  function rememberModule(value) {
+    const v = String(value || "").trim().toUpperCase();
+    if (!v) return;
+    try { localStorage.setItem(LAST_MODULE, v); } catch { /* blocked: the page works the same */ }
+  }
   let moduleTouched = false, autoModule = "";
-  function prefillModule() {                              // the module of this week's plan first, then the one of the person; never over what the person typed
+  function prefillModule() {                              // the module of this week's plan first, then the one of the person, then the last one typed here; never over what the person typed
     const input = $("#f-module");
-    const m = (P.server && P.server.module) || (S.person && S.person.module) || "";
+    const known = S.loaded && (!!P.server || P.failed);   // wait for both answers, so a remembered module does not show for a moment and change
+    const m = (P.server && P.server.module) || (S.person && S.person.module) || (known ? lastModule() : "");
     if (moduleTouched || !m || input.value === m || (input.value && input.value !== autoModule)) return;
     input.value = m; autoModule = m;
     queueRecent(true);
+  }
+
+  /* How many objects are free in the kho: a line above Tạo hộp when it runs low. The page says it aloud only when it crosses a threshold, not on every poll. */
+  const KHO_LOW = 100;
+  let khoSaid = null, khoKey = "";                        // khoSaid: the level shown or said last (0 none, 1 low, 2 not enough for a box); null before the first answer
+  function renderKho() {
+    const n = S.free;
+    const biggest = Math.max(0, ...S.stages.map((s) => Number(s.count) || 0));
+    const level = n == null || n >= KHO_LOW ? 0 : n < biggest ? 2 : 1;
+    const line = $("#kho-line");
+    line.hidden = level === 0;
+    const key = `${level}:${n}`;
+    if (level && key !== khoKey) {
+      const [a, b] = level === 2 ? T.khoShort : T.khoLow;
+      line.className = "d-kho" + (level === 2 ? " is-short" : "");
+      line.replaceChildren(a, h("strong", {}, String(n)), b);
+    }
+    khoKey = key;
+    if (khoSaid === null) { khoSaid = level; return; }     // the first answer is only shown
+    if (!level) { khoSaid = 0; return; }
+    if (level !== khoSaid && Date.now() >= sayUntil) { khoSaid = level; say(line.textContent, false, true); }     // another message is still on screen: wait for the next answer
   }
 
   function fieldError(which, msg, focusEl) {
@@ -335,6 +372,7 @@
     const kind = $("input[name=kind]:checked");
     if (!module) { fieldError("module", T.needModule, input); return; }
     if (!kind) { fieldError("kind", T.needKind, $("input[name=kind]")); return; }
+    rememberModule(module);
     const go = $("#f-go");
     go.disabled = true;
     try {
@@ -539,6 +577,14 @@
     if (lists.cards.has(b.id)) deletedHere.delete(b.id);     // it did not go: forget
   }
 
+  function jumpDown(b) {                                    // Xuống Duyệt hộp: focus and scroll to the button. While a question is open its safe answer is the way on; with an empty place Duyệt hộp is off, so Điền ô trống
+    const c = lists.cards.get(b.id);
+    const t = c && ["approve", "approve-no", "fill", "regen-no", "del-no"].map((k) => $(`[data-key="${k}"]`, c.el)).find((e) => e && !e.disabled);
+    if (!t) return;
+    t.focus();
+    t.scrollIntoView({ block: "center" });
+  }
+
   function buildCard(b) {
     const st = b.status, gen = st === "generating", appr = st === "approved";
     const hid = `bh-${b.id}`;
@@ -558,6 +604,7 @@
     facts.push(gen || items.length >= b.count ? `${b.count} món` : `${items.length} trên ${b.count} món`);
     const exp = expiryOf(b);
     const asking = askOf(b);
+    const longDraft = st === "draft" && items.length > 6;       // on a phone a long box puts Duyệt hộp far down: a link at the top goes there
 
     const buttons = () => h("div", { class: "d-actions" },
       showApprove ? btn("Duyệt hộp", () => ask(b, "approve", true), {
@@ -576,6 +623,7 @@
 
     return h("article", { class: `d-card is-${st}`, "data-box": b.id, "aria-labelledby": hid },
       h("div", { class: "d-card-top" }, headingOf(b, hid), h("span", { class: `d-chip is-${st}` }, b.status_text || STATUS[st] || st)),
+      longDraft ? h("button", { type: "button", class: "d-jump", "data-key": "jump", "aria-describedby": hid, onclick: () => jumpDown(b) }, T.jump) : null,
       h("p", { class: "d-meta" }, facts.map((f) => h("span", {}, f))),
       st === "error" ? h("div", { class: "d-errblock" }, b.message ? h("p", { class: "d-alert" }, b.message) : null, h("p", { class: "d-why" }, canFill ? T.errorFill : T.errorNext)) : null,
       exp ? h("p", { class: "d-expiry" + (exp.warn ? " is-warn" : "") }, exp.text) : null,
@@ -631,7 +679,7 @@
 
   function renderAll() {
     if (leaving) return;
-    renderWho(); renderBanner(); renderKinds(); prefillModule(); renderProgress(); renderLeads(); renderCards(); renderTakes();
+    renderWho(); renderBanner(); renderKinds(); renderKho(); prefillModule(); renderProgress(); renderLeads(); renderCards(); renderTakes();
     if (S.focusNew != null) {                               // a box was just made: take the keyboard to it
       const c = lists.cards.get(S.focusNew);
       if (c) { S.focusNew = null; $('[data-key="head"]', c.el).focus(); }
@@ -889,6 +937,7 @@
       P.failed = true;
       $("#plan-msg").textContent = T.planFail;
       renderPlan();
+      prefillModule();
       if (!was) say(T.planFail, true);
     } finally {
       planBusy = false;
@@ -976,6 +1025,7 @@
 
   $("#create-form").addEventListener("submit", onCreate);
   $("#f-module").addEventListener("input", () => { moduleTouched = true; queueRecent(false); });
+  $("#f-module").addEventListener("change", (e) => rememberModule(e.target.value));
   $("#f-code").addEventListener("input", () => queueRecent(false));
   $("#logout").addEventListener("click", logout);
   $("#retry").addEventListener("click", () => { refresh(true).then(schedule); });

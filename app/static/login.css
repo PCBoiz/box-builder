@@ -5,7 +5,10 @@
 .login .hint, .login .err, .login .field > label, .login .admin-code summary { font-size: 16px; }
 .login input:not([type="checkbox"]) { width: 100%; padding: 12px 12px; font-size: 18px; border: 1px solid var(--line); border-radius: 8px; background: #fff; min-height: 48px; }
 .login .btn.wide { min-height: 48px; font-size: 16px; }
-.login .admin-code summary { cursor: pointer; padding: 8px 0; min-height: 48px; display: flex; align-items: center; }
+.login .admin-code summary { cursor: pointer; padding: 8px 0; min-height: 48px; display: flex; align-items: center; gap: 10px; list-style: none; text-decoration: underline; text-underline-offset: 4px; }
+.login .admin-code summary::-webkit-details-marker { display: none; }
+.login .admin-code summary::before { content: ""; flex: none; width: 9px; height: 9px; border-right: 3px solid var(--ink); border-bottom: 3px solid var(--ink); transform: rotate(-45deg); }   /* points right when closed, down when open; drawn, so a screen reader says nothing */
+.login .admin-code[open] > summary::before { transform: rotate(45deg); margin-bottom: 5px; }
 .login .admin-code[open] .field { margin-top: 4px; }
 .login a { color: inherit; text-underline-offset: 3px; }
 .login #login-off a { display: inline-flex; align-items: center; min-height: 48px; }

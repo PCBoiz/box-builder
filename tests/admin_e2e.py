@@ -164,7 +164,12 @@ try:
         pg.fill("#sh-url", "https://example.com/not-a-sheet")
         pg.click("#sh-save")
         pg.wait_for_selector(".toast.bad")
-        check("Google Sheets" in pg.inner_text("#toasts"), "a link that is not a Google Sheet is refused in words")
+        try:                                    # an older red toast can be on screen first (seen once under load): wait for the sentence itself
+            pg.wait_for_function("(document.querySelector('#toasts') || {innerText: ''}).innerText.includes('Google Sheets')", timeout=8000)
+            said = True
+        except Exception:
+            said = False
+        check(said, "a link that is not a Google Sheet is refused in words")
         fake = "https://docs.google.com/spreadsheets/d/AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit?usp=drivesdk&ouid=1"
         pg.fill("#sh-url", fake)
         pg.click("#sh-save")

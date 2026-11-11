@@ -103,7 +103,7 @@ LIVE_WATCH = """() => { window.__live = []; const el = document.getElementById('
   new MutationObserver(() => { if (el.textContent) window.__live.push(el.textContent); }).observe(el, {childList: true, characterData: true, subtree: true}); }"""
 ALLOWED_BUTTONS = {"thoát", "thử lại", "tạo hộp", "đổi món", "chọn lại cả hộp", "có, chọn lại", "xoá hộp", "có, xoá hộp", "giữ lại",
                    "sao chép id", "sao chép id và số lượng", "duyệt hộp", "có, duyệt hộp", "chưa", "bỏ duyệt", "điền ô trống",
-                   "thêm unit", "xoá unit", "lưu kế hoạch", "sao chép báo cáo", "tạo b2", "tạo b3", "tạo a1"}
+                   "thêm unit", "xoá unit", "lưu kế hoạch", "sao chép báo cáo", "tạo b2", "tạo b3", "tạo a1", "xuống duyệt hộp"}
 ALLOWED_LINKS = {"bỏ qua, đến phần chính", "trang admin", "in phiếu lấy đồ", "tạo hộp", "xem và duyệt", "lấy đồ", "xem hộp b2", "xem hộp b3", "xem hộp a1"}
 # words of the admin page: a person's page must not show them (the automation switches, backup and import, the people list, the sheet box, the catalog tools)
 ADMIN_ONLY = ("tự duyệt hộp", "tự động hoá", "kho đồ", "người dùng và quyền", "bảng tính google", "sao lưu và khôi phục", "nhập hộp từ tệp", "nhập các hộp này",
@@ -187,6 +187,18 @@ def login_look(page, label):
     check(not small_targets(page), f"the login page {label}: every control is at least 48 px high {small_targets(page)}")
     ok, w = overflow_ok(page)
     check(ok, f"the login page {label}: no horizontal scroll {w}")
+
+
+def admin_fold_look(page, label, is_open):
+    """The fold "Tôi là admin": a caret that points right when it is closed and down when it is open (drawn, so nothing is read aloud), the words underlined, at least 48 px high."""
+    got = page.evaluate("""() => { const s = document.querySelector('#login-admin summary'), cs = getComputedStyle(s), b = getComputedStyle(s, '::before'), m = new DOMMatrix(b.transform);
+      return {open: s.parentElement.open, content: b.content, w: parseFloat(b.width), h: parseFloat(b.height), angle: Math.round(Math.atan2(m.b, m.a) * 180 / Math.PI),
+              line: cs.textDecorationLine, height: s.getBoundingClientRect().height, text: s.textContent.trim()}; }""")
+    check(got["open"] is is_open and got["content"] in ('""', "''") and got["w"] >= 9 and got["h"] >= 9,
+          f"the login page {label}: Tôi là admin has a caret with an empty content (nothing to read aloud) {got}")
+    check(got["angle"] == (45 if is_open else -45), f"the login page {label}: the caret points {'down' if is_open else 'right'} (turned {got['angle']} degrees)")
+    check("underline" in got["line"] and got["text"] == "Tôi là admin", f"the login page {label}: the words Tôi là admin are underlined {got['line']!r} {got['text']!r}")
+    check(got["height"] >= 48, f"the login page {label}: Tôi là admin is at least 48 px high ({got['height']:.0f} px)")
 
 
 def controls_ok(page):
@@ -371,11 +383,13 @@ def main():
         check(urllib.parse.urlsplit(page.url).path == "/login" and "next=/dung" in page.url, f"/dung without a session goes to /login?next=/dung ({page.url})")
         axe_check(page, "on /login")
         login_look(page, "(normal)")
+        admin_fold_look(page, "(closed)", False)
         check(page.is_hidden("#login-pw-field") and page.is_hidden("#login-pw") and "Mật khẩu" not in page.inner_text("body"),
               "no user password is asked: the login page shows no field Mật khẩu")
         page.click("#login-admin summary")
         check(page.is_visible("#login-code"), "Tôi là admin opens the field of the admin code")
         login_look(page, "(admin code open)")
+        admin_fold_look(page, "(open)", True)
         axe_check(page, "on /login (admin code open)")
         page.click("#login-admin summary")
         login_text = page.inner_text("body")
@@ -396,8 +410,10 @@ def main():
         lp.set_viewport_size({"width": 375, "height": 800})
         lp.goto(BASE + "/login"); lp.wait_for_selector("#login-id")
         login_look(lp, "at 375 px")
+        admin_fold_look(lp, "at 375 px (closed)", False)
         lp.click("#login-admin summary")
         login_look(lp, "at 375 px (admin code open)")
+        admin_fold_look(lp, "at 375 px (open)", True)
         axe_check(lp, "on /login at 375 px (admin code open)")
         lp.close()
         page_texts.append(page.inner_text("body"))
@@ -553,6 +569,22 @@ def main():
         check(by_pos[1]["id"] in paper.content(), "the pick list contains the first object ID of the box")
         paper.close()
 
+        # ---------------------------------------------------------------- Xuống Duyệt hộp is for a phone: on a wide screen it is there but takes no part (no tab stop, nothing for a screen reader)
+        wide = ctx.new_page(); watch(wide, "wide")
+        wide.goto(BASE + "/dung"); wide.wait_for_selector("article.d-card.is-draft")
+        wj = wide.locator("article.d-card .d-jump")
+        check(wj.count() == 1 and wj.is_hidden() and wide.evaluate("getComputedStyle(document.querySelector('.d-jump')).display") == "none",
+              "wide screen: the link Xuống Duyệt hộp is hidden with display none, not only made see-through")
+        check(wide.get_by_role("button", name="Xuống Duyệt hộp").count() == 0, "wide screen: the link is not in the accessibility tree")
+        wide.locator("article.d-card [data-key=head]").focus()
+        stops = []
+        for _ in range(stage["A1"] + 3):
+            wide.keyboard.press("Tab")
+            stops.append(focus_key(wide))
+            if stops[-1] == "approve": break
+        check(stops[0] == "swap-1" and stops[-1] == "approve" and "jump" not in stops, f"wide screen: Tab goes from the heading to the first Đổi món and on to Duyệt hộp, never to the link {stops}")
+        wide.close()
+
         # ---------------------------------------------------------------- 375 px
         phone = ctx.new_page(); watch(phone, "phone")
         phone.set_viewport_size({"width": 375, "height": 800})
@@ -563,6 +595,20 @@ def main():
         check(not small_targets(phone), f"every control is at least 48 px high at 375 px {small_targets(phone)}")
         check(not small_text(phone), f"no text under 16 px at 375 px {small_text(phone)}")
         axe_check(phone, "on /dung at 375 px (draft box)")
+        pj = phone.locator("article.d-card .d-jump")
+        check(pj.count() == 1 and pj.is_visible() and pj.inner_text() == "Xuống Duyệt hộp" and pj.bounding_box()["height"] >= 48 and pj.evaluate("e => getComputedStyle(e).textDecorationLine") == "underline"
+              and phone.get_by_role("button", name="Xuống Duyệt hộp").count() == 1,
+              f"375 px: a draft with {stage['A1']} món has the underlined link Xuống Duyệt hộp, at least 48 px high, in the accessibility tree")
+        in_view = "(() => { const r = document.activeElement.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()"
+        phone.locator("article.d-card [data-key=head]").focus(); phone.keyboard.press("Tab")
+        check(focus_key(phone) == "jump", f"375 px: Tab from the heading reaches Xuống Duyệt hộp first {focus_key(phone)}")
+        phone.keyboard.press("Enter")
+        check(wait_until(lambda: focus_key(phone) == "approve" and phone.evaluate(in_view), 3) and phone.evaluate("scrollY") > 400,
+              "375 px: Enter on Xuống Duyệt hộp puts the focus on Duyệt hộp and scrolls it into view")
+        phone.evaluate("window.scrollTo(0, 0)")
+        pj.click()
+        check(wait_until(lambda: focus_key(phone) == "approve" and phone.evaluate(in_view), 3), "375 px: a tap on Xuống Duyệt hộp does the same")
+        check(overflow_ok(phone)[0] and not small_targets(phone) and not small_text(phone), "375 px: with the link, no sideways scroll, large controls, text 16 px or more")
         phone.locator("article.d-card [data-key=approve]").click()
         ok, w = overflow_ok(phone)
         check(ok and phone.locator(".d-confirm").count() == 1, f"no horizontal scroll at 375 px with the approve question open {w}")
@@ -684,6 +730,7 @@ def main():
               "an approved box that is not in SM shows Bỏ duyệt (at least 48 px) and no Duyệt hộp")
         check("Hộp đã duyệt. Bấm Bỏ duyệt nếu cần sửa." in card.inner_text() and "Bỏ duyệt để sửa lại hộp." not in card.inner_text(),
               "one short line says why the edit buttons are off and what to press, no second line says the same")
+        check(card.locator(".d-jump").count() == 0, "an approved box has no link Xuống Duyệt hộp")
         code, st = admin.call("GET", "/api/state")
         check([b["status"] for b in st["boxes"] if b["id"] == mine["id"]] == ["approved"], "the server holds the box as approved")
         pause(7.5)           # one more poll: it sees what the page already knows and must stay silent
@@ -806,6 +853,7 @@ def main():
               "error state: a box that still has objects gets Điền ô trống, and both box buttons work")
         check(card.locator("[data-key=approve]").count() == 0 and card.locator("[data-key=reopen]").count() == 0, "error state: no Duyệt hộp and no Bỏ duyệt on a box that failed")
         check(card.locator("[data-key^=swap]").count() == 0 and page.locator(".d-take").count() == 0, "error state: no Đổi món on a half-filled box, nothing to take")
+        check(card.locator(".d-item").count() > 6 and card.locator(".d-jump").count() == 0, "error state: a box that failed has no link Xuống Duyệt hộp, even with more than 6 món")
         check(steps(page) == ["Xong", "Đang ở đây", "Chưa tới"], f"error state: nothing to take yet, step 3 says Chưa tới {steps(page)}")
         check(re.fullmatch(r"Hộp này tự mất sau khoảng \d+ giờ nếu bạn chưa chọn lại\.", card.locator(".d-expiry").inner_text()) is not None, "error state: says how long the box has left")
         page_texts.append(page.inner_text("body"))
@@ -981,6 +1029,84 @@ def main():
         gone.goto(BASE + "/dung")
         check(wait_until(lambda: any("/login?next=/dung" in u for u in flow), 10), f"a 401 from the server sends the person to /login?next=/dung {flow}")
         gone.close()
+
+        # ---------------------------------------------------------------- the kho: one line above Tạo hộp when it runs low; said aloud only when it crosses a threshold, not on every poll
+        big = max(stage.values())
+        kho = {"free": 150}
+        def kho_route(route):
+            data = route.fetch(url=re.sub(r"rev=-?\d+", "rev=-1", route.request.url)).json()
+            data["free_objects"] = kho["free"]
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(data))
+        kho_pat = re.compile(r"/api/my/summary")
+        kline = lambda p: p.evaluate("(() => { const e = document.getElementById('kho-line'); return e.hidden ? '' : e.innerText; })()")
+        kspoken = lambda p: [t for t in p.evaluate("window.__live") if t.startswith("Kho")]
+        LOW = lambda n: f"Kho còn {n} món trống."
+        SHORT = lambda n: f"Kho chỉ còn {n} món trống. Chưa đủ cho một hộp."
+
+        def kho_page(width, free, label):
+            kho["free"] = free
+            p = ctx.new_page(); watch(p, label)
+            p.set_viewport_size({"width": width, "height": 900})
+            seen = []
+            p.on("request", lambda r: seen.append(1) if "/api/my/summary" in r.url else None)
+            p.route(kho_pat, kho_route)
+            p.goto(BASE + "/dung"); p.wait_for_selector("article.d-card")
+            def poll():
+                n0 = len(seen)
+                p.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+                wait_until(lambda: len(seen) > n0, 5); pause(0.5)
+            return p, poll
+
+        kp, kpoll = kho_page(1100, 150, "kho")
+        check(kline(kp) == "" and kp.is_hidden("#kho-line") and kspoken(kp) == [], "kho: with 150 free món there is no line and nothing is said")
+        check(kp.evaluate("document.getElementById('kho-line').parentElement.id") == "create-form" and kp.evaluate("document.getElementById('kho-line').nextElementSibling.id") == "f-go",
+              "kho: the line sits in step 1, just above Tạo hộp")
+        check(kp.locator("[aria-live], [role=status], [role=alert]").count() == 1, "kho: the line adds no live region of its own (still one polite region)")
+        kho["free"] = 100; kpoll()
+        check(kline(kp) == "" and kspoken(kp) == [], "kho: with 100 free món there is still no line")
+        for n_free, want_line, spoken_n, label in ((80, LOW(80), 1, "80"), (79, LOW(79), 1, "79 (the number moves, nothing new is said)"), (big, LOW(big), 1, f"{big}, as many as the biggest box"),
+                                                   (big - 1, SHORT(big - 1), 2, f"{big - 1}, not enough for the biggest box"), (10, SHORT(10), 2, "10 (the number moves, nothing new is said)"),
+                                                   (0, SHORT(0), 2, "0"), (150, "", 2, "150 again (the line goes, nothing is said)"), (80, LOW(80), 3, "80 again")):
+            kho["free"] = n_free; kpoll()
+            check(wait_until(lambda: kline(kp) == want_line, 5) and wait_until(lambda: len(kspoken(kp)) == spoken_n, 5) and len(kspoken(kp)) == spoken_n,
+                  f"kho: with {label} free món the line says {want_line!r} and {spoken_n} sentence(s) were said aloud {kline(kp)!r} {kspoken(kp)}")
+            if n_free == 80 and spoken_n == 1:
+                check(kspoken(kp) == [LOW(80)] and kp.locator("#kho-line strong").inner_text() == "80" and int(kp.evaluate("getComputedStyle(document.querySelector('#kho-line strong')).fontWeight")) >= 700,
+                      "kho: the number is bold, so the meaning is not in a colour")
+                axe_check(kp, "on /dung (the kho runs low)")
+            if n_free == 10:
+                axe_check(kp, "on /dung (the kho cannot fill a box)")
+        check(kspoken(kp) == [LOW(80), SHORT(big - 1), LOW(80)], f"kho: aloud only at the crossings (low, not enough for a box, low again) {kspoken(kp)}")
+        check(small_targets(kp) == [] and not small_text(kp) and overflow_ok(kp)[0], "kho: with the line, large controls, text 16 px or more, no sideways scroll")
+        # the module of the person is used before the one remembered in the browser
+        kp.evaluate("localStorage.setItem('bb_last_module', 'M5')")
+        kho["free"] = 150
+        kp.reload(); kp.wait_for_function("document.querySelector('#rep-empty').textContent !== 'Đang tải.'", timeout=15000)
+        check(kp.input_value("#f-module") == "M2", f"the module of the person (M2) wins over the one remembered in the browser (M5) {kp.input_value('#f-module')!r}")
+        kp.evaluate("localStorage.setItem('bb_last_module', 'M2')")
+        kp.close()
+        # another message is on screen: the sentence about the kho waits for a quiet moment
+        kd, kdpoll = kho_page(1100, 150, "kho-wait")
+        kd.click(".d-take [data-key=copy-ids]")
+        check(live_has(kd, lambda t: t.startswith("Đã chép")), "kho: a message about copying is on screen")
+        kho["free"] = 50; kdpoll()
+        check(kline(kd) == LOW(50) and kspoken(kd) == [], f"kho: the line shows at once, but the sentence waits while another message is on screen {kline(kd)!r} {kspoken(kd)}")
+        pause(9.3); kdpoll()
+        check(wait_until(lambda: kspoken(kd) == [LOW(50)], 5), f"kho: once the screen is quiet the sentence is said, once {kspoken(kd)}")
+        kd.close()
+        # the page opens with a low kho: the line is there, and nothing is said
+        kr, krpoll = kho_page(1100, 80, "kho-first")
+        pause(1.5)
+        check(kline(kr) == LOW(80) and kspoken(kr) == [], f"kho: a page that opens with a low kho shows the line and says nothing {kline(kr)!r} {kspoken(kr)}")
+        kr.close()
+        # a phone
+        kq, kqpoll = kho_page(375, 10, "kho-phone")
+        check(kline(kq) == SHORT(10) and overflow_ok(kq)[0] and not small_targets(kq) and not small_text(kq), f"kho at 375 px: the two sentences fit, no sideways scroll {kline(kq)!r} {overflow_ok(kq)[1]}")
+        axe_check(kq, "on /dung at 375 px (the kho cannot fill a box)")
+        kq.set_viewport_size({"width": 320, "height": 800})
+        check(overflow_ok(kq)[0] and not small_targets(kq) and not small_text(kq), "kho at 320 px: no sideways scroll, large controls")
+        page_texts.append(kq.inner_text("body"))
+        kq.close()
 
         # ---------------------------------------------------------------- reduced motion
         ctx_rm = new_ctx(viewport={"width": 1100, "height": 900}, reduced_motion="reduce", storage_state=ctx.storage_state())
@@ -1573,7 +1699,8 @@ def main():
         ok, w = overflow_ok(pp)
         check(ok, f"no horizontal scroll at 375 px with every section open {w}")
         check(not small_targets(pp) and not small_text(pp), f"at 375 px every section open: large controls, text 16 px or more {small_targets(pp)} {small_text(pp)}")
-        check(pp.evaluate("(() => { const t = document.getElementById('rep-text'); return t.scrollHeight <= t.clientHeight + 2; })()"), "at 375 px the report area shows the whole report")
+        check(wait_until(lambda: pp.evaluate("(() => { const t = document.getElementById('rep-text'); return t.scrollHeight <= t.clientHeight + 2; })()"), 3),      # the area grows when the section has finished opening: a moment after the click
+              "at 375 px the report area shows the whole report")
         pp.fill("#f-code", "M3-02")
         check(wait_until(lambda: pp.is_visible("#recent"), 5) and overflow_ok(pp)[0] and not small_targets(pp), "at 375 px the block Gần đây fits")
         axe_check(pp, "on /dung at 375 px (every section open, units, report, block Gần đây)")
@@ -1685,6 +1812,51 @@ def main():
         check(overflow_ok(p6p)[0] and not small_targets(p6p) and not small_text(p6p) and p6p.locator(".d-day").count() == 1,
               f"two boxes of two days at 375 px: no horizontal scroll, large controls {overflow_ok(p6p)[1]} {small_targets(p6p)}")
         axe_check(p6p, "on /dung at 375 px (two boxes of two days)")
+        # a long box on a phone: tight rows (name and button on one line, the three facts on one wrapping line), and a link at the top, only for a draft with more than 6 món
+        draft6 = p6p.locator(f"article.d-card[data-box='{new_id}']")
+        old6 = p6p.locator(f"article.d-card[data-box='{old_id}']")
+        measure = lambda loc: loc.evaluate("""c => { const items = [...c.querySelectorAll('.d-item')], hs = items.map(i => i.getBoundingClientRect().height);
+          return {card: Math.round(c.getBoundingClientRect().height), n: items.length, avg: Math.round(hs.reduce((a, b) => a + b, 0) / (hs.length || 1)), max: Math.round(Math.max(...hs)),
+                  swap: Math.round(Math.min(...items.map(i => i.querySelector('.d-btn').getBoundingClientRect().height))),
+                  wide: items.every(i => i.querySelector('.d-facts').getBoundingClientRect().width >= i.getBoundingClientRect().width - 24)}; }""")
+        sz = measure(draft6)
+        print("     (measured at 375 px, 21 món)", sz)
+        check(sz["n"] == stage["B2"] and sz["card"] <= 2700 and sz["avg"] <= 105, f"375 px: a card with {stage['B2']} món is at most 2700 px tall and a row 105 px on average {sz}")
+        check(sz["wide"] and sz["swap"] >= 44, f"375 px: the ID, the quantity and the shelf slot share one line the width of the row, and Đổi món stays at least 44 px high {sz}")
+        check(measure(old6)["card"] <= 2700, f"375 px: an approved long box is as compact {measure(old6)}")
+        check(draft6.locator(".d-jump").count() == 1 and draft6.locator(".d-jump").is_visible() and old6.locator(".d-jump").count() == 0 and p6p.locator(".d-jump").count() == 1,
+              "375 px: the link Xuống Duyệt hộp is on the draft with 21 món and not on the approved one")
+        draft6.locator("[data-key=head]").focus(); p6p.keyboard.press("Tab")
+        check(focus_key(p6p) == "jump", f"375 px: the link is the first stop after the heading {focus_key(p6p)}")
+        p6p.keyboard.press("Enter")
+        in_view6 = "(() => { const r = document.activeElement.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()"
+        check(wait_until(lambda: focus_key(p6p) == "approve" and p6p.evaluate(in_view6) and p6p.evaluate("document.activeElement.closest('article').dataset.box") == str(new_id), 3) and p6p.evaluate("scrollY") > 1500,
+              "375 px: it moves the focus to the Duyệt hộp of that box, far down the page, and scrolls it into view")
+        # exactly 6 món: no link; 7 món: the link (the answer is cut on its way). With an empty place Duyệt hộp is off: the link goes to Điền ô trống
+        cut = {"n": None}
+        def cut_route(route):
+            data = route.fetch(url=re.sub(r"rev=-?\d+", "rev=-1", route.request.url)).json()
+            if cut["n"]:
+                for b in data["boxes"]:
+                    if b["status"] == "draft": b["items"] = b["items"][:cut["n"]]
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(data))
+        cut_pat = re.compile(r"/api/my/summary")
+        p6p.route(cut_pat, cut_route)
+        for n_cut, want_link in ((6, 0), (7, 1)):
+            cut["n"] = n_cut
+            p6p.reload()
+            check(wait_until(lambda: draft6.locator(".d-item").count() == n_cut, 10) and draft6.locator(".d-jump").count() == want_link,
+                  f"a draft with {n_cut} món has {'no link' if not want_link else 'the link'} Xuống Duyệt hộp")
+        draft6.locator(".d-jump").click()
+        check(wait_until(lambda: focus_key(p6p) == "fill", 3), f"with an empty place Xuống Duyệt hộp goes to Điền ô trống, the next thing to press {focus_key(p6p)}")
+        p6p.unroute(cut_pat)
+        p6p.set_viewport_size({"width": 320, "height": 700})
+        p6p.reload(); p6p.wait_for_selector(f"article.d-card[data-box='{new_id}'] .d-item")
+        sz320 = measure(draft6)
+        print("     (measured at 320 px, 21 món)", sz320)
+        check(sz320["card"] <= 3300 and sz320["wide"] and overflow_ok(p6p)[0] and not small_targets(p6p) and not small_text(p6p),
+              f"320 px: the long card is at most 3300 px tall, no sideways scroll, large controls {sz320} {overflow_ok(p6p)[1]} {small_targets(p6p)}")
+        axe_check(p6p, "on /dung at 320 px (long box)")
         p6p.close()
         cards6.nth(0).locator("[data-key=approve]").click(); cards6.nth(0).locator("[data-key=approve-yes]").click()
         check(live_has(p6, lambda t: t == "Đã duyệt hộp M6 Box B2. Bạn lấy đồ ở bước 3."), "today's box is approved with the sentence that points to step 3")
@@ -1763,6 +1935,64 @@ def main():
         port2 = free_port()
         srv2, srv2_log = start_server(env2, port2, tmp2)
         base2 = f"http://127.0.0.1:{port2}"
+        PUMP[0] = None            # the first page is closed by now: waits are plain sleeps, every call on a page handles the events that came in meanwhile
+        # ---------------------------------------------------------------- the last Module typed is remembered (here nobody has a module of their own and nothing is planned yet)
+        mod_errs = []
+        def mwatch(p):
+            p.on("pageerror", lambda e: mod_errs.append(f"pageerror: {e}"))
+            p.on("console", lambda m: mod_errs.append(f"console: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        plan_loaded = lambda p: p.wait_for_function("document.querySelector('#rep-empty').textContent === 'Chưa có unit nào.'", timeout=15000)
+        keys = lambda p: p.evaluate("Object.keys(localStorage)")
+        ctx_m = new_ctx(viewport={"width": 1100, "height": 900})
+        m1 = ctx_m.new_page(); mwatch(m1)
+        m1.goto(base2 + "/dung"); plan_loaded(m1)
+        check(m1.input_value("#f-module") == "" and keys(m1) == [], f"module memory: nothing remembered yet, the field is empty and the page has stored nothing {m1.input_value('#f-module')!r} {keys(m1)}")
+        m1.fill("#f-module", "m5"); m1.press("#f-module", "Tab")
+        check(m1.evaluate("localStorage.getItem('bb_last_module')") == "M5" and keys(m1) == ["bb_last_module"],
+              f"module memory: the Module typed is kept as M5 under bb_last_module, and nothing else is kept {keys(m1)}")
+        m2 = ctx_m.new_page(); mwatch(m2)
+        m2.goto(base2 + "/dung"); plan_loaded(m2)
+        check(m2.input_value("#f-module") == "M5" and keys(m2) == ["bb_last_module"], f"module memory: the next visit has M5 in the Module field {m2.input_value('#f-module')!r}")
+        # what the person types is never overwritten: the answer about the plan comes late
+        held = []
+        m3 = ctx_m.new_page(); mwatch(m3)
+        plan_pat = re.compile(r"/api/my/plan$")
+        m3.route(plan_pat, lambda r: held.append(r))
+        m3.goto(base2 + "/dung")
+        m3.wait_for_function("document.querySelector('#s2-lead').textContent.includes('Chưa có hộp nào')")
+        check(len(held) == 1 and m3.input_value("#f-module") == "", "module memory: until the plan has answered the field stays empty (no M5 that then changes)")
+        m3.fill("#f-module", "k9")
+        held[0].continue_()
+        m3.unroute(plan_pat)
+        plan_loaded(m3); pause(0.5)
+        check(m3.input_value("#f-module") == "k9", f"module memory: what the person typed (k9) is not replaced by the remembered M5 {m3.input_value('#f-module')!r}")
+        m3.evaluate("document.dispatchEvent(new Event('visibilitychange'))"); pause(1.0)
+        check(m3.input_value("#f-module") == "k9" and keys(m3) == ["bb_last_module"] and m3.evaluate("localStorage.getItem('bb_last_module')") == "M5",
+              "module memory: a later poll keeps the typed text too, and typing without leaving the field keeps nothing new")
+        m3.fill("#f-module", "")
+        m3.evaluate("document.dispatchEvent(new Event('visibilitychange'))"); pause(1.0)
+        check(m3.input_value("#f-module") == "", "module memory: a field the person emptied stays empty")
+        check(not mod_errs, f"module memory: no script error {mod_errs[:3]}")
+        ctx_m.close()
+        # storage blocked: the page works the same, nothing is read or kept, no error (a value is there in the browser, but cannot be read)
+        BLOCK_PROTO = "const e = () => { throw new DOMException('blocked', 'SecurityError'); }; Storage.prototype.getItem = e; Storage.prototype.setItem = e;"
+        BLOCK_WINDOW = "Object.defineProperty(window, 'localStorage', {configurable: true, get() { throw new DOMException('blocked', 'SecurityError'); }});"
+        state_m = {"cookies": [], "origins": [{"origin": base2, "localStorage": [{"name": "bb_last_module", "value": "M5"}]}]}
+        for how, script in (("getItem and setItem throw", BLOCK_PROTO), ("localStorage itself throws", BLOCK_WINDOW)):
+            ctx_b = new_ctx(viewport={"width": 1100, "height": 900})
+            ctx_b.add_init_script("try { localStorage.setItem('bb_last_module', 'M5'); } catch (e) {}")      # a value is there, then the storage is blocked
+            ctx_b.add_init_script(script)
+            b1 = ctx_b.new_page(); mwatch(b1)
+            b1.goto(base2 + "/dung"); plan_loaded(b1)
+            check(b1.input_value("#f-module") == "" and b1.is_visible("#f-go"), f"module memory, storage blocked ({how}): the page opens and the field stays empty")
+            b1.fill("#f-module", "k9"); b1.press("#f-module", "Tab")
+            b1.route(re.compile(r"/api/my/boxes$"), lambda r: r.fulfill(status=500, content_type="application/json", body="{}") if r.request.method == "POST" else r.continue_())
+            b1.click("label:has-text('Box B2')"); b1.click("#f-go")
+            b1.wait_for_selector("#err-form:not([hidden])")
+            check(b1.inner_text("#err-form") == "Chưa làm được. Thử lại." and b1.input_value("#f-module") == "K9" and b1.is_enabled("#f-go"),
+                  f"module memory, storage blocked ({how}): typing, leaving the field and pressing Tạo hộp work the same {b1.inner_text('#err-form')!r}")
+            check(not mod_errs, f"module memory, storage blocked ({how}): no script error {mod_errs[:3]}")
+            ctx_b.close()
         ctx_o = new_ctx(viewport={"width": 1100, "height": 900})
         po = ctx_o.new_page(); watch(po, "open")
         po.goto(base2 + "/dung")
@@ -1789,6 +2019,13 @@ def main():
               and po.evaluate("document.querySelector('input[name=kind]:checked').value") == "Box B3" and po.evaluate("document.activeElement.id") == "f-theme",
               "login off: Tạo B3 fills the form and focuses the theme")
         axe_check(po, "on /dung (login off, plan with a unit)")
+        # a plan with a module is saved now: it wins over the module remembered in the browser (M5)
+        ctx_m2 = new_ctx(viewport={"width": 1100, "height": 900}, storage_state=state_m)
+        m4 = ctx_m2.new_page(); mwatch(m4)
+        m4.goto(base2 + "/dung"); m4.wait_for_function("document.querySelectorAll('#units > li').length === 1", timeout=15000)
+        check(m4.input_value("#f-module") == "M7" and m4.evaluate("localStorage.getItem('bb_last_module')") == "M5", f"module memory: the module of the plan (M7) wins over the remembered M5 {m4.input_value('#f-module')!r}")
+        check(not mod_errs, f"module memory: no script error {mod_errs[:3]}")
+        ctx_m2.close()
         lo = ctx_o.new_page(); watch(lo, "login-off")
         lo.goto(base2 + "/login")
         lo.wait_for_selector("#login-off:not([hidden])")

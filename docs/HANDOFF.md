@@ -1,6 +1,6 @@
-# Box builder: handoff (state on 2026-11-11, after the work of that day on top of commit 325ec7d)
+# Box builder: handoff (state on 2026-11-11, after the work of that day: commits 5dc0ef0 and 86b0838, plus the pre-trial polish)
 
-Written so the work can continue on another laptop. Read this first, then `docs/SC_PROCESS.md` (the daily process the app serves),
+Written so the work can continue on another laptop. **Start with `docs/LAM_TIEP.md`** (Vietnamese: everything done on 2026-11-11, the owner's decisions and the open tasks in order), then read this, then `docs/SC_PROCESS.md` (the daily process the app serves),
 `docs/WRITING.md` (how the Vietnamese text must read), `docs/SM_SYNC.md` (the SM sync tool) and `docs/LOGIN.md` (login by company ID, for the owner).
 
 **The team already has its own Tampermonkey tool** (v2.23.0, "Sondeptraidatimthayban", kept in the owner's own GitHub repo, runs on every `sm.config.inc` page).

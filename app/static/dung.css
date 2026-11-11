@@ -81,6 +81,9 @@ body.dung { font-size: 18px; line-height: 1.55; font-weight: 400; }
 .d-field [aria-invalid="true"] { border-color: var(--alert); box-shadow: inset 0 0 0 1px var(--alert); }
 .d-help { font-size: 16px; line-height: 1.4; color: var(--ink2); }
 .d-fielderr { font-size: 16px; line-height: 1.4; font-weight: 600; color: var(--alert); }
+.d-kho { font-size: 18px; line-height: 1.4; font-weight: 600; overflow-wrap: anywhere; }
+.d-kho strong { font-weight: 800; }
+.d-kho.is-short { padding: 10px 14px; border-left: 5px solid var(--hold); border-radius: 8px; background: var(--hold-bg); color: #4d3200; }
 .d-row2 { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 20px; }
 @media (min-width: 620px) { .d-row2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; } }
 
@@ -110,6 +113,11 @@ body.dung { font-size: 18px; line-height: 1.55; font-weight: 400; }
 .d-card.is-approved, .d-take.is-approved { --c: var(--ok); }
 .d-card.is-error, .d-take.is-error { --c: var(--alert); }
 .d-card-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.d-jump {
+  display: inline-flex; align-items: center; justify-self: start; min-height: 48px; padding: 0 6px; border: 0; border-radius: 6px; background: none;
+  color: var(--ink); font: 600 18px/1.25 var(--font); text-decoration: underline; text-underline-offset: 4px; cursor: pointer;
+}
+.d-jump:hover { background: #eef2f0; }
 .d-card h3, .d-take h3 { font-size: 22px; line-height: 1.4; font-weight: 700; overflow-wrap: anywhere; }
 .d-mod { display: inline-block; margin-right: 8px; padding: 1px 10px; border-radius: 8px; background: var(--ink); color: #fff; font-size: 18px; line-height: 1.4; }
 .d-day { display: inline-block; margin-left: 4px; padding: 0 10px; border: 2px solid var(--ink2); border-radius: 99px; background: #fff; color: var(--ink); font-size: 16px; font-weight: 700; line-height: 1.4; vertical-align: middle; white-space: nowrap; }
@@ -212,13 +220,25 @@ body.dung { font-size: 18px; line-height: 1.55; font-weight: 400; }
 .d-live:empty { padding: 0; background: transparent; box-shadow: none; }
 .d-live.is-bad { background: var(--alert); }
 
+@media (max-width: 600px) {                            /* a long box is long: tighter rows on a phone (the button keeps its 48 px) */
+  .d-items { gap: 6px; }
+  .d-item { min-height: 0; padding: 6px 10px; }
+}
+@media (max-width: 540px) {                            /* too narrow for the facts beside the button: the name and the button on one line, the three facts on one wrapping line under them */
+  .d-item { grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "num name swap" "facts facts facts"; gap: 0 8px; }
+  .d-item-main { display: contents; }
+  .d-num { grid-area: num; }
+  .d-name { grid-area: name; }
+  .d-facts { grid-area: facts; gap: 0 12px; }
+  .d-item > .d-btn { grid-area: swap; }
+}
+@media (min-width: 601px) { .d-jump { display: none; } }
 @media (max-width: 480px) {
   .d-panel { padding: 16px; }
   .d-today { padding: 12px; }
   .d-card, .d-take { padding: 14px; }
   .dung h1 { font-size: 26px; }
   .dung h2 { font-size: 24px; }
-  .d-item { padding: 10px; gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .d-chip.is-generating::before { animation: none; }

@@ -74,7 +74,7 @@ that forwards to Render.
    Render to switch login on: `/` becomes the admin page and people who only make boxes use `/dung`. Add `ADMIN_CODE`
    so an admin must also type a code. Until `ADMIN_IDS` is set the app is open exactly as before, so deploying a new
    version never locks the admin out. The team's browser scripts and the sheet script cannot log in and keep working
-   as they did. See [docs/LOGIN.md](docs/LOGIN.md) (Vietnamese, for the owner).
+   as they did. See [docs/LOGIN.md](docs/LOGIN.md) (Vietnamese, for the owner) and, for the first trial with the team, [docs/THU_NGHIEM.md](docs/THU_NGHIEM.md).
 
 Same code, three ways to store: a file (`DB_PATH`), Docker volume, or Neon (`DATABASE_URL`). If `DATABASE_URL`
 is set it wins.
