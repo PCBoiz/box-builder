@@ -1,6 +1,7 @@
 const fs=require('fs'); const vm=require('vm');
 const ctx={console,String,Number,Math,Object,JSON,parseInt,RegExp}; vm.createContext(ctx);
 vm.runInContext(fs.readFileSync('integrations/google_sheets_apps_script.gs','utf8')+'\nthis.buildPlan_=buildPlan_;this.describe_=describe_;this.CONFIG=CONFIG;this.sectionOf_=sectionOf_;this.colShift_=colShift_;this.collectUsedIds_=collectUsedIds_;this.usedIdOf_=usedIdOf_;this.moduleTabNames_=moduleTabNames_;this.usedIdsHtml_=usedIdsHtml_;this.escapeHtml_=escapeHtml_;this.showUsedIds=showUsedIds;this.onOpen=onOpen;this.readRange_=readRange_;this.blockStarts_=blockStarts_;',ctx);
+vm.runInContext('this.NO_TOKEN_TEXT=NO_TOKEN_TEXT;this.collectChecks_=collectChecks_;this.checksPreview_=checksPreview_;this.sendChecks_=sendChecks_;this.sendChecks=sendChecks;this.sendChecksAuto_=sendChecksAuto_;this.setAppToken=setAppToken;this.getToken_=getToken_;this.boolOf_=boolOf_;this.colNum_=colNum_;this.checkIdOf_=checkIdOf_;this.checkQtyOf_=checkQtyOf_;this.clean_=clean_;this.fillFromAppAuto=fillFromAppAuto;this.installTimer=installTimer;this.removeTimer=removeTimer;this.fetchBoxes_=fetchBoxes_;this.apply_=apply_;',ctx);
 
 // code = the SM section code the box carries (taskbox.module); tab = the sheet tab (builder.module)
 const mk=(tab,label,stage,ids,qty=1,code)=>({module:code||tab,stage,contents:ids.map(i=>({object_id:i,quantity:qty})),builder:{module:tab,label}});
@@ -8,7 +9,8 @@ const sheet={M8:{}};
 const read=(tab,a1)=>{
   if(!sheet[tab]) return null;
   const m=a1.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/); if(!m) throw 'bad range '+a1;
-  const out=[]; for(let r=+m[2];r<=+(m[4]||m[2]);r++) out.push([sheet[tab][m[1]+r]??'']); return out;
+  const c1=ctx.colNum_(m[1]), c2=ctx.colNum_(m[3]||m[1]);          // a range may span columns: one array per row, one value per column
+  const out=[]; for(let r=+m[2];r<=+(m[4]||m[2]);r++){ const row=[]; for(let c=c1;c<=c2;c++) row.push(sheet[tab][ctx.colShift_('A',c-1)+r]??''); out.push(row); } return out;
 };
 // the sheet's block titles: row 2 + 25 per section, in the first column of each block (D, K, R)
 const titles=(tab,sections)=>{ for(let s=1;s<=sections;s++){ const r=2+25*(s-1);
@@ -261,3 +263,279 @@ eq(ctx.blockStarts_('M1','B2',read),[4,29,54],'block starts are the rows two und
   if(bad) fail(n+' calls a write-looking method: '+bad.join(','));
 });
 console.log('apps script used-ids tests OK');
+
+// ====================================================================== check report: ticks and block contents go to the app, nothing goes into the sheet
+{
+const mkc=(id,tab,label,stage,list,qty=1,code)=>{ const b=mk(tab,label,stage,list,qty,code); b.builder.box_id=id; return b; };
+const itemOf=(res,id)=>{ const it=res.items.find(x=>x.check.box_id===id); if(!it) fail('no check for box '+id+' in '+JSON.stringify(res)); return it; };
+const spyRead=(seen)=>(t,a)=>{ seen.push(t+'!'+a); return read(t,a); };
+
+// ---- cell parsers
+eq(['003076',3076,' 4702 ',"'004702","' 4702",'','   ',null,undefined,'N/A','1234567','12 34',12.5,true,'0047x1',new Date(0)].map(ctx.checkIdOf_),
+   ['003076','003076','004702','004702','004702','','','','',null,null,null,null,null,null,null],'checkIdOf_: blank is "", digits are padded, anything else is null');
+eq([5,'5',' 5 ','05',2.5,0,-3,'',' ','abc','1e3',true,null,undefined,'5.0',NaN,1e21,'٣','2 3','0','000','-1'].map(ctx.checkQtyOf_),
+   [5,5,5,5,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],'checkQtyOf_: a positive whole number or null');
+eq([true,false,'TRUE','FALSE',1,0,'',null,undefined,'x',[true]].map(ctx.boolOf_),[true,false,null,null,null,null,null,null,null,null,null],'boolOf_: only a real boolean counts');
+eq(['A','C','E','Z','AA','AZ'].map(ctx.colNum_),[1,3,5,26,27,52],'colNum_');
+// the columns of the three stages agree with each other: SC tick, supporters tick (the title column), Object ID, SL, left to right
+Object.keys(ctx.CONFIG.STAGES).forEach(st=>{ const c=ctx.CONFIG.STAGES[st];
+  eq([c.scCol,c.supCol],[ctx.colShift_(c.idCol,-2),ctx.colShift_(c.idCol,-1)],'columns of '+st); if(!(ctx.colNum_(c.idCol)<ctx.colNum_(c.qtyCol))) fail('SL is right of the Object ID in '+st); });
+eq(Object.keys(ctx.CONFIG.STAGES).map(st=>ctx.CONFIG.STAGES[st].scCol+ctx.CONFIG.STAGES[st].supCol),['CD','JK','QR'],'tick columns of B2, B3, A1');
+eq(ctx.clean_('bad  token\n tok-1 here','tok-1'),'bad token *** here','clean_ hides the token and folds spaces'); eq(ctx.clean_('x'.repeat(500),'').length,160,'clean_ is short');
+if(!(ctx.CONFIG.BLOCK_ROWS<=ctx.CONFIG.CHECK_MAX_ROWS)) fail('a block must fit the 30 rows per box the app takes');
+
+// ---- ticks: a real boolean is read as it is, anything else is unknown (null)
+reset(); lay('M8',[2,28]);
+Object.assign(sheet.M8,{C2:true,D25:true, J2:false,K25:false, Q2:'TRUE',R25:1, C28:'',D51:0, J28:'x',K51:'', Q28:true});
+let res=ctx.collectChecks_([
+  mkc(11,'M8','Box B2','B2',[],1,'M8-01'),mkc(12,'M8','Box B3','B3',[],1,'M8-01'),mkc(13,'M8','Box A1','A1',[],1,'M8-01'),
+  mkc(14,'M8','Box B2','B2',[],1,'M8-02'),mkc(15,'M8','Box B3','B3',[],1,'M8-02'),mkc(16,'M8','Box A1','A1',[],1,'M8-02')],read);
+const tk=(id)=>{ const c=itemOf(res,id).check; return [c.sc_tick,c.supporter_tick]; };
+eq(res.skipped,[],'ticks: nothing skipped');
+eq(tk(11),[true,true],'B2 section 1: both ticked'); eq(tk(12),[false,false],'B3 section 1: unticked checkboxes read as false');
+eq(tk(13),[null,null],'A1 section 1: the text TRUE and the number 1 are not booleans'); eq(tk(14),[null,null],'B2 section 2: a blank and a 0 are not booleans');
+eq(tk(15),[null,null],'B3 section 2: text and blank'); eq(tk(16),[true,null],'A1 section 2: SC ticked, the supporters cell is blank');
+eq(Object.keys(itemOf(res,11).check),['box_id','sc_tick','supporter_tick','rows'],'the check has exactly the four fields of the contract');
+
+// ---- rows: only the non-blank IDs, ID as 6 digits, SL a positive whole number or null; the 21 data rows and nothing else
+reset(); lay('M8',[2,28]);
+[[4,'003076',1],[5,4702,'2'],[6,' 005000 ',' 3 '],[7,'',1],[8,"'004800",2.5],[9,'012345',0],[10,'000001',''],[11,'123456','abc'],[12,'999999',true],
+ [13,'777777',-1],[14,'654321',null],[15,'  ','7'],[16,'888888','1e3'],[17,'555555',12],[24,'111111',5]].forEach(([r,id,sl])=>{ sheet.M8['E'+r]=id; sheet.M8['H'+r]=sl; });
+sheet.M8.E3='Object ID'; sheet.M8.E25='222222'; sheet.M8.E2='333333';          // the sub-header, the row under the block and the title row are not data rows
+res=ctx.collectChecks_([mkc(21,'M8','Box B2','B2',['003076',4702,'005000','004800','012345','000001','123456','999999','777777','654321','888888','555555','111111','424242'],1,'M8-01')],read);
+eq(itemOf(res,21).check.rows,[{id:'003076',qty:1},{id:'004702',qty:2},{id:'005000',qty:3},{id:'004800',qty:null},{id:'012345',qty:null},{id:'000001',qty:null},
+  {id:'123456',qty:null},{id:'999999',qty:null},{id:'777777',qty:null},{id:'654321',qty:null},{id:'888888',qty:null},{id:'555555',qty:12},{id:'111111',qty:5}],'rows and qty parsing');
+eq(itemOf(res,21).missing,1,'one of the 14 objects the app lists (424242) is not in the block');
+// blanked cells give fewer rows than the app listed; a block with nothing left gives none
+reset(); lay('M8',[2,28]); Object.assign(sheet.M8,{E4:'000001',E6:'000003',E9:'000005',H4:1,H6:1,H9:2});
+res=ctx.collectChecks_([mkc(22,'M8','Box B2','B2',['000001','000002','000003','000004','000005'],1,'M8-01'),mkc(23,'M8','Box B3','B3',['000009'],1,'M8-01')],read);
+eq(itemOf(res,22).check.rows.map(r=>r.id),['000001','000003','000005'],'the blank cells are gone from the rows'); eq(itemOf(res,22).missing,2,'two objects missing');
+eq(itemOf(res,23).check.rows,[],'an empty block gives no rows'); eq(itemOf(res,23).missing,1,'and everything is missing');
+// an ID cell that holds text is not guessed: the box is held back and the cell is named
+reset(); lay('M8',[2]); Object.assign(sheet.M8,{L4:'003076',L5:'hết hàng',L6:'004702'});
+res=ctx.collectChecks_([mkc(24,'M8','Box B3','B3',['003076','004702'],1,'M8-01')],read);
+eq(res.items,[],'an odd ID cell holds the box back'); eq(res.skipped,['M8 / Box B3: ô L5 có "hết hàng", không phải ID: sửa hoặc xoá ô đó, chưa gửi'],'the odd cell is named');
+
+// ---- sections the app cannot place are listed and not sent
+reset(); lay('M8',[2,28]);
+const none=ctx.collectChecks_([
+  mk('M8','Box B2','B2',ids21),                                                              // the feed gave no box id
+  mkc('7','M8','Box B2','B2',ids21),mkc(0,'M8','Box B2','B2',ids21),mkc(1.5,'M8','Box B2','B2',ids21),   // not whole positive numbers
+  mkc(61,'M8','Box B2','B2',ids21,1,'M8-05'),mkc(62,'M99','Box B2','B2',ids21),mkc(63,'M8','Box B2','B2',ids21,1,'M15-04'),mkc(64,'M8','Box B9','B9',ids21)],read);
+eq(none.items,[],'none of them is sent');
+eq(none.skipped,['M8 / Box B2: Box builder không gửi mã hộp','M8 / Box B2: Box builder không gửi mã hộp','M8 / Box B2: Box builder không gửi mã hộp','M8 / Box B2: Box builder không gửi mã hộp',
+  'M8 / Box B2 (section 5): không thấy trong bảng (khối "Box B2" của section 5, tab chỉ có 2 khối)','M99 / Box B2: không thấy trong bảng (không có tab "M99")',
+  'M8 / Box B2: không thấy trong bảng (mã section "M15-04" không khớp tab M8)','M8 / Box B9: chưa cấu hình cột cho B9'],'skip reasons');
+
+// ---- M5 spacing (25, then 23): the same blocks the fill finds; the supporters' tick that would sit on the next title is not read, not guessed
+reset(); lay('M5',[2,27,52,77,102,125,148]);
+p=ctx.buildPlan_([mk('M5','Box B2','B2',ids21,1,'M5-05'),mk('M5','Box B2','B2',ids21,1,'M5-06'),mk('M5','Box B2','B2',ids21,1,'M5-07')],read);
+eq(p.writes.map(x=>x.idRange),['E104:E124','E127:E147','E150:E170'],'where the fill writes on M5');
+Object.assign(sheet.M5,{C77:true,D100:true, C102:false,E104:'000104',E124:'000124',E125:'999999', C125:true,E127:'000127',E147:'000147',E148:'999998', C148:true,E150:'000150',D171:true});
+const seen=[];
+res=ctx.collectChecks_([mkc(31,'M5','Box B2','B2',[],1,'M5-04'),mkc(32,'M5','Box B2','B2',[],1,'M5-05'),mkc(33,'M5','Box B2','B2',[],1,'M5-06'),
+  mkc(34,'M5','Box B2','B2',[],1,'M5-07'),mkc(35,'M5','Box B2','B2',[],1,'M5-08')],spyRead(seen));
+eq(tk(31),[true,true],'M5 section 4: 25 rows to the next title, the tick is read'); eq(tk(32),[false,null],'M5 section 5: the next title is on the supporters row');
+eq(tk(33),[true,null],'M5 section 6: same'); eq(tk(34),[true,true],'M5 section 7: last block, the tab goes on');
+eq(itemOf(res,32).check.rows,[{id:'000104',qty:null},{id:'000124',qty:null}],'section 5 rows stop above the next title'); eq(itemOf(res,33).check.rows,[{id:'000127',qty:null},{id:'000147',qty:null}],'section 6 rows');
+eq(itemOf(res,34).check.rows,[{id:'000150',qty:null}],'section 7 rows'); eq(res.skipped,['M5 / Box B2 (section 8): không thấy trong bảng (khối "Box B2" của section 8, tab chỉ có 7 khối)'],'no section 8');
+eq(seen,['M5!D1:D1600','M5!C77:H100','M5!C102:H124','M5!C125:H147','M5!C148:H171'],
+  'one lookup of the titles, then one read per box; the block above a next title stops above it (rows 124 and 147), so its title cell is never read');
+// the next title on, above or below the supporters' row (title + 23): only below it is safe
+[[24,null,['000023']],[25,null,['000023','111111']],[26,true,['000023','111111']]].forEach(([next,want,ids])=>{
+  reset(); lay('M8',[2,next]); Object.assign(sheet.M8,{E23:'000023',E24:'111111',E25:'222222'}); if(next!==25) sheet.M8.D25=true;
+  const sn=[]; const r1=ctx.collectChecks_([mkc(41,'M8','Box B2','B2',[],1,'M8-01')],spyRead(sn));
+  eq(r1.items[0].check.supporter_tick,want,'next title at row '+next); eq(r1.items[0].check.rows.map(x=>x.id),ids,'rows stop above the next title at row '+next);
+  eq(sn[1],want===null?'M8!C2:H'+Math.min(24,next-1):'M8!C2:H25','the block is read down to the supporters row only when it is free');
+});
+
+// ====================================================================== the environment: a recording spreadsheet, a network, properties, a menu
+const log=[], writes=[], logs=[], net=[], props={}, alerts=[], prompts=[];
+const wrap=(label,o,sink)=>new Proxy(o,{get(t,k,recv){
+  if(typeof k!=='string') return t[k];
+  if(!(k in t)){ (sink||log).push(label+'.'+k+' (not allowed)'); return ()=>{ throw new Error('UNEXPECTED CALL '+label+'.'+k); }; }
+  const v=t[k]; if(typeof v!=='function') return v;
+  return (...a)=>{ (sink||log).push(label+'.'+k); const out=v.apply(t,a); return out===t?recv:out; };
+}});
+let maxRows={}, canWrite=false, reply=()=>({code:200,body:'{"boxes":[]}'}), answerYes=true, promptAnswer={button:'OK',text:''};
+const checkRange=(tab,a1)=>{ const m=/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(a1); const mx=maxRows[tab]||2000; if(m&&(+m[4]>mx||+m[2]>mx)) throw new Error('range outside the tab: '+tab+'!'+a1); };
+const fakeBook=wrap('Spreadsheet',{getSheetByName:(n)=>!sheet[n]?null:wrap('Sheet',{
+  getMaxRows:()=>maxRows[n]||2000,
+  getRange:(a1)=>{ checkRange(n,a1); const rg={getValues:()=>read(n,a1)};
+    if(canWrite){ rg.setNumberFormat=()=>rg; rg.setValues=(v)=>{ const m=/^([A-Z]+)(\d+):/.exec(a1); writes.push(a1); v.forEach((row,i)=>{ sheet[n][m[1]+(+m[2]+i)]=row[0]; }); return rg; }; }
+    return wrap('Range',rg); }})});
+const fakeUi2={ButtonSet:{OK:'OK',YES_NO:'YES_NO',OK_CANCEL:'OK_CANCEL'},Button:{YES:'YES',NO:'NO',OK:'OK',CANCEL:'CANCEL'},
+  alert:(t,m,b)=>{ alerts.push(m===undefined?{title:'',text:t,buttons:'OK'}:{title:t,text:m,buttons:b}); return b==='YES_NO'?(answerYes?'YES':'NO'):'OK'; },
+  prompt:(t,m,b)=>{ prompts.push({title:t,text:m}); return {getSelectedButton:()=>promptAnswer.button,getResponseText:()=>promptAnswer.text}; },
+  createMenu:(name)=>{ menu={name,items:[],seps:0}; const b={addItem:(l,f)=>{menu.items.push([l,f]);return b;},addSeparator:()=>{menu.seps++;return b;},addToUi:()=>b}; return b; }};
+ctx.SpreadsheetApp={getActive:()=>fakeBook,getUi:()=>fakeUi2};
+ctx.UrlFetchApp={fetch:(url,opts)=>{ opts=opts||{}; log.push('NET '+(opts.method||'get')); net.push({url,opts}); const r=reply(url,opts,net.length);
+  if(r.throws) throw new Error(r.throws); return {getResponseCode:()=>r.code,getContentText:()=>r.body}; }};
+ctx.PropertiesService={getScriptProperties:()=>wrap('Properties',{getProperty:(k)=>(k in props?props[k]:null),setProperty:(k,v)=>{ props[k]=v; }},[])};
+const realConsole=ctx.console; ctx.console={log:(m)=>logs.push(String(m))};
+const clear=()=>{ [log,writes,logs,net,alerts,prompts].forEach(a=>a.length=0); };
+const READ_ONLY=/^(Spreadsheet\.getSheetByName|Sheet\.getMaxRows|Sheet\.getRange|Range\.getValues|NET (get|post))$/;
+const onlyReads=(why)=>{ const bad=log.filter(x=>!READ_ONLY.test(x)); if(bad.length) fail(why+': a call that is not a plain read reached the sheet: '+bad.join(', ')); };
+const TOKEN='tok-test-123';                                         // made up
+const feedReply=(boxes,post)=>(url,opts)=>/\/api\/sheet-boxes$/.test(url)?{code:200,body:JSON.stringify({boxes})}:post(url,opts);
+const ok200=()=>({code:200,body:'{"ok":true,"saved":3,"skipped":1}'});
+const mainFixture=()=>{
+  reset(); lay('M8',[2,28]); lay('M17',[2,28]);
+  Object.assign(sheet.M8,{C2:true,D25:true,E4:'003076',E6:'005000',H4:1,H6:2, J2:true,K25:false,L4:'001111',O4:1, S30:'002001',S31:'002002',V30:1,V31:3});
+  Object.assign(sheet.M17,{C2:false,D25:true,E4:'002222',H4:1});
+  return [mkc(21,'M8','Box B2','B2',['003076','004702','005000'],1,'M8-01'),mkc(22,'M8','Box B3','B3',['001111'],1,'M8-01'),
+    mkc(23,'M8','Box A1','A1',['002001','002002'],1,'M8-02'),mkc(24,'M17','Box B2','B2',['002222'],1,'M17-01'),mkc(25,'M8','Box B2','B2',['009999'],1,'M8-05')];
+};
+const PREVIEW=['Sẽ gửi kết quả kiểm của 4 hộp (M8: 3, M17: 1).','SC đã tick "cần": 2 hộp.','Người hỗ trợ đã tick: 2 hộp.','Hộp thiếu món (ô ID bị bỏ trống): 1 hộp.',
+  'Không đọc được ô tick (gửi là chưa biết): SC 1 hộp, người hỗ trợ 1 hộp.','KHÔNG GỬI M8 / Box B2 (section 5): không thấy trong bảng (khối "Box B2" của section 5, tab chỉ có 2 khối)'].join('\n');
+const PAYLOAD='{"checks":[{"box_id":21,"sc_tick":true,"supporter_tick":true,"rows":[{"id":"003076","qty":1},{"id":"005000","qty":2}]},'+
+  '{"box_id":22,"sc_tick":true,"supporter_tick":false,"rows":[{"id":"001111","qty":1}]},'+
+  '{"box_id":23,"sc_tick":null,"supporter_tick":null,"rows":[{"id":"002001","qty":1},{"id":"002002","qty":3}]},'+
+  '{"box_id":24,"sc_tick":false,"supporter_tick":true,"rows":[{"id":"002222","qty":1}]}]}';
+
+// ---- a tab that ends before the supporters row (the real readRange_ on a fake grid that refuses ranges outside it)
+reset(); lay('M3',[2]); Object.assign(sheet.M3,{C2:true,D25:true,E4:'000004',E24:'000024'});
+const edge=(rows)=>{ maxRows={M3:rows}; clear(); return ctx.collectChecks_([mkc(51,'M3','Box B2','B2',[],1,'M3-01')]).items[0].check; };
+eq(edge(24),{box_id:51,sc_tick:true,supporter_tick:null,rows:[{id:'000004',qty:null},{id:'000024',qty:null}]},'the tab ends on the last data row: the supporters row is outside, unknown');
+eq(edge(25).supporter_tick,true,'the tab goes one row further: the tick is read'); eq(edge(10),{box_id:51,sc_tick:true,supporter_tick:null,rows:[{id:'000004',qty:null}]},'a tab that ends inside the block gives the rows it has');
+eq(edge(3),{box_id:51,sc_tick:true,supporter_tick:null,rows:[]},'a tab that ends before the data: no rows');
+maxRows={}; onlyReads('tab edge');
+
+// ---- the preview text, and that building it only reads
+let feed=mainFixture(); clear(); maxRows={};
+res=ctx.collectChecks_(feed); onlyReads('collectChecks_');
+eq(log.filter(x=>x==='Range.getValues').length,8,'reads: the titles once per tab and stage (4), then one read per box found (4)');
+eq(ctx.checksPreview_(res),PREVIEW,'preview text'); if(/—|–/.test(PREVIEW)) fail('no em or en dashes');
+eq(res.items.map(i=>[i.check.box_id,i.name,i.missing]),[[21,'M8 / Box B2',1],[22,'M8 / Box B3',0],[23,'M8 / Box A1 (section 2)',0],[24,'M17 / Box B2',0]],'what is sent, and what is missing');
+eq(ctx.checksPreview_({items:[],skipped:[]}),'Chưa có box nào ở trạng thái Đã duyệt.','nothing approved'); eq(ctx.checksPreview_({items:[],skipped:['M8 / Box B2: x']}),'KHÔNG GỬI M8 / Box B2: x','only skipped boxes');
+eq(ctx.checksPreview_({items:[{tab:'M8',missing:0,check:{sc_tick:true,supporter_tick:true,rows:[]}}],skipped:[]}).split('\n'),
+  ['Sẽ gửi kết quả kiểm của 1 hộp (M8: 1).','SC đã tick "cần": 1 hộp.','Người hỗ trợ đã tick: 1 hộp.','Hộp thiếu món (ô ID bị bỏ trống): 0 hộp.','Khối còn trống hoàn toàn: 1 hộp.'],'an empty block is said so');
+
+// ---- the menu: the new items are there, the old ones stay
+ctx.onOpen();
+eq(menu.items.filter(i=>/kết quả kiểm|mã Box/.test(i[0])),[['Gửi kết quả kiểm cho Box builder (xem trước)','sendChecks'],['Đặt mã Box builder','setAppToken']],'new menu items');
+['fillFromApp','installTimer','removeTimer','showUsedIds'].forEach(f=>{ if(!menu.items.some(i=>i[1]===f)) fail('menu item for '+f+' must stay'); });
+if(menu.items.some(i=>!/^[A-Za-z]+$/.test(i[1])||typeof ctx[i[1]]!=='function')) fail('every menu handler is a public function');
+
+// ---- menu send: no token, then preview + NO, then preview + YES: exactly one GET and one POST, exactly the contract
+clear(); delete props.SHEET_TOKEN; reply=feedReply(feed,ok200);
+ctx.sendChecks();
+eq(alerts.map(a=>a.text),[ctx.NO_TOKEN_TEXT],'without a code the person is told how to set it'); eq(net.length,0,'and nothing is fetched or sent');
+props.SHEET_TOKEN=TOKEN; clear(); answerYes=false;
+ctx.sendChecks();
+eq(alerts.length,1,'one question'); eq(alerts[0].title,'Box builder: sẽ gửi kết quả kiểm','question title'); eq(alerts[0].buttons,'YES_NO','a yes/no question');
+eq(alerts[0].text,PREVIEW+'\n\nChỉ gửi cho Box builder, không ghi gì vào bảng tính. Tiếp tục?','the question shows the preview'); eq(net.map(n=>n.opts.method||'get'),['get'],'answering no sends nothing');
+onlyReads('preview');
+clear(); answerYes=true;
+ctx.sendChecks(); onlyReads('send');
+eq(net.map(n=>(n.opts.method||'get')+' '+n.url.replace(ctx.CONFIG.APP_URL,'')),['get /api/sheet-boxes','post /api/sheet/checks'],'one read of the feed, one report');
+const post=net[1].opts;
+eq(post.payload,PAYLOAD,'the body is exactly the contract'); eq(JSON.parse(post.payload).checks.length,4,'four boxes');
+eq(post.headers,{'X-Sheet-Token':TOKEN},'only the token header'); eq(post.contentType,'application/json','json'); eq(post.method,'post','post'); eq(post.muteHttpExceptions,true,'errors come back as codes');
+if(net[0].url!==ctx.CONFIG.APP_URL+'/api/sheet-boxes'||('X-Sheet-Token' in (net[0].opts.headers||{}))) fail('the feed read must not carry the token');
+eq(alerts.map(a=>a.text).slice(-1),['Đã gửi 4 hộp: Box builder ghi nhận 3, bỏ qua 1 (hộp đã xoá, chưa duyệt hoặc đã lên SM).'],'result message');
+// a feed with nothing sendable: the person is told, nothing is posted
+clear(); reply=feedReply([mk('M8','Box B2','B2',ids21)],ok200); ctx.sendChecks();
+eq(net.map(n=>n.opts.method||'get'),['get'],'nothing to send, no POST'); eq(alerts.map(a=>a.text),['KHÔNG GỬI M8 / Box B2: Box builder không gửi mã hộp'],'and the reason is shown');
+clear(); reply=feedReply([],ok200); ctx.sendChecks(); eq(alerts.map(a=>a.text),['Chưa có box nào ở trạng thái Đã duyệt.'],'empty feed'); eq(net.length,1,'only the read');
+// the app cannot be reached for the feed: the person reads a message, not a stack
+clear(); reply=()=>({code:500,body:''}); ctx.sendChecks(); if(!/Không tải được Box builder \(HTTP 500\)/.test(alerts[0].text)||net.length!==1) fail('feed error: '+JSON.stringify(alerts));
+
+// ---- answers of the app: 401, 503, other codes, a lost connection, a body that is not ours, several requests
+const one=[{box_id:5,sc_tick:true,supporter_tick:false,rows:[{id:'000001',qty:1}]}];
+const send=(r,list)=>{ clear(); reply=typeof r==='function'?r:()=>r; return ctx.sendChecks_(list||one); };
+let out=send({code:401,body:'{"detail":"x"}'});
+eq([out.ok,net.length],[false,1],'401 is one request'); if(!/Mã Box builder sai \(HTTP 401\)/.test(out.text)||!/Đặt mã Box builder/.test(out.text)) fail('401 text: '+out.text);
+out=send({code:503,body:'<html>Service Unavailable</html>'}); if(out.ok||!/HTTP 503/.test(out.text)||!/chưa đặt mã/.test(out.text)||/<html/.test(out.text)) fail('503 text: '+out.text);
+out=send({code:500,body:'<html><body>Oops</body></html>'}); if(out.ok||!/HTTP 500/.test(out.text)||/<|Oops/.test(out.text)) fail('500 text must not echo a page: '+out.text);
+out=send({code:422,body:'{"detail":"Quá nhiều hộp"}'}); if(out.ok||!/HTTP 422: Quá nhiều hộp/.test(out.text)) fail('422 text: '+out.text);
+out=send({code:422,body:JSON.stringify({detail:'bad '+TOKEN+' '+'x'.repeat(400)})}); if(out.text.indexOf(TOKEN)>=0||out.text.length>260) fail('an echoed token or a long detail is cut: '+out.text);
+out=send({code:422,body:'{"detail":[{"msg":"x"}]}'}); if(!/HTTP 422\)/.test(out.text)) fail('a detail that is not a string is dropped: '+out.text);
+out=send({throws:'DNS error for '+TOKEN}); if(out.ok||!/Không kết nối được Box builder/.test(out.text)||out.text.indexOf(TOKEN)>=0) fail('lost connection: '+out.text);
+out=send({code:200,body:'<html>login</html>'}); if(out.ok||!/không đúng dạng/.test(out.text)) fail('200 with a page: '+out.text);
+out=send({code:200,body:'{"ok":false}'}); if(out.ok) fail('ok:false is not success');
+out=send({code:302,body:''}); if(out.ok||!/HTTP 302/.test(out.text)||net[0].opts.followRedirects!==false) fail('a redirect is an error, and is not followed: '+out.text);
+out=send({code:200,body:'{"ok":true,"saved":1,"skipped":0}'}); eq([out.ok,out.saved,out.skipped,out.text],[true,1,0,'Đã gửi 1 hộp: Box builder ghi nhận 1, bỏ qua 0.'],'success');
+out=send({code:200,body:'{"ok":true}'}); eq([out.ok,out.saved,out.skipped],[true,0,0],'a reply without counts counts zero');
+out=send(ok200,[]); eq([out.ok,net.length,out.text],[true,0,'Không có hộp nào để gửi.'],'an empty list posts nothing');
+// more than 200 boxes go in requests of at most 200, in order; a failure stops the rest and says how far it got
+const many=Array.from({length:450},(_,i)=>({box_id:i+1,sc_tick:null,supporter_tick:null,rows:[]}));
+out=send(ok200,many); eq(net.map(n=>JSON.parse(n.opts.payload).checks.length),[200,200,50],'450 boxes: 200, 200, 50');
+eq(net.map(n=>JSON.parse(n.opts.payload).checks[0].box_id),[1,201,401],'in order'); eq([out.ok,out.saved,out.skipped],[true,9,3],'counts add up');
+out=send((u,o,n)=>n===2?{code:401,body:'{}'}:ok200(),many); eq(net.length,2,'the third request is not made after a 401'); if(out.ok||!/^Đã gửi 200 hộp trước đó\. Mã Box builder sai/.test(out.text)) fail('partial failure text: '+out.text);
+// the code goes only over https
+const realUrl=ctx.CONFIG.APP_URL; ctx.CONFIG.APP_URL='http://app.example'; out=send(ok200); ctx.CONFIG.APP_URL=realUrl;
+if(out.ok||net.length||!/https:\/\//.test(out.text)) fail('the code must not go over plain http: '+out.text);
+
+// ---- the code: typed once, kept in Script Properties, read back for the POST only; never in CONFIG or the file
+Object.keys(props).forEach(k=>delete props[k]);
+if(JSON.stringify(ctx.CONFIG).indexOf('tok-')>=0||Object.keys(ctx.CONFIG).some(k=>/token/i.test(k)&&k!=='TOKEN_PROPERTY')) fail('CONFIG must hold no code');
+eq(ctx.CONFIG.TOKEN_PROPERTY,'SHEET_TOKEN','only the name of the property is in CONFIG');
+out=send(ok200); eq([out.ok,out.text,net.length],[false,ctx.NO_TOKEN_TEXT,0],'no property, no request');
+const realCode=ctx.CONFIG.ACCESS_CODE; ctx.CONFIG.ACCESS_CODE='shared-code-xyz'; out=send(ok200); eq(net.length,0,'the old access code is not a token'); 
+props.SHEET_TOKEN='tok-first'; send(ok200); eq(net[0].opts.headers,{'X-Sheet-Token':'tok-first'},'the header carries the property, not the access code');
+if(JSON.stringify(net[0].opts).indexOf('shared-code-xyz')>=0) fail('the access code must not be sent to the report route'); ctx.CONFIG.ACCESS_CODE=realCode;
+props.SHEET_TOKEN='  tok-second \n'; send(ok200); eq(net[0].opts.headers,{'X-Sheet-Token':'tok-second'},'read again on every send, trimmed');
+// setting it
+const setIt=(button,text)=>{ clear(); promptAnswer={button,text}; ctx.setAppToken(); };
+setIt('OK','  tok-new-456  '); eq(props.SHEET_TOKEN,'tok-new-456','stored trimmed, under the configured name'); eq(alerts.map(a=>a.text),['Đã lưu mã.'],'confirmed');
+if(alerts.concat(prompts).some(a=>JSON.stringify(a).indexOf('tok-new-456')>=0)) fail('the code is never shown back'); eq(prompts.length,1,'asked once');
+setIt('CANCEL','tok-cancel'); eq(props.SHEET_TOKEN,'tok-new-456','cancel keeps the old code'); eq(alerts.length,0,'cancel is silent');
+setIt('OK','   '); eq(props.SHEET_TOKEN,'tok-new-456','an empty answer keeps the old code'); eq(alerts.map(a=>a.text),['Chưa nhập mã, giữ nguyên mã cũ.'],'and says so');
+['has space','two\nlines','mã-việt','x'.repeat(201)].forEach(bad=>{ setIt('OK',bad); eq(props.SHEET_TOKEN,'tok-new-456','refused: '+JSON.stringify(bad.slice(0,12))); if(!/Chưa lưu/.test(alerts[0].text)) fail('refusal text'); });
+setIt('OK','x'.repeat(200)); eq(props.SHEET_TOKEN.length,200,'200 characters is fine');
+props.SHEET_TOKEN=TOKEN;
+
+// ---- the timer: the fill first, then the report; a failed or impossible report never breaks it
+const timerFixture=()=>{ reset(); lay('M8',[2,28]); sheet.M8.C2=false; sheet.M8.D25=false; canWrite=true;
+  feed=[mkc(71,'M8','Box B2','B2',['003076','004702'],1,'M8-01')]; reply=feedReply(feed,ok200); clear(); };
+timerFixture(); ctx.fillFromAppAuto();
+eq(writes,['E4:E5','H4:H5'],'the fill wrote its own block and nothing else');
+eq(log.filter(x=>/^Range\.set/.test(x)),['Range.setNumberFormat','Range.setValues','Range.setValues'],'one block: one format, two writes');
+eq(log.filter(x=>/^NET/.test(x)),['NET get','NET post'],'one read of the feed, one report'); if(log.lastIndexOf('Range.setValues')>log.indexOf('NET post')) fail('the report goes after the fill');
+eq(JSON.parse(net[1].opts.payload),{checks:[{box_id:71,sc_tick:false,supporter_tick:false,rows:[{id:'003076',qty:1},{id:'004702',qty:1}]}]},'the report shows what the fill just wrote');
+eq(logs.slice(-1)[0],'Đã gửi 1 hộp: Box builder ghi nhận 3, bỏ qua 1 (hộp đã xoá, chưa duyệt hoặc đã lên SM).','the outcome is logged');
+canWrite=false;
+// no code set: the fill still runs, nothing is posted, no error
+delete props.SHEET_TOKEN; timerFixture(); ctx.fillFromAppAuto();
+eq(writes,['E4:E5','H4:H5'],'fill still runs without a code'); eq(net.map(n=>n.opts.method||'get'),['get'],'no report without a code'); eq(logs.slice(-1)[0],'Chưa đặt mã Box builder: không gửi kết quả kiểm.','and the log says why');
+// the app says 401, 503 or is gone: logged, not thrown, the fill is already done
+props.SHEET_TOKEN=TOKEN;
+[[{code:401,body:'{}'},/Mã Box builder sai/],[{code:503,body:''},/HTTP 503/],[{throws:'timeout'},/Không kết nối được/]].forEach(([bad,rx])=>{
+  timerFixture(); reply=feedReply(feed,()=>bad); ctx.fillFromAppAuto(); eq(writes,['E4:E5','H4:H5'],'fill done before the report failed');
+  if(!rx.test(logs.slice(-1)[0])) fail('the failure is logged: '+logs.join(' | '));
+});
+// a reading problem inside the report is caught as well (here: the tab vanishes between the fill and the read)
+timerFixture(); ctx.SpreadsheetApp.getActive=()=>{ throw new Error('boom '+TOKEN); }; ctx.sendChecksAuto_(feed);
+if(!/^Không gửi được kết quả kiểm: boom \*\*\*$/.test(logs.slice(-1)[0])) fail('caught and scrubbed: '+logs.join('|'));
+ctx.SpreadsheetApp.getActive=()=>fakeBook; canWrite=false;
+// the feed cannot be read: the fill fails exactly as before and nothing is posted
+timerFixture(); reply=()=>({code:500,body:''}); let threw=false; try{ ctx.fillFromAppAuto(); }catch(e){ threw=/Không tải được Box builder/.test(e.message); }
+if(!threw||net.length!==1||writes.length) fail('a failed read must stop the run before any write or report');
+canWrite=false;
+// the timer entries are unchanged: the trigger is still the fill handler, removeTimer touches only it
+{ const deleted=[]; let made=null; const triggers=[{id:1,getHandlerFunction:()=>'fillFromAppAuto'},{id:2,getHandlerFunction:()=>'somethingElse'},{id:3,getHandlerFunction:()=>'fillFromAppAuto'}];
+  ctx.ScriptApp={getProjectTriggers:()=>triggers,deleteTrigger:(t)=>deleted.push(t.id),newTrigger:(fn)=>({timeBased:()=>({everyMinutes:(n)=>({create:()=>{ made=[fn,n]; }})})})};
+  ctx.removeTimer(); eq(deleted,[1,3],'removeTimer deletes only the fill trigger'); deleted.length=0; clear(); ctx.installTimer();
+  eq(made,['fillFromAppAuto',30],'the trigger is the same handler every 30 minutes'); eq(deleted,[1,3],'installTimer replaces, never doubles');
+  if(!/kết quả kiểm/.test(alerts[0].text)||!/không bao giờ ghi đè/.test(alerts[0].text)) fail('the timer alert says both things: '+alerts[0].text); }
+
+// ---- static proofs on the file itself
+const src=fs.readFileSync('integrations/google_sheets_apps_script.gs','utf8');
+const beforeApply=src.slice(0,src.indexOf('function apply_('));
+const bad=beforeApply.match(/\.(set(?!Width|Height|Property)\w*|clear\w*|delete(?!Trigger)\w*|insert\w*|append\w*|remove\w*|sort\w*Range|copy\w*|merge\w*|activate\w*|protect\w*)\(/g);
+if(bad) fail('only apply_ may call a write method on the sheet, found: '+bad.join(','));
+if((src.match(/\.setProperty\(/g)||[]).length!==1||src.indexOf('.setProperty(')<src.indexOf('function setAppToken(')) fail('the only setProperty is in setAppToken');
+['collectChecks_','boolOf_','colNum_','checkIdOf_','checkQtyOf_','checksPreview_','getToken_','clean_','sendChecks_','sendChecks','sendChecksAuto_','readRange_','blockStarts_','sectionOf_'].forEach(n=>{
+  const f=ctx[n].toString(); const b=f.match(/\.(set\w*|clear\w*|delete\w*|insert\w*|append\w*|remove\w*|copy\w*|merge\w*|activate\w*|protect\w*)\(/g);
+  if(b) fail(n+' calls a write-looking method: '+b.join(',')); });
+if((src.match(/UrlFetchApp\.fetch\(/g)||[]).length!==2||(src.match(/CONFIG\.APP_URL \+ '/g)||[]).length!==2) fail('the script talks to the app in exactly two places');
+if(!/CONFIG\.APP_URL \+ '\/api\/sheet-boxes'/.test(src)||!/CONFIG\.APP_URL \+ '\/api\/sheet\/checks'/.test(src)) fail('the two routes');
+if(!/headers: \{ 'X-Sheet-Token': token \}/.test(src)||/X-Sheet-Token'\s*:\s*'/.test(src)) fail('the code is a variable read from Script Properties, never a literal');
+if(/docs\.google\.com|spreadsheets\/d\//.test(src)) fail('no sheet link in the file');
+const header=src.slice(0,src.indexOf('const CONFIG'));
+if(!/\/api\/sheet\/checks/.test(header)||!/X-Sheet-Token/.test(header)||!/ONLY into cells that are completely empty/.test(header)||!/call no write method on the sheet/.test(header)) fail('the header must say what it sends and what it never does');
+if(/It only READS from the app/.test(header)) fail('the old "only reads from the app" rule is no longer true');
+ctx.console=realConsole;
+console.log('apps script check-report tests OK');
+}
