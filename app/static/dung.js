@@ -35,6 +35,13 @@
     logoutFail: "Chưa thoát được. Thử lại.",
     whyApproved: "Hộp đã duyệt. Bấm Bỏ duyệt nếu cần sửa.",
     whyPushed: "Hộp đã lên SM nên không sửa được ở đây. Báo admin nếu cần đổi.",
+    // what the supporters' check in the sheet means for an approved box that is not in SM yet: one short sentence, nothing technical
+    sheetWaitSc: "Chờ bạn tick hộp này trong bảng tính",
+    sheetWaitSupport: "Chờ người hỗ trợ kiểm món",
+    sheetDiff: "Bảng tính có món khác hộp, cần xem lại",
+    sheetMissing: (n) => `Người hỗ trợ báo thiếu ${n} món, hộp đã đổi theo`,
+    sheetNothing: "Người hỗ trợ báo thiếu hết món, hộp bị giữ lại",
+    sheetOk: "Người hỗ trợ đã kiểm",
     whyNotDone: "Chưa chọn xong đồ nên chưa duyệt được.",
     whyShort: (n, count) => `Hộp mới có ${n}/${count} món. Điền đủ món trước khi duyệt.`,
     draftCanChange: "Danh sách còn đổi được đến khi bạn duyệt hộp.",
@@ -461,7 +468,39 @@
     if (a === "regen") return (b.status === "draft" || b.status === "error") && b.items.length > 0 ? a : null;     // nothing to lose with no món: no question
     return null;
   }
-  const cardSig = (b) => JSON.stringify([b, askOf(b) || "", ui.msg.get(b.id) || "", expiryOf(b), dayTag(b)]);
+  /* The sheet note shows its state and a count; the time of the last report changes every half hour and must not rebuild the card. */
+  const sheetLine = (b) => {
+    const s = b.sheet;
+    if (!s || b.status !== "approved" || b.pushed) return null;                       // "off" and boxes already in SM show nothing
+    switch (s.state) {
+      case "wait_sc": return { key: "wait_sc", icon: "clock", text: T.sheetWaitSc };
+      case "wait_support": return { key: "wait_support", icon: "clock", text: T.sheetWaitSupport };
+      case "diff": return { key: "diff", icon: "warn", text: T.sheetDiff };
+      case "missing": return { key: "nothing", icon: "warn", text: T.sheetNothing };
+      case "ok": return s.missing > 0 ? { key: "missing", icon: "minus", text: T.sheetMissing(s.missing) } : { key: "ok", icon: "check", text: T.sheetOk };
+      default: return null;
+    }
+  };
+  const withoutSheet = (b) => ({ ...b, sheet: null });
+  const cardSig = (b) => JSON.stringify([withoutSheet(b), sheetLine(b), askOf(b) || "", ui.msg.get(b.id) || "", expiryOf(b), dayTag(b)]);
+  const SHEET_ICONS = {                                     // drawn, so the meaning is not in the colour alone; the words carry it for a screen reader
+    clock: [["circle", { cx: 10, cy: 10, r: 7.5 }], ["path", { d: "M10 5.5V10l3 2" }]],
+    check: [["circle", { cx: 10, cy: 10, r: 7.5 }], ["path", { d: "M6.5 10.3l2.4 2.4 4.6-5" }]],
+    warn: [["path", { d: "M10 3.2l7.3 13H2.7z" }], ["path", { d: "M10 8.2v4M10 14.4v.1" }]],
+    minus: [["circle", { cx: 10, cy: 10, r: 7.5 }], ["path", { d: "M6.5 10h7" }]],
+  };
+  function sheetIcon(name) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    for (const [k, v] of Object.entries({ viewBox: "0 0 20 20", width: 20, height: 20, fill: "none", stroke: "currentColor", "stroke-width": 2,
+      "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false", class: "d-sheet-i" })) svg.setAttribute(k, v);
+    for (const [tag, attrs] of SHEET_ICONS[name]) {
+      const part = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) part.setAttribute(k, v);
+      svg.append(part);
+    }
+    return svg;
+  }
 
   function renderCards() {
     for (const id of [...ui.ask.keys()]) {                  // the box changed under an open question (approved elsewhere, an object taken out): close it
@@ -471,7 +510,7 @@
     syncList("cards", $("#cards"), S.boxes, cardSig, buildCard);
   }
   function renderTakes() {
-    syncList("takes", $("#takes"), S.boxes.filter(takeable), (b) => JSON.stringify(b), buildTake);
+    syncList("takes", $("#takes"), S.boxes.filter(takeable), (b) => JSON.stringify(withoutSheet(b)), buildTake);
   }
   function renderTimed() {                                  // the clock moved: a card may need a new "time left" sentence, and after midnight every box is a day older
     const day = vnDay(serverNow());
@@ -603,6 +642,7 @@
     if (b.theme) facts.push(`Bối cảnh ${b.theme}`);
     facts.push(gen || items.length >= b.count ? `${b.count} món` : `${items.length} trên ${b.count} món`);
     const exp = expiryOf(b);
+    const sheet = sheetLine(b);
     const asking = askOf(b);
     const longDraft = st === "draft" && items.length > 6;       // on a phone a long box puts Duyệt hộp far down: a link at the top goes there
 
@@ -623,6 +663,7 @@
 
     return h("article", { class: `d-card is-${st}`, "data-box": b.id, "aria-labelledby": hid },
       h("div", { class: "d-card-top" }, headingOf(b, hid), h("span", { class: `d-chip is-${st}` }, b.status_text || STATUS[st] || st)),
+      sheet ? h("p", { class: `d-sheet is-${sheet.key}`, "data-sheet": sheet.key }, sheetIcon(sheet.icon), h("span", {}, sheet.text)) : null,
       longDraft ? h("button", { type: "button", class: "d-jump", "data-key": "jump", "aria-describedby": hid, onclick: () => jumpDown(b) }, T.jump) : null,
       h("p", { class: "d-meta" }, facts.map((f) => h("span", {}, f))),
       st === "error" ? h("div", { class: "d-errblock" }, b.message ? h("p", { class: "d-alert" }, b.message) : null, h("p", { class: "d-why" }, canFill ? T.errorFill : T.errorNext)) : null,

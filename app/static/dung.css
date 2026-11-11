@@ -126,6 +126,12 @@ body.dung { font-size: 18px; line-height: 1.55; font-weight: 400; }
 .d-chip.is-draft { background: var(--hold-bg); color: #4d3200; }
 .d-chip.is-approved { background: #cbe9df; color: #0c4a3e; }
 .d-chip.is-error { background: #f6d5d1; color: #7a1812; }
+/* the supporters' check in the sheet: one short line under the state of an approved box, with a drawn icon so the colour is not the only sign */
+.d-sheet { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 14px 8px 10px; border-radius: 14px; background: #dfe5e2; color: var(--ink); font-size: 16px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.d-sheet-i { flex: none; margin-top: 1px; }
+.d-sheet.is-wait_sc, .d-sheet.is-wait_support { background: var(--hold-bg); color: #4d3200; }
+.d-sheet.is-ok { background: #cbe9df; color: #0c4a3e; }
+.d-sheet.is-diff, .d-sheet.is-nothing { background: #f6d5d1; color: #7a1812; }
 .d-meta { display: flex; flex-wrap: wrap; gap: 2px 18px; font-size: 16px; color: var(--ink2); }
 .d-meta span { overflow-wrap: anywhere; }
 .d-chip.is-generating::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; background: var(--hi); animation: d-pulse 1.6s ease-in-out infinite; }

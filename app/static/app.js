@@ -15,6 +15,10 @@ const ICONS = {
   unlock: '<path d="M4 7.5h8v6H4z"/><path d="M5.7 7.5V5.6a2.3 2.3 0 0 1 4.3-1.1"/>',
   swap: '<path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.8v3.1h-3.1"/>',
   x: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  clock: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.4 1.6"/>',
+  check: '<circle cx="8" cy="8" r="6"/><path d="M5.2 8.2l2 2 3.6-4"/>',
+  warn: '<path d="M8 2.6l6 10.6H2z"/><path d="M8 6.6v3.2M8 11.6v.1"/>',
+  minus: '<circle cx="8" cy="8" r="6"/><path d="M5.2 8h5.6"/>',
 };
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -241,6 +245,32 @@ function emptyState() {
 
 const STATUS = { generating: "Đang chọn đồ", draft: "Nháp", approved: "Đã duyệt", error: "Chưa chọn được đồ" };
 
+/* The supporters' check from the sheet, as one pill with an icon (the colour is never the only sign) and, for a difference, each object in plain words.
+   The server sends box.sheet = {state, missing, diff: [{id, why}], read_at}; "off" (switch off, not approved, already in SM) shows nothing. */
+const SHEET_DIFF_WHY = { extra: "không có trong hộp", qty_up: "nhiều hơn số trong hộp" };
+function sheetPill(sh) {
+  switch (sh && sh.state) {
+    case "wait_sc": return { key: "wait_sc", icon: "clock", text: "Chờ SC tick hộp này trong bảng tính" };
+    case "wait_support": return { key: "wait_support", icon: "clock", text: "Chờ người hỗ trợ kiểm món" };
+    case "diff": return { key: "diff", icon: "warn", text: "Bảng tính có món khác hộp, cần xem lại" };
+    case "missing": return { key: "nothing", icon: "warn", text: "Người hỗ trợ báo thiếu hết món, hộp bị giữ lại" };
+    case "ok": return sh.missing > 0 ? { key: "missing", icon: "minus", text: `Người hỗ trợ báo thiếu ${sh.missing} món, hộp đã đổi theo` }
+      : { key: "ok", icon: "check", text: "Người hỗ trợ đã kiểm" };
+    default: return null;
+  }
+}
+function sheetNote(box) {
+  const p = box.status === "approved" && !box.pushed ? sheetPill(box.sheet) : null;
+  if (!p) return null;
+  const sh = box.sheet;
+  const at = sh.read_at ? new Date(sh.read_at * 1000).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "";
+  return h("div", { class: "sheet-note", "data-sheet": p.key },
+    h("span", { class: "pill sheet-" + p.key }, icon(p.icon), p.text),
+    at ? h("small", { class: "sheet-at", title: "Giờ script bảng tính báo kết quả kiểm lần cuối" }, `Báo lúc ${at}`) : null,
+    sh.state === "diff" && sh.diff.length
+      ? h("ul", { class: "sheet-list" }, sh.diff.map((d) => h("li", {}, `món ${d.id} ${SHEET_DIFF_WHY[d.why] || "khác hộp"}`))) : null);
+}
+
 function buildBox(box, u) {
   const n = box.items.length;
   const byPos = new Map(box.items.map((i) => [i.pos, i]));
@@ -263,6 +293,7 @@ function buildBox(box, u) {
         h("span", { class: "pill " + box.status }, STATUS[box.status]),
         box.pushed ? h("span", { class: "pill pushed", title: "Box ID trong SM: " + box.pushed.sm_box_id }, "Đã lên SM") : null,
         box.owner ? h("span", { class: "by" }, "Tạo bởi " + box.owner) : null),
+      sheetNote(box),
       box.title ? h("p", { class: "tb-title", title: "Tiêu đề trong SM TaskBox" }, box.title) : null,
       box.theme ? h("p", { class: "theme" }, box.theme) : null,
       note),
@@ -981,6 +1012,11 @@ function renderSheetLink() {
     ? `Script bảng tính lấy danh sách lần cuối ${min < 1 ? "vừa xong" : min < 60 ? min + " phút trước" : Math.round(min / 60) + " giờ trước"}, nhận ${fmt(last.boxes)} hộp.`
     : "Script bảng tính chưa lấy danh sách lần nào. Làm theo các bước dưới đây rồi chọn menu Box builder trong bảng tính.") +
     (sh.export_on ? "" : " Công tắc Cấp danh sách cho bảng tính đang tắt nên script nhận danh sách rỗng.");
+  const seen = sh.last_check;
+  const ago = seen ? Math.max(0, Math.round((Date.now() / 1000 - seen.at) / 60)) : null;
+  $("#sh-check").textContent = seen
+    ? `Script bảng tính báo lần cuối: ${ago < 1 ? "vừa xong" : ago < 60 ? ago + " phút trước" : ago < 2880 ? Math.round(ago / 60) + " giờ trước" : Math.round(ago / 1440) + " ngày trước"} (${fmt(seen.boxes)} hộp).`
+    : "Script bảng tính chưa báo lần nào.";
 }
 
 function setupSheetLink() {

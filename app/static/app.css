@@ -148,6 +148,15 @@ input::placeholder, textarea::placeholder { color: #7b8a86; }
 .pill.approved { background: #cbe9df; color: #0c4a3e; }
 .pill.pushed { background: #d8e3fb; color: #1b3a7a; }
 .pill.error { background: #f6d5d1; color: #7a1812; }
+/* the supporters' check from the sheet: a pill with a drawn icon, and the differing objects under it */
+.sheet-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.pill[class*="sheet-"] { display: inline-flex; align-items: flex-start; gap: 6px; padding: 3px 10px 3px 8px; border-radius: 12px; line-height: 1.35; }
+.pill[class*="sheet-"] svg.i { flex: none; margin-top: 1px; }
+.pill.sheet-wait_sc, .pill.sheet-wait_support { background: var(--hold-bg); color: #4d3200; }
+.pill.sheet-ok { background: #cbe9df; color: #0c4a3e; }
+.pill.sheet-diff, .pill.sheet-nothing { background: #f6d5d1; color: #7a1812; }
+.sheet-at { font-size: 12.5px; color: var(--ink2); }
+.sheet-list { flex-basis: 100%; margin: 0; padding-left: 20px; font-size: 13px; color: #7a1812; }
 .pill.generating::before {
   content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%;
   background: var(--hi); animation: pulse 1.2s ease-in-out infinite;

@@ -394,11 +394,15 @@
       </div>
     </form>
     <p id="sh-last" class="hint" role="status"></p>
+    <p id="sh-check" class="hint" role="status"></p>
     <ol class="plain hint" aria-label="Cách nối bảng tính">
       <li>Mở bảng tính, chọn Tiện ích mở rộng, rồi Apps Script.</li>
-      <li>Bấm Sao chép script bảng tính ở trên, xoá nội dung mẫu trong Apps Script, dán vào rồi bấm Lưu.</li>
+      <li>Bấm Sao chép script bảng tính ở trên, xoá nội dung cũ trong Apps Script, dán script mới vào rồi bấm Lưu.</li>
       <li>Tải lại bảng tính. Menu Box builder hiện ra. Lần đầu Google hỏi quyền, chọn Cho phép.</li>
+      <li>Chọn menu Đặt mã Box builder và gõ mã SHEET_TOKEN một lần. Mã này đặt trong Render, khác SYNC_TOKEN, và chỉ nằm trong phần cài đặt của script.</li>
       <li>Chọn Điền các box đã duyệt vào bảng (xem trước), đọc dòng báo, rồi xác nhận. Script chỉ ghi vào ô trống.</li>
+      <li>Chọn Gửi kết quả kiểm cho Box builder (xem trước), đọc dòng báo, rồi xác nhận. Script chỉ đọc hai ô tick và các ô ID, SL của khối. Dòng "Script bảng tính báo lần cuối" ở trên cho biết lần gửi gần nhất.</li>
+      <li>Ai tick ô nào, và khi nào hộp được lên SM: xem tệp docs/KIEM_HOP.md trong kho mã.</li>
     </ol>
   </section>
 
