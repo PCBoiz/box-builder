@@ -238,6 +238,14 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     SCRIPT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "integrations", "box_builder_sm.user.js")
     APP_URL_OK = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 
+    def host_of(raw: str) -> str:
+        """The host name in 'host', 'host:port' or 'https://host/...', lower case; '' when there is none."""
+        raw = raw.strip()
+        try:
+            return urlsplit(raw if "//" in raw else "//" + raw).hostname or ""
+        except ValueError:
+            return ""
+
     def script_text(request: Request, app_url: str) -> str:
         """The SM sync tool with this app's own address written into it (and into its @connect line). It carries no update address and one
         `@downloadURL none`, the value Tampermonkey documents for "never check for an update": a copy already installed stops polling here, and a
@@ -247,6 +255,10 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         target = app_url.strip().rstrip("/") or origin
         if not APP_URL_OK.match(target):
             raise service.Invalid("Tham số app phải là một địa chỉ dạng https://tên-máy hoặc http://tên-máy:cổng.")
+        # The address goes into the tool as the place it sends the sync code to, and into its @connect line. A link that names any other machine
+        # would make an installed tool hand that code to a stranger, so only this server, localhost, 127.0.0.1 and the hosts the owner listed pass.
+        if app_url.strip() and host_of(target) not in {host_of(origin), "localhost", "127.0.0.1", *(host_of(h) for h in re.split(r"[,\s;]+", s.allowed_app_hosts))} - {""}:
+            raise service.Invalid("Tham số app chỉ nhận địa chỉ của chính máy chủ này, localhost, 127.0.0.1 hoặc máy trong ALLOWED_APP_HOSTS.")
         with open(SCRIPT_FILE, encoding="utf-8") as f:
             text = f.read()
         host = urlsplit(target).hostname

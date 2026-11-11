@@ -46,6 +46,7 @@ class Settings:
     admin_code: str = ""              # optional second secret an admin types with the ID (empty = ID only)
     user_ids: str = ""                # company IDs of ordinary users who may sign in without being in the pasted list (comma list)
     user_password: str = ""           # optional password every ordinary user types with the ID (empty = ID only). Set in Render, never in the repo
+    allowed_app_hosts: str = ""       # hosts besides this one that the tool's ?app= address may name (comma list); localhost and 127.0.0.1 are always allowed
     enable_docs: bool = False         # FastAPI's /docs, /redoc and /openapi.json: off unless ENABLE_DOCS=1 (they list every route to a stranger)
 
     @property
@@ -76,5 +77,6 @@ class Settings:
             admin_code=os.getenv("ADMIN_CODE", "").strip(),
             user_ids=os.getenv("USER_IDS", ""),
             user_password=os.getenv("USER_PASSWORD", "").strip(),
+            allowed_app_hosts=os.getenv("ALLOWED_APP_HOSTS", ""),
             enable_docs=os.getenv("ENABLE_DOCS", "").strip() == "1",
         )
