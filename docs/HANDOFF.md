@@ -51,9 +51,9 @@ SM kho, makes sure no object sits in two boxes, lets a person check and approve,
 | `docs/handoff/` | `LOOP.md` (how the work loop ran), `kz.py` (client for the local Kanzo board), `sm_explore.py` and `sm_usage_probe.py` (read-only SM look scripts) |
 
 Settings (environment variables, see `app/settings.py`): `DATABASE_URL` or `DB_PATH`, `CATALOG_PATH`, `LLM_MODE`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`,
-`DEFAULT_COUNT`, `STAGE_COUNTS` (A1 12, B2 21, B3 21), `MAX_QTY`, `DRAFT_TTL_HOURS`, `BOX_DONE_DAYS` (default 1; days after which an approved box is finished and its objects are free), `MAX_PARALLEL_LLM`, `SYNC_TOKEN`, `SECTORS`,
+`DEFAULT_COUNT`, `STAGE_COUNTS` (A1 12, B2 21, B3 21), `MAX_QTY`, `DRAFT_TTL_HOURS`, `BOX_DONE_DAYS` (default 1; days after which an approved box is finished and its objects are free), `MAX_PARALLEL_LLM`, `SYNC_TOKEN`, `SHEET_TOKEN` (the sheet script's own secret: it can only record the supporters' check), `ENABLE_DOCS=1` (turns the FastAPI docs back on; off by default), `ALLOWED_APP_HOSTS` (hosts besides this one that the tool's `?app=` link may name), `SECTORS`,
 `SM_PUSH_MODE` (`mock` or off), `IMAGE_HOSTS`, `IMAGE_TTL_MINUTES` (default 55), `ADMIN_IDS` (company IDs of the admins, comma list; empty = login off), `ADMIN_CODE` (optional second secret an admin types), `USER_IDS` (ordinary users who may sign in before any list is pasted), `USER_PASSWORD` (optional shared password of ordinary users; changing it signs everyone out).
-Secrets (`DEEPSEEK_API_KEY`, `DATABASE_URL`, `SYNC_TOKEN`, `ADMIN_CODE`, `USER_PASSWORD`) live only in Render's Environment page, never in the repo (it is public; if `render.yaml` ever declares `USER_PASSWORD` it must use `sync: false`, never `value:`). See `docs/LOGIN.md`.
+Secrets (`DEEPSEEK_API_KEY`, `DATABASE_URL`, `SYNC_TOKEN`, `SHEET_TOKEN`, `ADMIN_CODE`, `USER_PASSWORD`) live only in Render's Environment page, never in the repo (it is public; if `render.yaml` ever declares `USER_PASSWORD` it must use `sync: false`, never `value:`). See `docs/LOGIN.md`.
 
 ## 4. Set up on a new laptop
 ```

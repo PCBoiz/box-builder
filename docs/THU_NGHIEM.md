@@ -29,3 +29,33 @@ Trang này ngắn và dành cho chủ dự án. Các bước đặt biến nằm
 - Ghi lại: ai (ID), lúc mấy giờ, hộp nào (module, loại hộp), câu thông báo trên màn hình.
 - Admin vào tab **Tự động hoá**, mục "Việc gần đây" xem ai đã tạo, duyệt, bỏ duyệt hay xoá hộp nào.
 - Quay lại bản cũ trên Render: xem `docs/LOGIN.md`, mục "Quay lại bản cũ".
+
+## Thử một hộp thật trên SM (cùng ngày, chỉ admin)
+
+Người dùng thường không cài gì và không bấm gì trong SM. Chỉ admin chạy công cụ SM trong trình duyệt của mình, và chỉ bạn bấm xác nhận.
+
+**Trước khi thử** (đủ cả bảy mới bắt đầu):
+
+1. Đăng nhập đã bật.
+2. Công cụ SM trong trình duyệt của admin là bản mới nhất, dán từ trang `/box_builder_sm.txt`. Trong Tampermonkey, tắt kiểm tra cập nhật cho script này. Bản này chỉ đọc (khung công cụ ghi "Ghi vào SM: TẮT") cho đến khi tôi đưa bản ghi riêng sau khi bạn nói "go".
+3. Tab **Tự động hoá**: công tắc **Hàng chờ lên SM** tắt. Chỉ bật khi thử, kèm hẹn giờ tự tắt.
+4. Script của nhóm (v2.23.0) tạm dừng. Nó đọc hộp đã duyệt và có thể tạo cùng hộp.
+5. Báo người phụ trách SM và đồng nghiệp: hộp thử tên TEST-01 sẽ hiện, đừng đụng vào.
+6. Đồng bộ kho SM ngay trước khi thử.
+7. Không đẩy bản mới lên Render và không đổi biến trong lúc thử. Nên tắt tự triển khai trong Render cho ngày đó.
+
+**Hộp thử:** module TEST, mã TEST-01, ba món còn nhiều. Duyệt trong ứng dụng (nếu công tắc chờ người hỗ trợ kiểm đang bật, tick hai ô trong bảng tính).
+
+**Các bước:**
+
+1. Mở SM, bấm xem hộp sẽ tạo. Phải thấy đúng một hộp: hộp thử.
+2. Gõ tên hộp, xác nhận. Công cụ tạo hộp rồi đọc lại từ SM và so từng trường.
+3. Xem trong trang SM: một hộp, đúng món và số lượng, không có thông báo lạ.
+4. Chờ ít nhất một giờ (sang ngày làm việc sau thì tốt hơn), xem lại.
+5. Muốn trả hộp thử, **trong SM** làm trước: bấm Assign rồi Borrow the objects cho hộp thử. SM chỉ cho trả hộp đã mượn (trạng thái collected hoặc active). Khi đó công cụ mới thấy hộp ở mục "sẽ trả". Món sẽ về kho sau khi trả.
+6. Trả hộp bằng công cụ (tick "cả hộp hôm nay" cho hộp thử), xác nhận, rồi xem trạng thái trong SM: Returned.
+7. Sau đó mới làm 1 hộp thật, rồi 2 đến 3 hộp, rồi lô nhỏ. Mỗi bước chỉ làm khi bước trước sạch.
+
+**Dừng ngay, không thử lại, khi:** có lỗi, hiện trang đăng nhập, quá thời gian chờ, đọc lại thấy khác, hoặc có hộp trùng. Công cụ không bao giờ xoá gì trong SM. Hộp sai thì xoá tay trong SM (SM chỉ cho xoá hộp chưa Assign).
+
+**Bằng chứng gửi cho tôi:** ảnh chụp nhật ký trong khung công cụ (tên hộp, mã, số). Không gửi cookie, mã hay nội dung yêu cầu.
