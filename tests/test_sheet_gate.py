@@ -198,7 +198,7 @@ def test_the_switch_exists_and_starts_off_so_a_deploy_changes_nothing(env):
     sw = {x["key"]: x for x in client.get("/api/automations").json()["switches"]}
     assert len(sw) == 9 and sw["need_supporter_check"]["enabled"] is False and sw["need_supporter_check"]["title"] == meta["title"]
     assert list(sw)[-1] == "need_supporter_check"                                                    # new switches go last: the others keep their place on the page
-    assert sw["sm_queue"]["enabled"] and sw["sheet_export"]["enabled"]                              # the two it needs are on by default
+    assert sw["sheet_export"]["enabled"] and not sw["sm_queue"]["enabled"]                          # the queue starts OFF (reads-only stage): the gate also needs it switched on
     switch(client, True)
     assert {x["key"]: x for x in client.get("/api/automations").json()["switches"]}["need_supporter_check"]["enabled"] is True
     switch(client, False)
@@ -559,6 +559,7 @@ def test_with_the_switch_off_the_queue_and_every_feed_are_exactly_as_before(env)
 
 def test_every_reason_a_box_is_held_back_and_the_one_state_that_lets_it_through(env):
     client, s, cat = gate_client(env)
+    assert client.put("/api/automations/sm_queue", json={"enabled": True}).status_code == 200
     ids = stocky(cat, 30)
     def new(n, label):
         return approved(s, ids[n * 3:n * 3 + 3], label), ids[n * 3:n * 3 + 3]
@@ -649,6 +650,7 @@ def test_the_feed_for_the_sm_tool_and_the_fake_push_obey_the_gate(env):
     s, cat = env
     s.sm_push_mode = "mock"
     client, s, cat = gate_client(env)
+    assert client.put("/api/automations/sm_queue", json={"enabled": True}).status_code == 200
     ids = usable_ids(cat)
     cleared, waiting = approved(s, ids[:3], "Box B2"), approved(s, ids[3:6], "Box B3")
     switch(client)
