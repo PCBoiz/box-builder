@@ -630,7 +630,8 @@ def test_the_other_checks_of_the_queue_still_apply_on_top_of_the_gate(env):
     snapshot(client, sm_box("OLD", "Someone else's box", [ids[0]], created_at=iso(1)))                 # SM already holds one object of the first box
     switch(client)
     clear_post(client, chk(held, rows=[(i, 1) for i in ids[:3]]), chk(free, rows=[(i, 1) for i in ids[3:6]]))
-    assert reasons(client) == {held: [f"{ids[0]} đã nằm trong hộp SM Someone else's box"]} and ready_ids(client) == {free}     # a cleared box is still stopped by the old check
+    r = reasons(client)
+    assert list(r) == [held] and len(r[held]) == 1 and r[held][0].endswith(f"{ids[0]} đã nằm trong hộp SM Someone else's box") and ready_ids(client) == {free}     # a cleared box is still stopped by the old check (the object's name now stands in front of its ID)
     post(client, chk(held, sc=False, rows=[(i, 1) for i in ids[:3]]))
     assert reasons(client)[held] == [f"{ids[0]} đã nằm trong hộp SM Someone else's box", "chờ SC tick"]      # both are said, the real problem first
 
