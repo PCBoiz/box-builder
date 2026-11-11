@@ -67,7 +67,14 @@ PORT = int(os.environ.get("E2E_PORT") or free_port())
 BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "tok-push-e2e"
-SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")
+SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")       # the file as it ships: read-only (WRITES_ENABLED false)
+OFF = "const WRITES_ENABLED = false;"
+SCRIPT_WRITE = SCRIPT.replace(OFF, "const WRITES_ENABLED = true;")        # NEGATIVE CONTROL: the same file with the one switch turned on
+assert SCRIPT.count(OFF) == 1 and SCRIPT_WRITE != SCRIPT and SCRIPT_WRITE.count("const WRITES_ENABLED = true;") == 1, "the interlock constant moved or changed"
+def without(text, old, new=""):
+    """The shipped script with one guard taken out, to prove each guard blocks on its own. The edit must happen, or the guard moved."""
+    assert text.count(old) == 1, f"guard text not found exactly once: {old!r}"
+    return text.replace(old, new)
 tmp = tempfile.mkdtemp()
 DB = os.path.join(tmp, "p.db")
 
@@ -196,14 +203,21 @@ def returned(title, ids):
 def made_by_script(): return [p for p in sm_posts if p["status"] == 200]
 
 try:
+    st, r = api("/api/automations/sm_queue", "PUT", {"enabled": True}, token=False)         # on purpose, so the run does not depend on the app's default
+    assert st == 200, (st, r)
     with sync_playwright() as pw:
-        b = getattr(pw, BROWSER).launch(); pg = b.new_context(viewport={"width": 1300, "height": 1000}).new_page()
-        pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.route("https://sm.config.inc/api/**", sm_route)
-        pg.route("https://sm.config.inc/", lambda r: r.fulfill(status=200, content_type="text/html", body="<html><body><h1>Scenario Manager</h1></body></html>"))
-        pg.expose_function("__gm", gm)
-        pg.goto("https://sm.config.inc/"); pg.add_script_tag(content=SHIM); pg.add_script_tag(content=SCRIPT)
-        pg.wait_for_selector("#bb-btn")
+        b = getattr(pw, BROWSER).launch()
+        def open_sm(script):
+            """A signed-in SM tab with Tampermonkey's calls wired in, and `script` loaded the way Tampermonkey would (after the page)."""
+            page = b.new_context(viewport={"width": 1300, "height": 1000}).new_page()
+            page.on("pageerror", lambda e: errs.append(str(e)))
+            page.route("https://sm.config.inc/api/**", sm_route)
+            page.route("https://sm.config.inc/", lambda r: r.fulfill(status=200, content_type="text/html", body="<html><body><h1>Scenario Manager</h1></body></html>"))
+            page.expose_function("__gm", gm)
+            page.goto("https://sm.config.inc/"); page.add_script_tag(content=SHIM); page.add_script_tag(content=script)
+            page.wait_for_selector("#bb-btn")
+            return page
+        pg = open_sm(SCRIPT_WRITE)                                  # the create scenarios below run on the negative control: they must really create
 
         # --- the app holds the catalog (what "Đồng bộ kho ngay" would have sent)
         seed = [{"id": o["id"], "name": o["name"], "vi": "", "type": "Obj", "status": "ACTIVE", "avail": o["quantity"], "qty": o["quantity"],
@@ -233,6 +247,42 @@ try:
         lst = panel_text(pg, "#bb-ready-list")
         check(f"{ta['title']}: 6 món" in lst and f"{tb['title']}: 6 món" in lst, f"the list shows each title and its number of objects ({ta['title']}; {tb['title']})")
         check(not sm_posts, "nothing was written to SM so far")
+
+        # --- THE INTERLOCK: the file as it ships (WRITES_ENABLED false) cannot create, whatever is pressed. Two approved boxes are ready right now.
+        def writes_since(i, j):
+            """What went to SM and to the app between two marks: anything that is not a GET to SM, and every report of a created box."""
+            return [(m, p) for m, p, _, _ in sm_requests[i:] if m != "GET"], [(m, p) for m, p, _ in app_requests[j:] if p.endswith("/pushed")]
+        def force_confirm(page):
+            page.evaluate("() => { const b = document.getElementById('bb-confirm'); b.hidden = false; b.disabled = false; b.click(); b.dispatchEvent(new MouseEvent('click', {bubbles: true})); }")
+            time.sleep(1.5)
+        ro = open_sm(SCRIPT)
+        ro.click("#bb-btn")
+        check("Ghi vào SM: TẮT" in ro.inner_text("#bb-panel") and "(v0.3.1)" in ro.inner_text("#bb-panel"), "the shipped script's panel says 'Ghi vào SM: TẮT' and its version")
+        check("Bản này chỉ đọc" in ro.inner_text("#bb-panel") and "Xem hộp sẽ tạo" == ro.inner_text("#bb-view"), "the panel text and the view button promise no create")
+        mark_sm, mark_app = len(sm_requests), len(app_requests)
+        ro.click("#bb-view"); idle(ro)
+        check(wait_log(ro, "Bản này chỉ đọc: xem được hộp sẽ tạo, chưa tạo được hộp trong SM."), "view: says the build is read-only")
+        check("Sẽ có 2 hộp cần tạo" in log_text(ro) and "Xác nhận" not in log_text(ro), "view: still shows what would be made (2 boxes) and never asks for a confirm")
+        check(ro.locator("#bb-confirm").is_hidden(), "view: the confirm button stays hidden")
+        force_confirm(ro)
+        w_sm, w_app = writes_since(mark_sm, mark_app)
+        check(not w_sm and not w_app and not sm_posts and len(sm.list_boxes()) == 0, f"a forced click on the hidden confirm button: zero writes to SM and no /pushed ({w_sm}, {w_app})")
+        check(len(sm_requests) > mark_sm and all(m == "GET" for m, _, _, _ in sm_requests[mark_sm:]), "the view still read SM (GET only), so the preview is real")
+        # each guard blocks on its own: take the view guard out so a plan (and the button) exists, then also the create flow's guard
+        no_view = without(SCRIPT, "create: [], skip };", "create, skip };")
+        v1 = open_sm(no_view); v1.click("#bb-btn"); mark_sm, mark_app = len(sm_requests), len(app_requests)
+        v1.click("#bb-view"); idle(v1)
+        check(v1.locator("#bb-confirm").is_visible(), "with the view guard removed the confirm button shows (so the next guard is what is tested)")
+        v1.click("#bb-confirm"); check(wait_log(v1, "Bản này chỉ đọc: chưa tạo được hộp trong SM."), "the create flow's own first-line guard stops the click"); idle(v1)
+        w_sm, w_app = writes_since(mark_sm, mark_app)
+        check(not w_sm and not w_app and not sm_posts, "no write and no /pushed with only the create-flow guard left")
+        no_flow = without(no_view, "    if (!WRITES_ENABLED) throw new Plain(READ_ONLY_CREATE);\n")
+        v2 = open_sm(no_flow); v2.click("#bb-btn"); mark_sm, mark_app = len(sm_requests), len(app_requests)
+        v2.click("#bb-view"); idle(v2); v2.click("#bb-confirm")
+        check(wait_log(v2, "SM không tạo được. Bản này chỉ đọc: chưa tạo được hộp trong SM."), "with the first two guards removed, the guard in front of the create request stops it"); idle(v2)
+        w_sm, w_app = writes_since(mark_sm, mark_app)
+        check(not w_sm and not w_app and not sm_posts and len(sm.list_boxes()) == 0, "the create request never left the tab: zero writes, no /pushed, nothing in SM")
+        for page in (ro, v1, v2): page.close()
 
         # --- reading SM's boxes: decoys carry people and history that must never reach the app
         d_assigned = sm.create_box({"title": "Decoy assigned", "contents": lines(spare(2)), "assignee": "Tran Thi Assignee", "borrow_now": False})
@@ -370,6 +420,7 @@ try:
         check({p for _, p, _, _ in sm_requests} <= {"/api/boxes", "/api/objects"}, f"SM was only asked for: {sorted({p for _, p, _, _ in sm_requests})}")
         created = made_by_script()
         check(len(created) == 7 and len({p["body"]["title"] for p in created}) == 7 and len(sm.list_boxes()) == 3 + 3 + 7, f"7 boxes were created, each title once ({len(created)})")
+        check(len(created) > 0 and "const WRITES_ENABLED = true;" in SCRIPT_WRITE and OFF not in SCRIPT_WRITE, "negative control: with only the switch turned on, the same scenarios really create boxes, so the switch is what blocks")
         check(len([x for x in sm_posts if x["status"] != 200]) == 2, "two creates did not succeed: the refused one and the 401")
         check(not any(TOKEN in json.dumps(h) or TOKEN in body or "not-the-token" in json.dumps(h) or "not-the-token" in body for _, _, h, body in sm_requests),
               "the sync code never reached SM")

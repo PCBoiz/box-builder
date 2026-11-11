@@ -66,7 +66,7 @@ BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "tok-sync-e2e"
 SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 # ---- the pretend SM: objects shaped like the real /api/objects (no Vietnamese name), plus another sector and a hostile picture link
 with open(os.path.join(ROOT, "data", "catalog.csv"), encoding="utf-8-sig", newline="") as fh:
@@ -127,6 +127,12 @@ SM_BOXES = [
 tmp = tempfile.mkdtemp()
 env = clean_env(DB_PATH=os.path.join(tmp, "s.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN=TOKEN)
 srv, srv_log = start_server(ROOT, env, PORT, tmp)
+
+def switch_on(name):
+    """Switch an automation on through the app's own API, so a run does not depend on the app's default (sm_queue is off by default)."""
+    req = urllib.request.Request(BASE + f"/api/automations/{name}", method="PUT", data=json.dumps({"enabled": True}).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r: assert r.status == 200
+switch_on("sm_queue")
 
 fails, errs = [], []
 sm_requests, app_requests, app_posts, sm_box_queries = [], [], [], []
@@ -414,7 +420,8 @@ try:
         check(not any(x in d for _, d in app_posts for x in PEOPLE), "no person's name appears in anything posted to the app")
         check(not any(TOKEN in (pg.inner_text("#bb-log")) for _ in [0]), "the code never shows in the log")
         check(len(re.findall(r'method: "POST"', SCRIPT)) == 1 and not any(w in SCRIPT for w in ('"PUT"', '"PATCH"', '"DELETE"', "/transition", "handover")),
-              "the script text holds one POST to SM (the confirmed box create) and no other write")
+              "the script text holds one POST to SM (the box create, switched off in this build) and no other write")
+        check(SCRIPT.count("const WRITES_ENABLED = false;") == 1 and "Ghi vào SM: TẮT" in pg.inner_text("#bb-panel"), "the shipped build has writes switched off and the panel says so")
         pg.screenshot(path=os.path.join(tempfile.gettempdir(), "box-builder-sync-panel.png"))
         b.close()
 finally:

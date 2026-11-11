@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Box builder: đồng bộ kho với SM
 // @namespace    box-builder
-// @version      0.3.0
-// @description  Đọc kho đồ (kèm số lần dùng và ngày tạo) và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Chỉ tạo hộp mới trong SM sau khi bạn bấm xác nhận. Không sửa hay xoá gì.
+// @version      0.3.1
+// @description  Đọc kho đồ (kèm số lần dùng và ngày tạo) và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Bản này chỉ đọc: không tạo, sửa hay xoá gì trong SM.
 // @match        https://sm.config.inc/*
 // @match        https://sm.config.inc/object*
 // @grant        GM_xmlhttpRequest
@@ -17,9 +17,11 @@
 
 /* What this does, in one paragraph: it runs in your own signed-in SM tab. It reads SM's object list and box list with GET
    requests only, and posts a compact copy to Box builder (the address and sync code are typed once into the panel and kept in
-   the browser's own storage). The one thing it ever writes to SM is a new box (POST /api/boxes, same site as the page you are
-   on), and only after you press the confirm button in the panel. It never moves, hands over, assigns, borrows, edits or deletes
-   anything in SM, and it never sends the sync code to SM. The app's own checks decide what is kept.
+   the browser's own storage). This build writes nothing to SM: the constant WRITES_ENABLED is false, and three places check it
+   (the preview returns no plan, so no confirm button appears; the create flow and the one function that holds the create request
+   stop at their first line). The create code stays in the file so the review sees it, and it is dead until a separate build turns
+   the constant on. It never moves, hands over, assigns, borrows, edits or deletes anything in SM, and it never sends the sync code
+   to SM. The app's own checks decide what is kept.
    Since 0.3.0 each object row also carries `uses` (the lifetime use count SM shows on its object page) and `created` (the date SM
    gives for the object). Both come from the same GET /api/objects pages, only as a number and a date string, never a person. */
 (function () {
@@ -27,7 +29,8 @@
   if (window.__bbSm) return;
   window.__bbSm = true;
 
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
+  const WRITES_ENABLED = false;         // this build only reads SM; the create flow below is switched off in three places
   const DEFAULT_APP = "";               // the app fills this in when it serves the script, so nobody has to type the address
   const PAGE_CAP = 200;                 // never read more than this many pages of 30 from SM
   const APP_TIMEOUT = 90000;            // a sleeping free server can take about a minute to answer the first call
@@ -38,6 +41,8 @@
 
   /* ------------------------------------------------------------------ talking to SM (reads only) */
   class Plain extends Error { }          // an error whose message is already written for the person
+  const READ_ONLY_PLAN = "Bản này chỉ đọc: xem được hộp sẽ tạo, chưa tạo được hộp trong SM.";
+  const READ_ONLY_CREATE = "Bản này chỉ đọc: chưa tạo được hộp trong SM.";
 
   async function smJson(path) {
     let res;
@@ -52,9 +57,11 @@
   }
   const listOf = (d) => (Array.isArray(d) ? d : (d.objects || d.items || d.data || d.results || []));
 
-  /* The only write this script makes to SM: one new box, same site as the page, called only from the confirm button's flow.
-     borrow_now is always false here, so SM never lends anything because of this script. */
+  /* The only request in this file that could write to SM: one new box, same site as the page, called only from the confirm
+     button's flow. It does nothing while WRITES_ENABLED is false. borrow_now is always false here, so SM never lends anything
+     because of this script. */
   async function smCreate(payload) {
+    if (!WRITES_ENABLED) { const e = new Plain(READ_ONLY_CREATE); e.stop = true; throw e; }
     let res;
     try {
       res = await fetch("/api/boxes", {
@@ -314,6 +321,11 @@
     const { create, skip } = classify(now.boxes, sm.boxes);
     for (const b of now.boxes) if (skip.has(b.id)) say(`Hộp "${b.title}": ${skip.get(b.id)}.`, "warn");
     if (now.bad) say(`${now.bad} hộp thiếu tên hoặc món nên không hiện trong danh sách.`, "warn");
+    if (!WRITES_ENABLED) {                       // read-only build: show what would be made, hand back no plan, so no confirm button shows
+      say(create.length ? `Sẽ có ${create.length} hộp cần tạo, bỏ qua ${skip.size} hộp.` : `Không có hộp nào cần tạo (bỏ qua ${skip.size} hộp).`, "ok");
+      say(READ_ONLY_PLAN, "warn");
+      return { ready: now.boxes, create: [], skip };
+    }
     say(create.length
       ? `Sẽ tạo ${create.length} hộp, bỏ qua ${skip.size} hộp. Chưa tạo gì. Bấm "Xác nhận tạo ${create.length} hộp" để tạo.`
       : `Không có hộp nào cần tạo (bỏ qua ${skip.size} hộp). Chưa tạo gì.`, create.length ? "ok" : "warn");
@@ -321,6 +333,7 @@
   }
 
   async function createBoxes(say, todo) {      // step two: runs only from the confirm button
+    if (!WRITES_ENABLED) throw new Plain(READ_ONLY_CREATE);
     say("Đang kiểm tra lại trước khi tạo…");
     const p = await readPending();
     const sm = await readSmBoxes(say);           // reads only: nothing is posted to Box builder here
@@ -464,7 +477,8 @@
       #bb-ready-list .skip{color:#7a4a00}
       #bb-log{margin-top:10px;min-height:40px;max-height:240px;overflow:auto;border:1px solid #dbe1de;border-radius:8px;padding:6px 8px;background:#f8faf9}
       #bb-log .ok{color:#0c4a3e}#bb-log .warn{color:#7a4a00}#bb-log .bad{color:#a8231b;font-weight:600}#bb-log .progress{color:#48575f}
-      #bb-note{margin-top:8px;color:#48575f;font-size:12px}`);
+      #bb-note{margin-top:8px;color:#48575f;font-size:12px}
+      #bb-writes{margin:0 0 2px;font-weight:600;color:#7a4a00}`);
 
     const btn = document.createElement("button");
     btn.id = "bb-btn"; btn.type = "button"; btn.textContent = "Box builder";
@@ -479,8 +493,11 @@
       const b = document.createElement("button"); b.id = id; b.type = "button"; b.textContent = text; if (cls) b.className = cls; return b;
     };
     const title = document.createElement("h3"); title.textContent = `Box builder và SM (v${VERSION})`;
-    const intro = document.createElement("div"); intro.id = "bb-note"; intro.textContent = "Đọc kho và hộp từ SM (chỉ đọc) và gửi cho Box builder. Chỉ tạo hộp mới trong SM khi bạn bấm xác nhận.";
-    panel.append(title, intro);
+    const writes = document.createElement("div"); writes.id = "bb-writes"; writes.textContent = `Ghi vào SM: ${WRITES_ENABLED ? "BẬT" : "TẮT"}`;
+    const intro = document.createElement("div"); intro.id = "bb-note";
+    intro.textContent = WRITES_ENABLED ? "Đọc kho và hộp từ SM (chỉ đọc) và gửi cho Box builder. Chỉ tạo hộp mới trong SM khi bạn bấm xác nhận."
+      : "Đọc kho và hộp từ SM (chỉ đọc) và gửi cho Box builder. Bản này chỉ đọc: chưa tạo được hộp trong SM.";
+    panel.append(title, writes, intro);
     const fApp = field("bb-app", "Địa chỉ Box builder", "text", store.get("bb_app", DEFAULT_APP) || "", "https://box-builder-guwc.onrender.com");
     const fTok = field("bb-token", "Mã đồng bộ (SYNC_TOKEN)", "password", store.get("bb_token", "") || "");
     const fSec = field("bb-sectors", "Khu (Sector)", "text", store.get("bb_sectors", "Hanoi-GPI") || "Hanoi-GPI", "Hanoi-GPI");
@@ -494,7 +511,7 @@
     const readyCount = document.createElement("div"); readyCount.id = "bb-ready-count";
     const readyList = document.createElement("ul"); readyList.id = "bb-ready-list";
     const readyRow = document.createElement("div"); readyRow.className = "row";
-    const bView = button("bb-view", "Xem và tạo trong SM");
+    const bView = button("bb-view", WRITES_ENABLED ? "Xem và tạo trong SM" : "Xem hộp sẽ tạo");
     const bConfirm = button("bb-confirm", "Xác nhận tạo 0 hộp", "go"); bConfirm.hidden = true;
     const bRefresh = button("bb-refresh", "Làm mới");
     readyRow.append(bView, bConfirm, bRefresh);
@@ -505,7 +522,8 @@
     const showLast = () => { last.textContent = store.get("bb_last", "") ? `Lần đồng bộ gần nhất: ${store.get("bb_last", "")}.` : "Chưa đồng bộ lần nào."; };
     showLast();
     const foot = document.createElement("div"); foot.id = "bb-note";
-    foot.textContent = "Chỉ đọc từ SM. Việc duy nhất ghi vào SM là tạo hộp mới sau khi bạn bấm Xác nhận. Không sửa, giao, mượn hay xoá gì.";
+    foot.textContent = WRITES_ENABLED ? "Chỉ đọc từ SM. Việc duy nhất ghi vào SM là tạo hộp mới sau khi bạn bấm Xác nhận. Không sửa, giao, mượn hay xoá gì."
+      : "Chỉ đọc từ SM. Bản này không ghi gì vào SM: không tạo, sửa, giao, mượn hay xoá hộp.";
     panel.append(row, readyBox, log, last, foot);
     document.body.append(btn, panel);
 
