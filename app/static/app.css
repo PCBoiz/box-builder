@@ -40,12 +40,6 @@ ul { padding: 0; list-style: none; }
 }
 .brand { white-space: nowrap; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
 .top-right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: flex-end; }
-.who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #b9c4c0; }
-.who input {
-  width: 190px; padding: 5px 9px; border: 1px solid #44535c; border-radius: 6px;
-  background: #223039; color: #fff;
-}
-.who input::placeholder { color: #8d9a95; }
 .link { color: #f1f4f3; font-size: 13px; text-underline-offset: 3px; }
 .chip { font-size: 12px; padding: 3px 9px; border-radius: 99px; background: #2c3c45; color: #dfe7e4; }
 .chip.warn { background: var(--hold-bg); color: #5c3b00; }
@@ -263,7 +257,6 @@ svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-widt
   .rail { order: 1; }
   .boxes { order: 2; }
   .top { position: static; padding: 10px 14px; }
-  .who input { width: 150px; }
   .find input { width: 100%; }
   .find { flex: 1 1 200px; }
 }

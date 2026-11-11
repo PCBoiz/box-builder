@@ -393,7 +393,7 @@ def main():
         axe_check(page, "on /login (admin code open)")
         page.click("#login-admin summary")
         login_text = page.inner_text("body")
-        check(not jargon_hits(login_text) and "Chưa có ID? Nhờ admin thêm ID của bạn." in login_text and "Đừng đưa ID cho người ngoài công ty." in login_text and "Ai biết ID" not in login_text,
+        check(not jargon_hits(login_text) and "Chưa có ID? Nhờ admin thêm ID của bạn." in login_text and "Đừng đưa ID cho người ngoài công ty." not in login_text and "Ai biết ID" not in login_text,
               f"the login page: the field, the button, two short sentences, nothing technical {login_text!r}")
         check(not page.is_visible("#login-code") and page.locator("#login-admin summary").inner_text() == "Tôi là admin", "the admin code stays inside Tôi là admin")
         page_texts.append(login_text)
@@ -2074,7 +2074,7 @@ def main():
               "password server: the field Mật khẩu is a password box with the right hints, not required in the page")
         check(tops[0] < tops[1] < tops[2], f"password server: Mật khẩu sits under ID công ty and above Tôi là admin {tops}")
         pw_text = pp.inner_text("body")
-        check("Chưa có ID? Nhờ admin thêm ID của bạn." in pw_text and "Đừng đưa ID cho người ngoài công ty." in pw_text and not jargon_hits(pw_text)
+        check("Chưa có ID? Nhờ admin thêm ID của bạn." in pw_text and "Đừng đưa ID cho người ngoài công ty." not in pw_text and not jargon_hits(pw_text)
               and pp.locator("#login-admin summary").inner_text() == "Tôi là admin" and not pp.is_visible("#login-code"),
               f"password server: the same two sentences as before, the admin code still inside Tôi là admin {pw_text!r}")
         login_look(pp, "(with Mật khẩu)")

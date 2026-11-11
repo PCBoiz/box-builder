@@ -434,7 +434,7 @@ function setupNewBox() {
     const go = $("#f-go");
     const body = {
       module: normModule($("#f-module").value), label: $("#f-label").value.trim(), theme: theme.value.trim(),
-      categories: [...chosenCats], count: parseInt($("#f-count").value, 10) || cfg.default_count, owner: $("#who").value.trim(),
+      categories: [...chosenCats], count: parseInt($("#f-count").value, 10) || cfg.default_count,
       code: $("#f-code").value.trim(), anchor: $("#f-anchor").value.trim(),
     };
     store.set("bb_module", body.module);
@@ -1040,7 +1040,7 @@ function setupBatch() {
     const btn = $("#b-create");
     btn.disabled = true;
     try {
-      const r = await api("/api/batches", { method: "POST", body: { boxes: plan.boxes, owner: $("#who").value.trim(), approve: $("#b-approve").checked } });
+      const r = await api("/api/batches", { method: "POST", body: { boxes: plan.boxes, approve: $("#b-approve").checked } });
       toast(`Đang chọn đồ cho ${r.ids.length} hộp, lần lượt từng hộp để không trùng món.`);
       plan = null; renderPlan();
       showView("boxes");
@@ -1362,9 +1362,6 @@ function setupFormHelp() {
 
 /* ------------------------------------------------------------------ start */
 async function init() {
-  const who = $("#who");
-  who.value = store.get("bb_name");
-  who.addEventListener("input", () => store.set("bb_name", who.value));
   try { cfg = await (await fetch("/api/config")).json(); } catch { /* keep defaults */ }
   $("#f-count").value = cfg.default_count;
   const chip = $("#llm");
