@@ -24,7 +24,7 @@ def free_port():
 
 def clean_env(**extra):
     drop = ("DATABASE_URL", "DEEPSEEK_API_KEY", "ACCESS_CODE", "LLM_MODE", "IMAGE_HOSTS", "SECTORS", "SM_PUSH_MODE", "TEST_DATABASE_URL",
-            "ADMIN_IDS", "ADMIN_CODE", "USER_IDS", "USER_PASSWORD", "BOX_DONE_DAYS", "STAGE_COUNTS", "DEFAULT_COUNT", "DRAFT_TTL_HOURS", "SYNC_TOKEN", "DB_PATH", "CATALOG_PATH")
+            "ADMIN_IDS", "ADMIN_CODE", "USER_IDS", "USER_PASSWORD", "BOX_DONE_DAYS", "STAGE_COUNTS", "DEFAULT_COUNT", "DRAFT_TTL_HOURS", "SYNC_TOKEN", "SHEET_TOKEN", "DB_PATH", "CATALOG_PATH")
     env = {k: v for k, v in os.environ.items() if k not in drop}
     env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     env.update(extra)
@@ -121,7 +121,7 @@ SLOW_APPROVE = """() => { window.__fetch = window.fetch;
 FILLER = re.compile(r"\b(seamless(ly)?|robust|leverag(e|ing)|delve|tapestry|cutting-edge|game-?changer|empower|streamlin(e|ed)|holistic|"
                     r"comprehensive|effortless(ly)?|elevate)\b|mạnh mẽ|toàn diện|tối ưu hoá|mượt mà|vô cùng|hết sức|đa dạng và phong phú|dễ dàng nhanh chóng", re.I)
 
-ENV = clean_env(DB_PATH=os.path.join(tmp, "dung.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t",
+ENV = clean_env(DB_PATH=os.path.join(tmp, "dung.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t", SHEET_TOKEN="sheet-tok",
                 ADMIN_IDS="1001", BOX_DONE_DAYS="2", LLM_MODE="mock")
 
 
@@ -303,6 +303,10 @@ JARGON = re.compile(r"mã 5|mã 4|plain text|máy chủ|javascript|token|\bAPI\b
 def jargon_hits(text):
     """Words a person with no IT knowledge must never meet on /dung or /login (error codes, the machine room, the loading of the page)."""
     return JARGON.findall(text) + re.findall(r"\bAI\b", text)
+
+
+# Words of the machine room and of the sheet's script: what the supporters' check means is told to a person in plain words only.
+SHEET_JARGON = re.compile(r"\bSM tool\b|token|\bsync\b|sheet script|script|tampermonkey|reconcile|\bAPI\b|\bđồng bộ\b|\bdiff\b|SHEET_|X-Sheet|\bID\b|\b\d{6}\b", re.I)
 
 
 def sentence_count(text):
@@ -1213,6 +1217,78 @@ def main():
         check(live_has(page, lambda t: t == OWN_REOPEN) and live_count(page, OWN_REOPEN) == back0 + 1, "the live region says the approval was taken back, once")
         code, out = admin.call("POST", f"/api/boxes/{mine['id']}/approve")
         check(code == 200 and wait_until(lambda: page.locator("article.d-card.is-approved").count() == 1, 15), "approved again")
+
+        # ---------------------------------------------------------------- the supporters' check from the sheet: one plain line under the state of an approved box
+        # The team's switch is turned on, and the sheet's script is played with the machine route (made-up token, made-up reports).
+        code, out = admin.call("PUT", "/api/automations/need_supporter_check", {"enabled": True})
+        check(code == 200 and out["enabled"] is True, f"the admin turns on the switch for the supporters' check {code}")
+        code, st_all = admin.call("GET", "/api/state")
+        held = [(i["id"], i["qty"]) for i in next(b for b in st_all["boxes"] if b["id"] == mine["id"])["items"]]
+        check(len(held) == mine["count"] and len(held) >= 5, f"the approved box holds its objects {len(held)}")
+
+        def report(sc, sup, rows):
+            body = {"checks": [{"box_id": mine["id"], "sc_tick": sc, "supporter_tick": sup, "rows": [{"id": i, "qty": q} for i, q in rows]}]}
+            c, o = admin.call("POST", "/api/sheet/checks", body, headers={"X-Sheet-Token": "sheet-tok"})
+            check(c == 200 and o["saved"] == 1, f"the sheet's report is recorded (ticks {sc}/{sup}, {len(rows)} rows) {c} {o}")
+
+        def sheet_is(key, text, timeout=15):
+            def seen():
+                el = page.locator("article.d-card .d-sheet")
+                return el.count() == 1 and el.get_attribute("data-sheet") == key and el.inner_text().strip() == text
+            ok = wait_until(seen, timeout)
+            check(ok, f"the card says {text!r} {page.locator('article.d-card .d-sheet').all_inner_texts()}")
+            return ok
+
+        SHEET_STATES, SHEET_LINES = {}, {}
+
+        def keep(key):
+            SHEET_STATES[key], SHEET_LINES[key] = page.inner_text("body"), page.locator("article.d-card .d-sheet").inner_text().strip()
+        sheet_is("wait_sc", "Chờ bạn tick hộp này trong bảng tính")
+        card = page.locator("article.d-card")
+        check(card.locator(".d-chip").inner_text() == "Đã duyệt" and card.locator("[data-key=reopen]").is_enabled() and card.locator("[data-key=reopen]").inner_text() == "Bỏ duyệt",
+              "the chip still says Đã duyệt and Bỏ duyệt still works")
+        check(card.locator(".d-sheet svg[aria-hidden=true]").count() == 1 and len(card.locator(".d-sheet span").inner_text().strip()) > 10,
+              "the line has a drawn icon that is hidden from a screen reader, and the words")
+        keep("wait_sc")
+        report(True, False, held)
+        sheet_is("wait_support", "Chờ người hỗ trợ kiểm món")
+        keep("wait_support")
+        report(True, True, held)
+        sheet_is("ok", "Người hỗ trợ đã kiểm")
+        keep("ok")
+        axe_check(page, "on /dung (supporters checked)")
+        report(True, True, held + [("000999", 1)])
+        sheet_is("diff", "Bảng tính có món khác hộp, cần xem lại")
+        check("000999" not in card.inner_text(), "the person is not shown the ID, only the admin page is")
+        keep("diff")
+        axe_check(page, "on /dung (the sheet differs from the box)")
+        report(True, True, held[:-2])
+        sheet_is("missing", "Người hỗ trợ báo thiếu 2 món, hộp đã đổi theo")
+        check(wait_until(lambda: card.locator(".d-item").count() == len(held) - 2, 10), f"the box follows their list: {len(held) - 2} objects")
+        check(card.locator(".d-meta").inner_text().replace("\n", " ").endswith(f"{len(held) - 2} trên {mine['count']} món"), f"the facts say {len(held) - 2} trên {mine['count']} món")
+        keep("missing")
+        phone = ctx.new_page(); watch(phone, "phone-sheet")
+        phone.set_viewport_size({"width": 375, "height": 800})
+        phone.goto(BASE + "/dung"); phone.wait_for_selector("article.d-card .d-sheet")
+        line_w = phone.evaluate("(() => { const e = document.querySelector('.d-sheet'), r = e.getBoundingClientRect(); return [r.left, r.right, innerWidth, e.scrollWidth, e.clientWidth]; })()")
+        check(overflow_ok(phone)[0] and not small_targets(phone) and not small_text(phone) and line_w[0] >= 0 and line_w[1] <= line_w[2] and line_w[3] <= line_w[4],
+              f"at 375 px the line fits: no sideways scroll, text 16 px or more {line_w}")
+        axe_check(phone, "on /dung at 375 px (the supporters removed two objects)")
+        phone.close()
+        report(True, True, [])
+        sheet_is("nothing", "Người hỗ trợ báo thiếu hết món, hộp bị giữ lại")
+        keep("nothing")
+        ok, bad, sw = controls_ok(page)
+        check(ok, f"only the controls of this page while the sheet line shows {bad} {sw}")
+        check(not small_targets(page) and not small_text(page) and overflow_ok(page)[0], "with the sheet line: large controls, text 16 px or more, no sideways scroll")
+        words = {k: SHEET_JARGON.findall(SHEET_LINES[k]) + jargon_hits(SHEET_STATES[k]) for k in SHEET_STATES}
+        check(not any(words.values()), f"no state of the sheet line shows a machine word, an ID or an error number {words}")
+        check(len(set(SHEET_LINES.values())) == 6 and all(len(t) <= 60 and t.count(".") == 0 for t in SHEET_LINES.values()), f"six states read differently, each one short sentence {SHEET_LINES}")
+        page_texts.extend(SHEET_STATES.values())
+        code, out = admin.call("PUT", "/api/automations/need_supporter_check", {"enabled": False})
+        check(code == 200 and out["enabled"] is False, "the admin turns the switch off again")
+        check(wait_until(lambda: page.locator("article.d-card .d-sheet").count() == 0, 15), "with the switch off the card shows no sheet line")
+        check(page.locator("article.d-card .d-chip").inner_text() == "Đã duyệt" and page.locator("article.d-card [data-key=reopen]").is_enabled(), "and the card is as before")
 
         # ---------------------------------------------------------------- a box that went to SM: no Bỏ duyệt, and the SM sentence
         code, out = admin.call("POST", f"/api/boxes/{mine['id']}/pushed", {"sm_box_id": "SM-1"}, headers={"X-Sync-Token": "t"})

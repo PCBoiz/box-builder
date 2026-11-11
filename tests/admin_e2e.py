@@ -1,7 +1,7 @@
 """Browser test of the admin page with login ON: login, the list of people, the sheet box, the heavy-use chart, the age tables, the objects SM boxes hold, the borrow column.
 Own port, own database, own catalog snapshot. Never contacts Scenario Manager, Google, Render or Neon (everything is 127.0.0.1).
 Run:  python tests/admin_e2e.py      (needs playwright + its Chromium; AXE_JS=path/to/axe.min.js adds the accessibility runs)"""
-import base64, csv, http.cookiejar, json, os, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import base64, csv, http.cookiejar, json, os, re, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 from playwright.sync_api import sync_playwright
 
@@ -11,8 +11,8 @@ BASE = f"http://127.0.0.1:{PORT}"
 OUT = os.path.join(tempfile.gettempdir(), "box-builder-admin-shots")
 os.makedirs(OUT, exist_ok=True)
 tmp = tempfile.mkdtemp()
-env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DEEPSEEK_API_KEY", "ACCESS_CODE", "ADMIN_CODE")}
-env.update(DB_PATH=os.path.join(tmp, "admin.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t", ADMIN_IDS="1001",
+env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DEEPSEEK_API_KEY", "ACCESS_CODE", "ADMIN_CODE", "SYNC_TOKEN", "SHEET_TOKEN")}
+env.update(DB_PATH=os.path.join(tmp, "admin.db"), CATALOG_PATH=os.path.join(ROOT, "data", "catalog.csv"), SYNC_TOKEN="t", SHEET_TOKEN="sheet-tok", ADMIN_IDS="1001",
            PYTHONIOENCODING="utf-8")
 srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -214,6 +214,96 @@ try:
         pg.wait_for_selector(".toast:has-text('Đã sao chép script')")
         clip = pg.evaluate("navigator.clipboard.readText()")
         check(f"APP_URL: '{BASE}'" in clip and "onrender.com" not in clip, "the copied script carries this app's address")
+
+        # --- the supporters' check: when the sheet's script last reported, its install steps, and the pills on the box cards
+        check("chưa báo lần nào" in pg.inner_text("#sh-check"), f"the sheet box says the script has not reported yet {pg.inner_text('#sh-check')!r}")
+        steps = pg.locator("ol[aria-label='Cách nối bảng tính']").inner_text()
+        for want in ("dán script mới", "Đặt mã Box builder", "SHEET_TOKEN", "Gửi kết quả kiểm cho Box builder (xem trước)", "docs/KIEM_HOP.md"):
+            check(want in steps, f"the install steps say {want!r}")
+        check(pg.locator("ol[aria-label='Cách nối bảng tính'] li").count() == 7, "seven numbered steps")
+        st, out = admin.call("PUT", "/api/automations/need_supporter_check", {"enabled": True})
+        check(st == 200 and out["enabled"] is True, f"the switch for the supporters' check is on {st}")
+        scene = {}
+        for key, module in (("wait_sc", "M11"), ("wait_support", "M12"), ("ok", "M13"), ("diff", "M14"), ("missing", "M15"), ("nothing", "M16")):
+            st, made = admin.call("POST", "/api/boxes", {"module": module, "label": "Box B2", "theme": "bếp", "count": 8})
+            check(st == 201, f"a box for the state {key} {st}")
+            scene[key] = made["id"]
+
+        def scene_boxes():
+            return {b["id"]: b for b in admin.call("GET", "/api/state")[1]["boxes"] if b["id"] in scene.values()}
+
+        for _ in range(150):
+            got = scene_boxes()
+            if len(got) == 6 and all(b["status"] in ("draft", "approved") and len(b["items"]) == 8 for b in got.values()):
+                break
+            time.sleep(0.4)
+        for bid, made_box in scene_boxes().items():
+            if made_box["status"] == "draft":
+                st, _ = admin.call("POST", f"/api/boxes/{bid}/approve")
+                check(st == 200, f"box {bid} is approved {st}")
+        got = scene_boxes()
+        check(len(got) == 6 and all(b["status"] == "approved" and b["sheet"]["state"] == "wait_sc" for b in got.values()), "six approved boxes, all waiting for the SC tick")
+        held = {k: [(i["id"], i["qty"]) for i in sorted(got[v]["items"], key=lambda i: i["pos"])] for k, v in scene.items()}
+
+        def rows(pairs):
+            return [{"id": i, "qty": q} for i, q in pairs]
+
+        def send(*reports):
+            st, out = admin.call("POST", "/api/sheet/checks", {"checks": [{"box_id": scene[k], "sc_tick": sc, "supporter_tick": sup, "rows": rows(r)} for k, sc, sup, r in reports]},
+                                 {"X-Sheet-Token": "sheet-tok"})
+            check(st == 200 and out["saved"] == len(reports), f"the sheet script's report is recorded {st} {out}")
+
+        wrong = [(held["diff"][0][0], held["diff"][0][1] + 1)] + held["diff"][1:] + [("000999", 1)]            # a bigger quantity, and an ID the box does not hold
+        send(("wait_support", True, False, held["wait_support"]), ("ok", True, False, held["ok"]), ("diff", True, False, wrong), ("missing", True, False, held["missing"]),
+             ("nothing", True, False, held["nothing"]))                                                        # the supporters' tick is seen off first
+        send(("wait_support", True, False, held["wait_support"]), ("ok", True, True, held["ok"]), ("diff", True, True, wrong), ("missing", True, True, held["missing"][:-2]),
+             ("nothing", True, True, []))
+        want_state = {"wait_sc": "wait_sc", "wait_support": "wait_support", "ok": "ok", "diff": "diff", "missing": "ok", "nothing": "missing"}
+        got = scene_boxes()
+        check({k: got[v]["sheet"]["state"] for k, v in scene.items()} == want_state, f"the server gives each box its state {[(k, got[v]['sheet']['state']) for k, v in scene.items()]}")
+        check(len(got[scene["missing"]]["items"]) == 6 and got[scene["missing"]]["sheet"]["missing"] == 2, "the box the supporters cut follows their list: 6 objects, 2 missing")
+
+        pg.reload()
+        pg.click("#tab-auto")
+        pg.wait_for_function("document.querySelector('#sh-check').innerText.includes('(5 hộp)')")
+        check(re.search(r"^Script bảng tính báo lần cuối: (vừa xong|\d+ phút trước) \(5 hộp\)\.$", pg.inner_text("#sh-check")) is not None, f"the sheet box shows when the script reported, and for how many boxes {pg.inner_text('#sh-check')!r}")
+        pg.click("#tab-boxes")
+        pg.wait_for_selector(f".tray[data-id='{scene['nothing']}'] .sheet-note")
+        PILL = {"wait_sc": "Chờ SC tick hộp này trong bảng tính", "wait_support": "Chờ người hỗ trợ kiểm món", "ok": "Người hỗ trợ đã kiểm",
+                "diff": "Bảng tính có món khác hộp, cần xem lại", "missing": "Người hỗ trợ báo thiếu 2 món, hộp đã đổi theo", "nothing": "Người hỗ trợ báo thiếu hết món, hộp bị giữ lại"}
+        for key, bid in scene.items():
+            note = pg.locator(f".tray[data-id='{bid}'] .sheet-note")
+            pill = note.locator(".pill")
+            check(note.count() == 1 and pill.inner_text().strip() == PILL[key], f"the card of the state {key} says {PILL[key]!r} {pill.all_inner_texts()}")
+            check(pill.locator("svg.i[aria-hidden=true]").count() == 1, f"the pill of {key} has an icon as well as words")
+            check(pg.locator(f".tray[data-id='{bid}'] .pill.approved").count() == 1 and pg.locator(f".tray[data-id='{bid}'] [data-keep=reopen]").count() == 1, f"the card of {key} keeps its Đã duyệt pill and Bỏ duyệt")
+        diff_lines = pg.locator(f".tray[data-id='{scene['diff']}'] .sheet-list li").all_inner_texts()
+        check(diff_lines == ["món 000999 không có trong hộp", f"món {held['diff'][0][0]} nhiều hơn số trong hộp"], f"a difference names each object in plain words {diff_lines}")
+        check(pg.locator(f".tray[data-id='{scene['ok']}'] .sheet-list").count() == 0 and pg.locator(f".tray[data-id='{scene['missing']}'] .sheet-list").count() == 0,
+              "only a difference lists objects")
+        check(pg.locator(f".tray[data-id='{scene['wait_support']}'] .sheet-at").count() == 1 and re.fullmatch(r"Báo lúc \d\d:\d\d", pg.inner_text(f".tray[data-id='{scene['wait_support']}'] .sheet-at")),
+              "a box the script has reported on shows the time of the report")
+        check(pg.locator(f".tray[data-id='{scene['wait_sc']}'] .sheet-at").count() == 0, "a box the script has not reported on shows no time")
+        text_all = " ".join(pg.locator(".sheet-note").all_inner_texts())
+        check(not re.search(r"token|sync|reconcile|tampermonkey|\bAPI\b", text_all, re.I), "the pills use no machine word")
+        pg.set_viewport_size({"width": 390, "height": 900})
+        ov = pg.evaluate("[...document.querySelectorAll('.sheet-note')].map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; }).filter(x => x[0] < 0 || x[1] > innerWidth)")
+        check(not ov and pg.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"), f"at 390 px the pills fit and the page does not scroll sideways {ov}")
+        pg.screenshot(path=os.path.join(OUT, "boxes-sheet-390.png"))
+        pg.set_viewport_size({"width": 1400, "height": 1100})
+        pg.screenshot(path=os.path.join(OUT, "boxes-sheet-1400.png"))
+        axe("Hộp tab with the sheet pills")
+        st, _ = admin.call("POST", f"/api/boxes/{scene['wait_sc']}/pushed", {"sm_box_id": "SM-77"}, {"X-Sync-Token": "t"})
+        check(st == 200, f"a box is marked as in SM {st}")
+        pg.reload(); pg.click("#tab-boxes")
+        pg.wait_for_selector(f".tray[data-id='{scene['wait_sc']}'] .pill.pushed")
+        check(pg.locator(f".tray[data-id='{scene['wait_sc']}'] .sheet-note").count() == 0 and pg.locator(".sheet-note").count() == 5, "a box already in SM shows no sheet pill")
+        st, out = admin.call("PUT", "/api/automations/need_supporter_check", {"enabled": False})
+        check(st == 200 and out["enabled"] is False, "the switch is off again")
+        pg.reload(); pg.click("#tab-boxes")
+        pg.wait_for_selector(".tray .pill.approved")
+        check(pg.locator(".sheet-note").count() == 0, "with the switch off no card shows a sheet pill")
+        pg.click("#tab-auto")
 
         # --- the heavy-use chart in Cảnh báo kho
         pg.wait_for_selector("#a-usage .bbu")
