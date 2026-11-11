@@ -14,6 +14,11 @@ def make_client(env):
     return TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat)), s, cat
 
 
+def queue_on(client):
+    """The SM queue starts OFF (the reads-only stage): a test that needs boxes offered to the SM tool switches it on first."""
+    assert client.put("/api/automations/sm_queue", json={"enabled": True}).status_code == 200
+
+
 def wait_all_settled(client, ids, timeout=60):
     end = time.time() + timeout
     while time.time() < end:
@@ -30,7 +35,8 @@ def test_switch_defaults_persist_and_validate(env):
     sw = {x["key"]: x for x in client.get("/api/automations").json()["switches"]}
     assert set(sw) == set(automation.META)
     assert sw["auto_approve"]["enabled"] is False                  # the risky one starts off
-    assert sw["sheet_export"]["enabled"] and sw["sm_queue"]["enabled"] and sw["ai_batch"]["enabled"]
+    assert sw["sheet_export"]["enabled"] and sw["ai_batch"]["enabled"]
+    assert sw["sm_queue"]["enabled"] is False                      # nothing is offered to the SM tool until someone turns this on
 
     r = client.put("/api/automations/auto_approve", json={"enabled": True})
     assert r.status_code == 200 and r.json()["enabled"] is True
@@ -210,6 +216,9 @@ def test_sm_queue_blocks_bad_boxes_and_switch_hides_everything(env):
     client, s, cat = make_client(env)
     good = _approved_box(client, "Box A1")
     bad = _approved_box(client, "Box B1")
+    off = client.get("/api/taskboxes?pending=true").json()                      # the default: the SM tool is offered nothing, ready boxes or not
+    assert off["boxes"] == [] and off["disabled"] is True and client.get("/api/queue").json()["enabled"] is False
+    queue_on(client)
     q = client.get("/api/queue").json()
     assert {b["box_id"] for b in q["ready"]} == {good, bad} and q["blocked"] == []
 
@@ -364,6 +373,8 @@ def test_todo_names_the_steps_that_still_need_a_person(env):
     wait_settled(client, d)
     assert kinds() == {"review"}
     client.post(f"/api/boxes/{d}/approve")
+    assert kinds() == {"sheet"}                                           # the queue is off by default, so no step says "push"
+    queue_on(client)
     assert kinds() == {"push", "sheet"}
     todo = {t["kind"]: t for t in client.get("/api/automations").json()["todo"]}
     assert todo["push"]["where"] == "SM" and todo["sheet"]["where"] == "Bảng tính"

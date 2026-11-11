@@ -139,7 +139,7 @@ objects and add them to a draft box in one go (they are locked, so Regenerate ke
 | Cấp danh sách cho bảng tính Google | `/api/sheet-boxes` serves approved boxes to the sheet script. Off = it gets an empty list. | on |
 | Theo dõi kho đồ | Alerts: catalog never synced or older than N hours, objects in boxes that SM no longer lists, categories running low. | on |
 | Tự thay món biến mất khỏi kho SM | After a catalog sync, objects SM no longer lists are swapped out of boxes that are not in SM yet. The other objects stay. An approved box goes back to Nháp for a person to approve again, unless Tự duyệt is on. Boxes already pushed are never touched. | **off** |
-| Hàng chờ lên SM | `/api/taskboxes?pending=true` (what the userscript reads) only returns approved, not-yet-pushed boxes that pass checks: every object still in stock, quantity within the cap, title not used by another box. Blocked boxes are listed with the reason. Off = the userscript sees nothing. | on |
+| Hàng chờ lên SM | `/api/taskboxes?pending=true` (what the userscript reads) only returns approved, not-yet-pushed boxes that pass checks: every object still in stock, quantity within the cap, title not used by another box. Blocked boxes are listed with the reason. Off = the userscript sees nothing. | **off** |
 
 **Việc cần làm.** The top of the Tự động hoá tab lists the steps that still need a person: drafts to approve,
 the SM push to confirm, the sheet script to run, a catalog sync. The app cannot do these itself (the rules keep SM and

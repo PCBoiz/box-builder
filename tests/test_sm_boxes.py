@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app import db, picker, service
 from app.main import create_app
-from tests.test_automation import make_client, wait_all_settled, wait_status
+from tests.test_automation import make_client, queue_on, wait_all_settled, wait_status
 from tests.test_backend import _approved_box, conn_of, env, wait_settled  # noqa: F401  (env is a fixture)
 
 TOK = {"X-Sync-Token": "tok"}
@@ -113,11 +113,13 @@ def test_our_own_pushed_box_is_not_a_conflict_and_a_held_object_blocks_the_queue
     q = client.get("/api/queue").json()
     assert [b["box_id"] for b in q["ready"]] == [] and q["blocked"][0]["box_id"] == other
     assert f"{clash} đã nằm trong hộp SM Someone else's" in q["blocked"][0]["reasons"]
-    assert client.get("/api/taskboxes?pending=true").json()["boxes"] == []                    # the userscript is not offered it either
+    queue_on(client)                                                                         # the queue starts off; with it on, the userscript is still not offered it
+    assert client.get("/api/taskboxes?pending=true").json()["boxes"] == []
     # SM returns the other box: the objects are free again on the next sync, and the queue clears
     push_snapshot(client, [sm_box("SM-100", "Ours", mine_ids), sm_box("SM-200", "Someone else's", [clash], "returned")])
     assert clash not in held(s)
     assert [b["box_id"] for b in client.get("/api/queue").json()["ready"]] == [other]
+    assert [b["builder"]["box_id"] for b in client.get("/api/taskboxes?pending=true").json()["boxes"]] == [other]
     assert client.get("/api/state").json()["boxes"]                                           # nothing of ours was touched
 
 

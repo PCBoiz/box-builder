@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from app import picker
 from app.main import create_app
 from app.sm_client import MockSM, SMError
-from tests.test_automation import live_rows, sync
+from tests.test_automation import live_rows, queue_on, sync
 from tests.test_backend import conn_of, env, wait_settled  # noqa: F401  (env is a fixture)
 
 TOK = {"X-Sync-Token": "tok"}
@@ -14,7 +14,9 @@ CROSS = {"Sec-Fetch-Site": "cross-site", "Origin": "http://evil.example"}
 def client_for(env, mode="mock"):
     s, cat = env
     s.sync_token, s.sm_push_mode = "tok", mode
-    return TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat)), s, cat
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))
+    queue_on(client)                                                                       # off by default; these tests are about what happens when it is on
+    return client, s, cat
 
 
 def approved(client, label, module="M8", code="", anchor="", count=3):
@@ -125,6 +127,19 @@ def test_blocked_boxes_are_reported_and_the_queue_switch_is_respected(env):
     client.put("/api/automations/sm_queue", json={"enabled": False})
     off = client.post("/api/sm/push", json={})
     assert off.status_code == 409 and "Hàng chờ" in off.json()["detail"]
+
+
+def test_the_queue_is_off_by_default_so_a_push_is_refused_until_it_is_switched_on(env):
+    s, cat = env
+    s.sync_token, s.sm_push_mode = "tok", "mock"
+    client = TestClient(create_app(s, llm=picker.MockLLM(), catalog=cat))                  # the stock default: no queue_on here
+    approved(client, "Box A1", "M8")
+    off = client.post("/api/sm/push", json={})
+    assert off.status_code == 409 and "Hàng chờ" in off.json()["detail"]
+    assert client.get("/api/sm/mock").json()["boxes"] == []
+    assert client.get("/api/taskboxes?pending=true").json() == {"boxes": [], "disabled": True}
+    queue_on(client)
+    assert client.post("/api/sm/push", json={}).json()["created"] == 1
 
 
 def test_a_web_page_cannot_start_a_push(env):

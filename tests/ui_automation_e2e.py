@@ -218,6 +218,11 @@ try:
         pg.locator("label.sw[for=sw-auto_approve]").click()
         pg.wait_for_function("document.querySelector('#sw-auto_approve').checked")
         check(wait_switch("auto_approve", True), "auto-approve persisted ON")
+        # the SM queue starts OFF (the reads-only stage) and the panel says so; the queue and fake-push checks below need it ON
+        check(not pg.locator("#sw-sm_queue").is_checked() and "Hàng chờ đang tắt" in pg.inner_text("#a-queue"), "the SM queue starts OFF and its panel says the tool sees nothing")
+        pg.locator("label.sw[for=sw-sm_queue]").click()
+        pg.wait_for_function("document.querySelector('#sw-sm_queue').checked")
+        check(wait_switch("sm_queue", True), "the SM queue persisted ON")
         # keyboard: space toggles a switch
         pg.focus("#sw-sheet_export"); pg.keyboard.press("Space")
         pg.wait_for_function("!document.querySelector('#sw-sheet_export').checked")

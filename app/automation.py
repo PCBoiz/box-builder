@@ -58,8 +58,8 @@ META = {
     "sm_queue": {
         "title": "Hàng chờ lên SM",
         "desc": "Kiểm tra từng hộp đã duyệt (món còn tồn kho, số lượng hợp lệ, tiêu đề không trùng) trước khi công cụ đồng bộ trong SM thấy nó. "
-                "Việc tạo TaskBox trong SM vẫn do bạn bấm xác nhận.",
-        "enabled": True, "config": {}, "limits": {},
+                "Mặc định tắt: khi tắt, công cụ trong SM không thấy hộp nào. Việc tạo TaskBox trong SM vẫn do bạn bấm xác nhận.",
+        "enabled": False, "config": {}, "limits": {},
     },
 }
 # the labels of the number boxes, the same words as CFG_LABEL in app.js

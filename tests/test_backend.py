@@ -467,6 +467,8 @@ def test_pushed_to_sm_tracking_is_create_once_and_token_protected(env):
 
     tbs = client.get("/api/taskboxes").json()["boxes"]
     assert {b["builder"]["box_id"]: bool(b["builder"]["pushed"]) for b in tbs} == {bid: True, other: False}
+    assert client.get("/api/taskboxes?pending=true").json() == {"boxes": [], "disabled": True}     # the SM queue starts off
+    client.put("/api/automations/sm_queue", json={"enabled": True})
     pending = client.get("/api/taskboxes?pending=true").json()["boxes"]
     assert [b["builder"]["box_id"] for b in pending] == [other]
 

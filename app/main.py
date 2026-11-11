@@ -216,7 +216,9 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     APP_URL_OK = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 
     def script_text(request: Request, app_url: str) -> str:
-        """The SM sync tool with this app's own address written into it (and into its @connect line); it checks for newer versions here."""
+        """The SM sync tool with this app's own address written into it (and into its @connect line). It carries no update address and one
+        `@downloadURL none`, the value Tampermonkey documents for "never check for an update": a copy already installed stops polling here, and a
+        new version is pasted by hand."""
         proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
         origin = f"{proto}://{request.headers.get('host', request.url.netloc)}"
         target = app_url.strip().rstrip("/") or origin
@@ -225,10 +227,9 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         with open(SCRIPT_FILE, encoding="utf-8") as f:
             text = f.read()
         host = urlsplit(target).hostname
-        self_url = f"{origin}/box_builder_sm.user.js" + (f"?app={target}" if app_url.strip() else "")
         text = text.replace('const DEFAULT_APP = "";', f"const DEFAULT_APP = {json.dumps(target)};", 1)
         connect = "" if f"// @connect      {host}\n" in text else f"// @connect      {host}\n"       # not twice if the file already lists it
-        return text.replace("// @connect      localhost\n", f"// @connect      localhost\n{connect}// @downloadURL  {self_url}\n// @updateURL    {self_url}\n", 1)
+        return text.replace("// @connect      localhost\n", f"// @connect      localhost\n{connect}// @downloadURL none\n", 1)
 
     @app.get("/box_builder_sm.user.js")
     def sync_script(request: Request, app_url: str = Query("", alias="app")):
