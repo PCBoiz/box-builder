@@ -1,8 +1,9 @@
-"""Browser test of the box features of integrations/box_builder_sm.user.js: reading SM's boxes, and pushing ready boxes in two steps.
+"""Browser test of the box features of integrations/box_builder_sm.user.js: reading SM's boxes, the preview of boxes that could be handed back,
+and pushing ready boxes in two steps (the push runs on a copy of the script with its switch turned on: the shipped file cannot create).
 SM is never contacted: sm.config.inc is answered by app/sm_client.py's MockSM behind Playwright routes. The app is the real one, on its own port
 and database. Run: python -I tests/userscript_push_e2e.py (needs playwright + chromium; set E2E_BROWSER=firefox to use Firefox).
 Works on Windows and Linux."""
-import csv, json, os, re, shutil, socket, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import calendar, csv, json, os, re, shutil, socket, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import sync_playwright
@@ -68,6 +69,10 @@ BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "tok-push-e2e"
 SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")       # the file as it ships: read-only (WRITES_ENABLED false)
+VERSION = "0.4.0"
+HEADER = re.search(r"^// ==UserScript==\n.*?^// ==/UserScript==", SCRIPT, flags=re.S | re.M).group(0)
+META_OFF = HEADER.replace("// @connect      localhost\n", "// @connect      localhost\n// @downloadURL  none\n", 1)   # what the app serves: one @downloadURL none, no @updateURL
+META_ON = HEADER.replace("// @connect      localhost\n", "// @connect      localhost\n// @updateURL    https://box-builder.example.invalid/box_builder_sm.user.js\n", 1)
 OFF = "const WRITES_ENABLED = false;"
 SCRIPT_WRITE = SCRIPT.replace(OFF, "const WRITES_ENABLED = true;")        # NEGATIVE CONTROL: the same file with the one switch turned on
 assert SCRIPT.count(OFF) == 1 and SCRIPT_WRITE != SCRIPT and SCRIPT_WRITE.count("const WRITES_ENABLED = true;") == 1, "the interlock constant moved or changed"
@@ -95,7 +100,8 @@ srv, srv_log = start_server(ROOT, env, PORT, tmp)
 
 fails, errs = [], []
 sm_requests, sm_posts, sm_queries, app_requests = [], [], [], []
-state = {"signed_in": True, "post_401": False, "app_force": {}}
+state = {"signed_in": True, "post_401": False, "app_force": {}, "queue": {}, "preflight_version": VERSION}
+app_calls = []                                               # every request the script made to the app, with the options it passed
 def check(cond, msg):
     print(("ok   " if cond else "FAIL ") + msg)
     if not cond: fails.append(msg)
@@ -107,19 +113,44 @@ def api(path, method="GET", body=None, token=True):
         with urllib.request.urlopen(req, timeout=60) as r: return r.status, json.loads(r.read() or b"null")
     except urllib.error.HTTPError as e: return e.code, json.loads(e.read() or b"null")
 
+HTML_502 = {"status": 502, "responseText": "<html><body>Bad gateway</body></html>"}
+HTML_503 = {"status": 503, "responseText": "<!doctype html><html><body>Service waking up</body></html>"}
+def fixture(path):
+    """The app answers /api/preflight only once the server work is merged. Until then (the real app says 404) the harness answers it from the
+    app's own data, so the same tests pass before and after the merge."""
+    return {"ok": True, "login_enforced": False, "sm_queue": True, "catalog_age_min": 3, "sm_snapshot_age_min": 1, "ready_boxes": len(pending()),
+            "expected_script_version": state["preflight_version"]}
+fixture_used = {}
 def gm(opts):
-    """Tampermonkey's request: the script's calls to the app land here."""
-    path = urlsplit(opts["url"]).path
-    app_requests.append((opts["method"], path, opts.get("data") or ""))
+    """Tampermonkey's request: the script's calls to the app land here. `queue` holds canned answers for a path (None lets one through to the app)."""
+    parts = urlsplit(opts["url"]); path = parts.path
+    app_requests.append((opts["method"], path, opts.get("data") or "")); app_calls.append(opts)
+    canned = state["queue"].get(path)
+    if canned:
+        nxt = canned.pop(0)
+        if nxt is not None: return nxt
     if path in state["app_force"]:
         return {"status": state["app_force"][path], "responseText": '{"detail":"forced"}'}
     req = urllib.request.Request(opts["url"], method=opts["method"], headers=opts.get("headers") or {}, data=(opts.get("data") or "").encode() or None)
     try:
         with urllib.request.urlopen(req, timeout=60) as r: return {"status": r.status, "responseText": r.read().decode()}
-    except urllib.error.HTTPError as e: return {"status": e.code, "responseText": e.read().decode()}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        if e.code == 404 and path == "/api/preflight":
+            fixture_used[path] = fixture_used.get(path, 0) + 1
+            return {"status": 200, "responseText": json.dumps(fixture(path))}
+        return {"status": e.code, "responseText": body}
     except Exception as e: return {"error": str(e)}
 
 LOGIN = dict(status=200, content_type="text/html", body="<html><body>Login</body></html>")
+def realish(b):
+    """A box as the real SM sends it: its own status names (the fake's on_floor is SM's active), next_actions, a note, and created_at as
+    'YYYY-MM-DD HH:MM' in Vietnam local time with no zone (the fake keeps UTC). The fake also sends people and history, which must never leave the tab."""
+    b = dict(b, created_by_name="Nguyen Van Creator", people=["Pham Van People"], receiver="Hoang Thi Receiver")
+    name = lambda x: "active" if x == "on_floor" else x
+    b["status"] = name(b["status"]); b["next_actions"] = [name(x) for x in b["next_actions"]]
+    b["created_at"] = time.strftime("%Y-%m-%d %H:%M", time.gmtime(calendar.timegm(time.strptime(b["created_at"], "%Y-%m-%dT%H:%M:%SZ")) + 7 * 3600))
+    return b
 def sm_route(route):
     """Everything under sm.config.inc/api: objects like the sync test, boxes from the MockSM. Anything else is recorded and refused."""
     req = route.request
@@ -135,8 +166,7 @@ def sm_route(route):
         if not state["signed_in"]: return route.fulfill(**LOGIN)
         q = parse_qs(urlsplit(req.url).query); sm_queries.append(q)
         page = int(q.get("page", ["1"])[0])
-        newest = list(reversed(sm.list_boxes()))
-        newest = [dict(b, created_by_name="Nguyen Van Creator", people=["Pham Van People"], receiver="Hoang Thi Receiver") for b in newest]
+        newest = [realish(b) for b in reversed(sm.list_boxes())]
         chunk = newest[(page - 1) * PAGE: page * PAGE]
         return route.fulfill(status=200, content_type="application/json", body=json.dumps(
             {"count": len(chunk), "total": len(newest), "page": page, "page_size": PAGE, "has_next": page * PAGE < len(newest), "boxes": chunk}))
@@ -154,17 +184,33 @@ def sm_route(route):
         return route.fulfill(status=200, content_type="application/json", body=json.dumps({"box_id": new_id}))
     route.fulfill(status=404, content_type="application/json", body='{"detail":"not here"}')
 
-SHIM = """
-window.__store = {bb_app: %s, bb_token: %s};
+SHIM_JS = """
+window.__store = %STORE%;
+window.__events = [];                                        // what the script did, in order: storage writes and fetches
+window.__delays = [];                                        // the waits it asked for between tries (shortened here so the test is fast)
 window.GM_getValue = (k, d) => (k in window.__store ? window.__store[k] : d);
-window.GM_setValue = (k, v) => { window.__store[k] = v; };
+window.GM_setValue = (k, v) => { if (window.__setFails) return; window.__events.push({kind: 'set', key: k, value: String(v)}); window.__store[k] = v; };
 window.GM_addStyle = (css) => { const s = document.createElement('style'); s.textContent = css; document.head.append(s); return s; };
+%INFO%
+const realFetch = window.fetch.bind(window);
+window.fetch = (u, o) => { window.__events.push({kind: 'fetch', method: String((o && o.method) || 'GET'), url: String(u), body: (o && o.body) ? String(o.body) : null}); return realFetch(u, o); };
+const realTimeout = window.setTimeout.bind(window);
+window.setTimeout = (f, ms, ...a) => {
+  if (ms === 2000 || ms === 4000 || ms === 8000) { window.__delays.push(ms); ms = 15; }
+  else if (ms === 60000 && window.__fast60) ms = window.__fast60;                  // the 60 second abort of one request, when a test asks
+  return realTimeout(f, ms, ...a);
+};
 window.GM_xmlhttpRequest = (o) => {
-  window.__gm({method: o.method || 'GET', url: o.url, headers: o.headers || {}, data: o.data || null}).then((r) => {
+  window.__gm({method: o.method || 'GET', url: o.url, headers: o.headers || {}, data: o.data || null, anonymous: o.anonymous, redirect: o.redirect, timeout: o.timeout}).then((r) => {
     if (r.error) { o.onerror && o.onerror({error: r.error}); } else { o.onload({status: r.status, responseText: r.responseText}); }
   });
 };
-""" % (json.dumps(BASE), json.dumps(TOKEN))
+"""
+def shim(store=None, meta=META_OFF):
+    base = {"bb_app": BASE, "bb_token": TOKEN}
+    base.update(store or {})
+    info = "" if meta is None else "window.GM_info = {scriptMetaStr: %s, scriptWillUpdate: true};" % json.dumps(meta)      # the real one says true by default: the panel must not use it
+    return SHIM_JS.replace("%STORE%", json.dumps(base)).replace("%INFO%", info)
 
 def log_text(pg): return pg.inner_text("#bb-log")
 def wait_log(pg, needle, timeout=60000):
@@ -207,14 +253,15 @@ try:
     assert st == 200, (st, r)
     with sync_playwright() as pw:
         b = getattr(pw, BROWSER).launch()
-        def open_sm(script):
-            """A signed-in SM tab with Tampermonkey's calls wired in, and `script` loaded the way Tampermonkey would (after the page)."""
+        def open_sm(script, store=None, meta=META_OFF):
+            """A signed-in SM tab with Tampermonkey's calls wired in, and `script` loaded the way Tampermonkey would (after the page).
+            `store` is what the script's storage already holds (the sync address and code are always there)."""
             page = b.new_context(viewport={"width": 1300, "height": 1000}).new_page()
             page.on("pageerror", lambda e: errs.append(str(e)))
             page.route("https://sm.config.inc/api/**", sm_route)
             page.route("https://sm.config.inc/", lambda r: r.fulfill(status=200, content_type="text/html", body="<html><body><h1>Scenario Manager</h1></body></html>"))
             page.expose_function("__gm", gm)
-            page.goto("https://sm.config.inc/"); page.add_script_tag(content=SHIM); page.add_script_tag(content=script)
+            page.goto("https://sm.config.inc/"); page.add_script_tag(content=shim(store, meta)); page.add_script_tag(content=script)
             page.wait_for_selector("#bb-btn")
             return page
         pg = open_sm(SCRIPT_WRITE)                                  # the create scenarios below run on the negative control: they must really create
@@ -257,7 +304,7 @@ try:
             time.sleep(1.5)
         ro = open_sm(SCRIPT)
         ro.click("#bb-btn")
-        check("Ghi vào SM: TẮT" in ro.inner_text("#bb-panel") and "(v0.3.1)" in ro.inner_text("#bb-panel"), "the shipped script's panel says 'Ghi vào SM: TẮT' and its version")
+        check("Ghi vào SM: TẮT" in ro.inner_text("#bb-panel") and f"(v{VERSION})" in ro.inner_text("#bb-panel"), "the shipped script's panel says 'Ghi vào SM: TẮT' and its version")
         check("Bản này chỉ đọc" in ro.inner_text("#bb-panel") and "Xem hộp sẽ tạo" == ro.inner_text("#bb-view"), "the panel text and the view button promise no create")
         mark_sm, mark_app = len(sm_requests), len(app_requests)
         ro.click("#bb-view"); idle(ro)
@@ -269,7 +316,7 @@ try:
         check(not w_sm and not w_app and not sm_posts and len(sm.list_boxes()) == 0, f"a forced click on the hidden confirm button: zero writes to SM and no /pushed ({w_sm}, {w_app})")
         check(len(sm_requests) > mark_sm and all(m == "GET" for m, _, _, _ in sm_requests[mark_sm:]), "the view still read SM (GET only), so the preview is real")
         # each guard blocks on its own: take the view guard out so a plan (and the button) exists, then also the create flow's guard
-        no_view = without(SCRIPT, "create: [], skip };", "create, skip };")
+        no_view = without(SCRIPT, 'say(READ_ONLY_PLAN, "warn");\n      return { ready: now.boxes, create: [], skip };', 'say(READ_ONLY_PLAN, "warn");\n      return { ready: now.boxes, create, skip };')
         v1 = open_sm(no_view); v1.click("#bb-btn"); mark_sm, mark_app = len(sm_requests), len(app_requests)
         v1.click("#bb-view"); idle(v1)
         check(v1.locator("#bb-confirm").is_visible(), "with the view guard removed the confirm button shows (so the next guard is what is tested)")
@@ -426,6 +473,63 @@ try:
               "the sync code never reached SM")
         check(not any(w in SCRIPT for w in ('"PUT"', '"PATCH"', '"DELETE"', "/transition", "handover")) and len(re.findall(r'method: "POST"', SCRIPT)) == 1,
               "the script holds no other kind of write to SM")
+
+        # =====================================================================================================================================
+        # version 0.4.0: the create path on the switched-on copy (journal, read-back, unknown outcomes), the return preview, the request allowlist
+        # =====================================================================================================================================
+        # =====================================================================================================================================
+        # version 0.4.0 on the switched-on copy and the shipped copy: the request wrapper, the update line, the Box builder line, the app calls
+        # =====================================================================================================================================
+        def opened(script=SCRIPT, store=None, meta=META_OFF):
+            page = open_sm(script, store=store, meta=meta); page.click("#bb-btn"); return page
+
+        # --- every request to SM goes through one wrapper with a method and path allowlist (GET only is ever sent; the create is also refused while the switch is false)
+        PROBE = "  window.__probe = (p, m) => smRequest(p, { method: m });\n  const ensure = () =>"
+        for name, script in (("switched on", without(SCRIPT_WRITE, "  const ensure = () =>", PROBE)), ("shipped", without(SCRIPT, "  const ensure = () =>", PROBE))):
+            pp = opened(script=script)
+            def probe(path, method): return pp.evaluate("([p, m]) => window.__probe(p, m).then(() => 'sent', (e) => e.message)", [path, method])
+            n_sm, n_ev = len(sm_requests), len(pp.evaluate("window.__events"))
+            for path, method in (("/api/boxes/MBX-0001", "GET"), ("/api/boxes/MBX-0001", "POST"), ("/api/boxes", "PUT"), ("/api/boxes", "PATCH"), ("/api/boxes/MBX-0001", "DELETE"), ("/api/objects", "DELETE"),
+                                 ("/api/users", "GET"), ("/api/boxes/MBX-0001/transition", "GET"), ("/api/boxes/MBX-0001/transition", "POST"), ("/api/boxes/../users", "GET"),
+                                 ("//evil.example.com/api/boxes", "GET"), ("https://evil.example.com/api/boxes", "GET"), ("/api/boxes/a%2Fb", "GET"), ("/api/objects/1", "GET"), ("/boxes", "GET"),
+                                 ("http://[bad", "GET"), ("https://user:pw@sm.config.inc/api/boxes", "GET")):
+                check(probe(path, method) != "sent", f"[{name}] refused: {method} {path}")
+            if name == "shipped": check(probe("/api/boxes", "POST") != "sent", "[shipped] refused: POST /api/boxes (writes switched off), even though the path is on the list")
+            check(len(sm_requests) == n_sm and sum(1 for e in pp.evaluate("window.__events")[n_ev:] if e["kind"] == "fetch") == 0, f"[{name}] none of the refused requests reached the network")
+            for path in ("/api/boxes?limit=500&page=1", "/api/objects?page=2"):
+                check(probe(path, "GET") == "sent", f"[{name}] allowed: GET {path}")
+            pp.close()
+
+        # --- the panel says what the installed header says about updates (not what GM_info.scriptWillUpdate claims)
+        for what, meta, want in (("@downloadURL none and no @updateURL", META_OFF, "Tự cập nhật: TẮT"), ("no update line at all", HEADER, "Tự cập nhật: TẮT"),
+                                 ("an @updateURL", META_ON, "Tự cập nhật: BẬT"), ("@updateURL none (not a documented value)", META_OFF.replace("// @downloadURL  none\n", "// @updateURL    none\n"), "Tự cập nhật: BẬT"),
+                                 ("a @downloadURL with an address", META_OFF.replace("// @downloadURL  none", "// @downloadURL  https://box-builder.example.invalid/x.js"), "Tự cập nhật: BẬT"), ("no GM_info", None, "Tự cập nhật: không rõ")):
+            up = opened(script=SCRIPT, meta=meta); check(want in up.inner_text("#bb-panel") and f"(v{VERSION})" in up.inner_text("#bb-panel") and "Ghi vào SM: TẮT" in up.inner_text("#bb-panel"), f"panel: {what} gives '{want}', with the version and 'Ghi vào SM: TẮT'"); up.close()
+
+        # --- the panel's line about Box builder: how many boxes are ready, how old its data is, which script version it expects
+        n_ready = len(pending())
+        pp = opened(); pp.click("#bb-refresh")
+        pp.wait_for_function("document.querySelector('#bb-pre').innerText.includes('hộp sẵn sàng đưa lên SM')", timeout=30000)
+        line = pp.inner_text("#bb-pre")
+        check(re.match(r"^Box builder \(lúc \d\d:\d\d\): \d+ hộp sẵn sàng đưa lên SM\. Danh sách hộp SM cập nhật .+, kho cập nhật .+\. Bản script: bạn dùng " + re.escape(VERSION) + r"(, Box builder mong [0-9]+(\.[0-9]+)*)?\.( Dán bản mới vào Tampermonkey\.)?$", line) is not None, f"the line names ready boxes, the age of the data and the script version: {line!r}")
+        if fixture_used.get("/api/preflight"):
+            check(f"{n_ready} hộp sẵn sàng đưa lên SM" in line, f"it counts the {n_ready} boxes the app holds ready")
+            state["preflight_version"] = "9.9.9"; pp.click("#bb-refresh")
+            pp.wait_for_function("document.querySelector('#bb-pre').innerText.includes('Box builder mong 9.9.9')", timeout=30000)
+            check("Dán bản mới vào Tampermonkey." in pp.inner_text("#bb-pre") and pp.locator("#bb-pre.warn").count() == 1, "an app that expects another version: the line says so, in the warning colour")
+            state["preflight_version"] = VERSION
+        else:
+            print("note the app answers /api/preflight itself: the count and the version-mismatch line were not tried (they need a stub)")
+        pp.close()
+
+        # --- every request to the app is anonymous and refuses redirects, and only the sync code header goes with it
+        check(app_calls and all(c.get("anonymous") is True and c.get("redirect") == "error" for c in app_calls), f"all {len(app_calls)} calls to the app were anonymous with redirect 'error'")
+        check(all(set(c.get("headers") or {}) <= {"Content-Type", "X-Sync-Token"} for c in app_calls), "and carried no header but the content type and the sync code")
+        check(all(set(x["body"]) == {"title", "anchor_object_id", "note", "contents", "borrow_now"} and x["body"]["borrow_now"] is False for x in sm_posts),
+              f"all {len(sm_posts)} create requests of the whole run carried the agreed fields and borrow_now false")
+        check(all(m == "GET" or (m == "POST" and p == "/api/boxes") for m, p, _, _ in sm_requests) and len([1 for m, _, _, _ in sm_requests if m == "POST"]) == len(sm_posts), "over the whole run: every request to SM was a GET, apart from the creates counted above")
+        check({p for _, p, _, _ in sm_requests} <= {"/api/boxes", "/api/objects"}, "and only these two paths were asked for")
+        check(not any(TOKEN in json.dumps(h) or TOKEN in body for _, _, h, body in sm_requests), "the sync code never reached SM, over the whole run")
         pg.screenshot(path=os.path.join(tempfile.gettempdir(), "box-builder-push-panel.png"))
         b.close()
 finally:

@@ -102,3 +102,70 @@ def test_the_tool_never_updates_itself_and_keeps_its_identity():
     version = tuple(int(x) for x in re.search(r"^// @version\s+(\d+\.\d+\.\d+)$", head, flags=re.M).group(1).split("."))
     assert version > (0, 3, 0)
     assert f'const VERSION = "{".".join(map(str, version))}";' in _script()
+
+
+def _allowlist(text):
+    block = re.search(r"const SM_ALLOW = \[\n(.*?)\n  \];", text, flags=re.S).group(1)
+    entries = re.findall(r'\["([A-Z]+)", /(\^.*?\$)/\]', block)
+    assert len(entries) == len([l for l in block.splitlines() if l.strip()]), "every line of the list must be a [method, pattern] pair"
+    return [(method, pattern.replace("\\/", "/")) for method, pattern in entries]
+
+
+def test_every_request_to_sm_goes_through_one_wrapper_with_an_allowlist():
+    text = _script()
+    allow = _allowlist(text)
+    assert allow == [("GET", r"^/api/boxes$"), ("GET", r"^/api/objects$"), ("POST", r"^/api/boxes$")]
+    assert [m for m, _ in allow if m != "GET"] == ["POST"], "the only write on the list is the box create, which the wrapper also refuses while the switch is false"
+
+    def allowed(method, path):
+        return any(m == method and re.fullmatch(p, path) for m, p in allow)
+    for method, path in (("GET", "/api/boxes"), ("GET", "/api/objects"), ("POST", "/api/boxes")):
+        assert allowed(method, path), (method, path)
+    for method, path in (("PUT", "/api/boxes"), ("PATCH", "/api/boxes"), ("DELETE", "/api/boxes/MBX-0001"), ("GET", "/api/boxes/MBX-0001"), ("POST", "/api/boxes/MBX-0001"),
+                         ("POST", "/api/boxes/MBX-0001/transition"), ("GET", "/api/boxes/MBX-0001/transition"), ("GET", "/api/boxes/"), ("GET", "/api/boxes/a/b"),
+                         ("GET", "/api/users"), ("GET", "/api/objects/1"), ("POST", "/api/objects"), ("GET", "/api/boxes\n"), ("DELETE", "/api/objects")):
+        assert not allowed(method, path), (method, path)
+
+    assert len(re.findall(r"\bfetch\(", text)) == 1, "one fetch call in the whole file, inside the wrapper"
+    wrapper = text[text.index("async function smRequest("):text.index("const loginPage")]
+    assert "fetch(" in wrapper
+    assert "new URL(path, location.origin)" in wrapper and "u.origin === location.origin" in wrapper and "!u.username && !u.password" in wrapper
+    assert "SM_ALLOW.some(([m, re]) => m === method && re.test(u.pathname))" in wrapper
+    assert '(method === "GET" || WRITES_ENABLED)' in wrapper, "the wrapper refuses a write while the switch is false, even for a listed path"
+    assert 'credentials: "same-origin"' in wrapper
+    # nothing else in the file can reach the network or run text as code
+    for banned in ("XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "importScripts", "import(", "eval(", "new Function", "document.write", "innerHTML", "GM_openInTab", "unsafeWindow"):
+        assert banned not in text, banned
+
+
+def test_every_request_to_the_app_is_anonymous_and_refuses_redirects_and_goes_to_known_routes():
+    text = _script()
+    assert len(re.findall(r"GM_xmlhttpRequest\(", text)) == 1
+    call = text[text.index("GM_xmlhttpRequest({"):]
+    call = call[:call.index("headers:")]
+    assert "anonymous: true" in call and 'redirect: "error"' in call
+    routes = {(m, re.sub(r"\$\{[^}]*\}", "{}", p)) for m, _, p in re.findall(r'\bapp\("(GET|POST)", ([`"])(.*?)\2', text)}
+    assert routes == {("GET", "/api/config"), ("GET", "/api/preflight"), ("GET", "/api/sync/check"), ("GET", "/api/taskboxes?pending=true"),
+                      ("POST", "/api/sm/boxes/sync"), ("POST", "/api/catalog/sync"), ("POST", "/api/boxes/{}/pushed")}
+
+
+def test_this_build_has_no_return_call_and_the_old_create_stays_as_it_was():
+    text = _script()
+    for banned in ("/transition", "returned_by", "returnable", "next_actions", "smReadBox"):
+        assert banned not in text, banned
+    assert 'ENDED = ["deactivated"]' in text, "SM has one ended status, and it is not guessed from other names"
+    assert "note: `Created by Box builder #${b.id}`" in text, "the dead create keeps the 0.3.1 note"
+
+
+def test_auto_refresh_only_reads_and_never_runs_over_another_run():
+    text = _script()
+    assert "const AUTO_BOXES_MS = 10 * 60 * 1000;" in text and "const AUTO_CATALOG_MS = 60 * 60 * 1000;" in text
+    tick = text[text.index("async function autoTick()"):text.index("setInterval(autoTick, AUTO_TICK_MS)") if "setInterval(autoTick, AUTO_TICK_MS)" in text else None]
+    assert tick.index("panelApi.busy()") < tick.index("panelApi.autoRun(kind)"), "the busy check comes before a run starts"
+    assert "autoGoing" in tick and "!autoOn()" in tick and "panelApi.configured()" in tick
+    run = text[text.index("const autoRun = (kind) =>"):text.index("auto.addEventListener(")]
+    assert "await sync(s)" in run and "await syncSmBoxes(s)" in run
+    for banned in ("createBoxes", "smCreate", "smRequest", "fetch(", "app(\"POST\""):
+        assert banned not in run, f"auto refresh must go through the same reads as the buttons: {banned}"
+    assert 'signedOut' in run and 'store.set("bb_auto", false)' in run, "it switches itself off when SM says nobody is signed in"
+    assert len(re.findall(r"setInterval\(autoTick", text)) == 1, "one timer for the whole page"

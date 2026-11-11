@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Box builder: đồng bộ kho với SM
 // @namespace    box-builder
-// @version      0.3.1
-// @description  Đọc kho đồ (kèm số lần dùng và ngày tạo) và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Bản này chỉ đọc: không tạo, sửa hay xoá gì trong SM.
+// @version      0.4.0
+// @description  Đọc kho đồ (kèm số lần dùng và ngày tạo) và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Có thể tự làm mới khi tab SM đang mở. Bản này chỉ đọc: không tạo, sửa hay xoá gì trong SM.
 // @match        https://sm.config.inc/*
 // @match        https://sm.config.inc/object*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addStyle
+// @grant        GM_info
 // @connect      box-builder-guwc.onrender.com
 // @connect      localhost
 // @connect      127.0.0.1
@@ -22,38 +23,84 @@
    stop at their first line). The create code stays in the file so the review sees it, and it is dead until a separate build turns
    the constant on. It never moves, hands over, assigns, borrows, edits or deletes anything in SM, and it never sends the sync code
    to SM. The app's own checks decide what is kept.
+   Every request to SM goes through one function (smRequest): it checks the address is this site and that the method and path are
+   on a short list (SM_ALLOW), and it refuses the POST while the switch is false. Every request to Box builder goes through app():
+   no cookies (anonymous), no redirects, and reads are tried again while a sleeping free server wakes up.
    Since 0.3.0 each object row also carries `uses` (the lifetime use count SM shows on its object page) and `created` (the date SM
-   gives for the object). Both come from the same GET /api/objects pages, only as a number and a date string, never a person. */
+   gives for the object). Both come from the same GET /api/objects pages, only as a number and a date string, never a person.
+   Since 0.4.0 the panel shows what Box builder says about itself (ready boxes, how old its data is, which script version it expects),
+   what the installed header says about updates, and has an optional switch that refreshes SM's boxes and the catalog on a timer
+   while the SM tab is open (reads only). */
 (function () {
   "use strict";
   if (window.__bbSm) return;
   window.__bbSm = true;
 
-  const VERSION = "0.3.1";
+  const VERSION = "0.4.0";
   const WRITES_ENABLED = false;         // this build only reads SM; the create flow below is switched off in three places
   const DEFAULT_APP = "";               // the app fills this in when it serves the script, so nobody has to type the address
   const PAGE_CAP = 200;                 // never read more than this many pages of 30 from SM
   const APP_TIMEOUT = 90000;            // a sleeping free server can take about a minute to answer the first call
+  const SM_TIMEOUT = 60000;             // one request to SM; after this it is given up
+  const READ_RETRY_MS = [2000, 4000, 8000];   // a read from Box builder is tried again after these waits: 4 tries in all
+  const AUTO_TICK_MS = 60 * 1000;       // how often the optional auto refresh looks at the clock
+  const AUTO_BOXES_MS = 10 * 60 * 1000;     // SM's boxes are read this often while auto refresh is on
+  const AUTO_CATALOG_MS = 60 * 60 * 1000;   // the catalog (and the boxes with it) this often
+  const AUTO_RETRY_MS = 5 * 60 * 1000;      // after a failed run the next try is this far away
   const store = {
     get: (k, d) => { try { return GM_getValue(k, d); } catch { return d; } },
     set: (k, v) => { try { GM_setValue(k, v); } catch { /* storage unavailable: the panel still works for this visit */ } },
   };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  let liveSay = null;                    // the panel's log while a run is going, so a wait for the server can be shown
 
-  /* ------------------------------------------------------------------ talking to SM (reads only) */
+  /* ------------------------------------------------------------------ talking to SM (GET only in this build) */
   class Plain extends Error { }          // an error whose message is already written for the person
   const READ_ONLY_PLAN = "Bản này chỉ đọc: xem được hộp sẽ tạo, chưa tạo được hộp trong SM.";
   const READ_ONLY_CREATE = "Bản này chỉ đọc: chưa tạo được hộp trong SM.";
+  const signedOut = () => {
+    const e = new Plain("Chưa đăng nhập SM trong tab này. Hãy đăng nhập SM rồi bấm lại.");
+    e.stop = true; e.signedOut = true;
+    return e;
+  };
+  const parseJson = (text, type) => { if (!/json/.test(type || "")) return null; try { return JSON.parse(text); } catch { return null; } };
 
-  async function smJson(path) {
-    let res;
-    try { res = await fetch(path, { credentials: "same-origin", method: "GET" }); }
-    catch { throw new Plain("Không gọi được SM. Kiểm tra mạng rồi thử lại."); }
-    const type = res.headers.get("content-type") || "";
-    if (res.status === 401 || res.status === 403 || res.redirected && /\/login/.test(res.url) || !/json/.test(type)) {
-      throw new Plain("Chưa đăng nhập SM trong tab này. Hãy đăng nhập SM rồi bấm lại.");
-    }
-    if (!res.ok) throw new Plain(`SM trả lỗi ${res.status}. Thử lại sau ít phút.`);
-    return res.json();
+  /* The only requests this script may send to SM. smRequest is the one place that calls fetch: it builds the address with
+     `new URL`, refuses anything that is not this site, and refuses any method and path that is not on this list. This build sends
+     GET only. The POST is listed so the create code further down can be reviewed, and smRequest refuses it while WRITES_ENABLED
+     is false. */
+  const SM_ALLOW = [
+    ["GET", /^\/api\/boxes$/],
+    ["GET", /^\/api\/objects$/],
+    ["POST", /^\/api\/boxes$/],
+  ];
+  async function smRequest(path, init) {
+    const opts = init || {};
+    const method = String(opts.method || "GET").toUpperCase();
+    let u;
+    try { u = new URL(path, location.origin); } catch { throw new Plain("Địa chỉ gọi SM không hợp lệ nên không gửi gì."); }
+    const ok = u.origin === location.origin && !u.username && !u.password
+      && SM_ALLOW.some(([m, re]) => m === method && re.test(u.pathname)) && (method === "GET" || WRITES_ENABLED);
+    if (!ok) throw new Plain(`Script này không được phép gọi ${method} ${u.pathname} trên SM nên không gửi gì.`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), SM_TIMEOUT);
+    try {
+      const res = await fetch(u.href, { method, credentials: "same-origin", headers: opts.headers, body: opts.body, signal: ctrl.signal });
+      const text = await res.text();             // read inside the timer: a stalled body also ends as a timeout
+      const type = res.headers.get("content-type") || "";
+      return { status: res.status, ok: res.ok, redirected: res.redirected, url: res.url, type, text, json: parseJson(text, type) };
+    } catch (e) {
+      throw new Plain(ctrl.signal.aborted ? "SM không trả lời kịp. Thử lại sau ít phút." : "Không gọi được SM. Kiểm tra mạng rồi thử lại.");
+    } finally { clearTimeout(timer); }
+  }
+  const loginPage = (r) => r.redirected && /\/login/.test(r.url);
+
+  async function smJson(path) {                  // a read that must give JSON
+    const r = await smRequest(path, { method: "GET" });
+    if (r.status === 401 || r.status === 403 || loginPage(r) || !/json/.test(r.type)) throw signedOut();
+    if (!r.ok) throw new Plain(`SM trả lỗi ${r.status}. Thử lại sau ít phút.`);
+    if (r.json === null) throw new Plain("SM trả dữ liệu không đọc được. Thử lại sau ít phút.");
+    return r.json;
   }
   const listOf = (d) => (Array.isArray(d) ? d : (d.objects || d.items || d.data || d.results || []));
 
@@ -62,22 +109,16 @@
      because of this script. */
   async function smCreate(payload) {
     if (!WRITES_ENABLED) { const e = new Plain(READ_ONLY_CREATE); e.stop = true; throw e; }
-    let res;
-    try {
-      res = await fetch("/api/boxes", {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(payload),
-      });
-    } catch { throw new Plain("Không gọi được SM. Kiểm tra mạng rồi thử lại."); }
-    const type = res.headers.get("content-type") || "";
-    const signedOut = () => { const e = new Plain("Chưa đăng nhập SM trong tab này. Hãy đăng nhập SM rồi bấm lại."); e.stop = true; return e; };
-    if (res.status === 401 || res.redirected && /\/login/.test(res.url)) throw signedOut();
-    let json = null;
-    if (/json/.test(type)) { try { json = await res.json(); } catch { /* not json */ } }
-    if (!res.ok) {
-      if (!json && /html/.test(type) && res.status !== 403) throw signedOut();
+    const r = await smRequest("/api/boxes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (r.status === 401 || loginPage(r)) throw signedOut();
+    const json = r.json;
+    if (!r.ok) {
+      if (!json && /html/.test(r.type) && r.status !== 403) throw signedOut();
       const why = detailText(json);
-      throw new Plain(why ? `SM từ chối: ${why}` : (res.status === 403 ? "SM từ chối (403). Tài khoản này có thể không được tạo hộp." : `SM trả lỗi ${res.status}.`));
+      throw new Plain(why ? `SM từ chối: ${why}` : (r.status === 403 ? "SM từ chối (403). Tài khoản này có thể không được tạo hộp." : `SM trả lỗi ${r.status}.`));
     }
     if (!json) throw signedOut();
     const id = json.box_id != null ? json.box_id : (json.id != null ? json.id : (json.box && (json.box.box_id != null ? json.box.box_id : json.box.id)));
@@ -181,12 +222,16 @@
   }
 
   /* ------------------------------------------------------------------ talking to Box builder (Tampermonkey's request, not fetch) */
-  function app(method, path, body) {
+  const WAKING = "Máy chủ đang thức dậy, chưa gửi gì sang SM. Đợi khoảng 1 phút rồi bấm lại.";
+  const looksWaking = (r) => r.json === null && ([502, 503, 524].includes(r.status) || /^\s*</.test(r.text));   // a proxy's page or an HTML body, never the app's own JSON
+
+  function appOnce(method, path, body) {       // one request, no cookies, no redirects
     const base = String(store.get("bb_app", DEFAULT_APP) || "").trim().replace(/\/+$/, "");
     if (!/^https?:\/\//i.test(base)) return Promise.reject(new Plain("Chưa nhập địa chỉ Box builder (bắt đầu bằng https:// hoặc http://)."));
+    const down = (text) => { const e = new Plain(text); e.net = true; return e; };
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method, url: base + path, timeout: APP_TIMEOUT,
+        method, url: base + path, timeout: APP_TIMEOUT, anonymous: true, redirect: "error",
         headers: { "Content-Type": "application/json", "X-Sync-Token": String(store.get("bb_token", "") || "") },
         data: body == null ? undefined : JSON.stringify(body),
         onload: (r) => {
@@ -194,16 +239,78 @@
           try { json = JSON.parse(r.responseText); } catch { /* not json */ }
           resolve({ status: r.status, json, text: r.responseText || "" });
         },
-        onerror: () => reject(new Plain(`Không kết nối được tới ${base}. Kiểm tra địa chỉ và mạng (máy chủ miễn phí có thể đang ngủ, thử lại sau 1 phút).`)),
-        ontimeout: () => reject(new Plain("Box builder không trả lời kịp. Nếu dùng máy chủ miễn phí, nó cần khoảng 1 phút để thức dậy: bấm lại.")),
+        onerror: () => reject(down(`Không kết nối được tới ${base}. Kiểm tra địa chỉ và mạng (máy chủ miễn phí có thể đang ngủ, thử lại sau 1 phút).`)),
+        ontimeout: () => reject(down("Box builder không trả lời kịp. Nếu dùng máy chủ miễn phí, nó cần khoảng 1 phút để thức dậy: bấm lại.")),
       });
     });
   }
-  async function wake() {                      // the first request wakes a sleeping server
-    for (let i = 0; i < 2; i++) {
-      try { const r = await app("GET", "/api/config"); if (r.status === 200) return r.json; } catch (e) { if (i === 1) throw e; }
+  /* Reads are tried again 2, 4 and 8 seconds apart (4 tries) while the server wakes up. A write is tried once. A proxy's 502, 503,
+     524 or any HTML page is "the server is waking", never "SYNC_TOKEN is not set": only the app's own JSON 503 means that. */
+  async function app(method, path, body) {
+    const tries = method === "GET" ? READ_RETRY_MS.length + 1 : 1;
+    let last = null;
+    for (let i = 0; i < tries; i++) {
+      if (i) {
+        if (liveSay) liveSay(`Box builder chưa trả lời, thử lại sau ${READ_RETRY_MS[i - 1] / 1000} giây (lần ${i + 1}/${tries})…`, "progress");
+        await sleep(READ_RETRY_MS[i - 1]);
+      }
+      try {
+        const r = await appOnce(method, path, body);
+        if (!looksWaking(r)) return r;
+        last = new Plain(WAKING); last.stop = true; last.waking = true;
+      } catch (e) {
+        if (!(e instanceof Plain) || !e.net) throw e;
+        last = e;
+      }
     }
-    throw new Plain("Box builder chưa sẵn sàng. Thử lại sau 1 phút.");
+    throw last;
+  }
+  let awakeAt = 0;
+  async function wake(force) {                 // the first call to a sleeping server only wakes it; nothing is read from SM before it answers
+    if (!force && Date.now() - awakeAt < 60000) return null;
+    const r = await app("GET", "/api/config");
+    if (r.status === 200 && r.json) { awakeAt = Date.now(); return r.json; }
+    throw new Plain(explainApp(r));
+  }
+  /* What Box builder says about itself (GET /api/preflight): awake, database answering, boxes ready, how old its data is, and which
+     script version it expects. The panel keeps the last answer in `lastPre`. An older Box builder without the call answers 404. */
+  let lastPre = null;
+  const minutes = (n) => (typeof n === "number" && Number.isFinite(n) ? `${Math.round(n)} phút trước` : "chưa có");
+  async function preflight(say) {
+    const r = await app("GET", "/api/preflight");
+    if (r.status === 404) { lastPre = { at: Date.now(), old: true }; return null; }
+    if (r.status !== 200 || !r.json) throw new Plain(explainApp(r));
+    const j = r.json;
+    if (j.ok === false) {
+      lastPre = { at: Date.now(), down: true };
+      const e = new Plain("Box builder báo chưa sẵn sàng (cơ sở dữ liệu chưa trả lời). Thử lại sau ít phút."); e.stop = true; throw e;
+    }
+    lastPre = { at: Date.now(), json: j };
+    say(`Box builder sẵn sàng. Kho cập nhật ${minutes(j.catalog_age_min)}, danh sách hộp SM cập nhật ${minutes(j.sm_snapshot_age_min)}.`, "ok");
+    return j;
+  }
+  function preText() {                         // the panel's one line about Box builder: { text, warn }
+    const p = lastPre;
+    if (!p) return { text: "Trạng thái Box builder: chưa kiểm tra.", warn: false };
+    const when = new Date(p.at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    if (p.error) return { text: `Trạng thái Box builder (lúc ${when}): ${p.error}`, warn: true };
+    if (p.old) return { text: `Trạng thái Box builder (lúc ${when}): phiên bản này chưa có phần kiểm tra trước, cập nhật Box builder để xem.`, warn: true };
+    if (p.down) return { text: `Trạng thái Box builder (lúc ${when}): chưa sẵn sàng, cơ sở dữ liệu chưa trả lời.`, warn: true };
+    const j = p.json, want = j.expected_script_version ? String(j.expected_script_version).slice(0, 20) : "";
+    const ready = typeof j.ready_boxes === "number" ? `${j.ready_boxes} hộp sẵn sàng đưa lên SM` : "chưa rõ số hộp sẵn sàng";
+    const stale = want && want !== VERSION;
+    return {
+      text: `Box builder (lúc ${when}): ${ready}. Danh sách hộp SM cập nhật ${minutes(j.sm_snapshot_age_min)}, kho cập nhật ${minutes(j.catalog_age_min)}. `
+        + `Bản script: bạn dùng ${VERSION}${want ? `, Box builder mong ${want}` : ""}.${stale ? " Dán bản mới vào Tampermonkey." : ""}`,
+      warn: !!stale,
+    };
+  }
+  let readyAt = 0;
+  async function gate(say) {                   // before the first Box builder call of a run: wake it, then ask how it is
+    if (Date.now() - readyAt < 60000) return;
+    await wake(true);
+    await preflight(say);
+    readyAt = Date.now();
   }
   function explainCheck(r) {                   // the sync-code step
     if (r.status === 200) return null;
@@ -222,7 +329,7 @@
   /* ------------------------------------------------------------------ SM boxes (reads only) */
   const BOX_LIMIT = 500;                       // boxes per request
   const BOX_CAP = 2000;                        // the newest boxes are read, older ones are left out
-  const ENDED = ["deactivated", "returned", "cancelled", "canceled", "discarded"];   // the same list the app uses
+  const ENDED = ["deactivated"];               // SM's only ended status; SM's default box list leaves such boxes out
   const lc = (v) => String(v == null ? "" : v).trim().toLowerCase();
   const isEnded = (b) => ENDED.includes(lc(b.status)) || ENDED.includes(lc(b.status_label));
   const normTitle = (t) => String(t == null ? "" : t).trim().replace(/\s+/g, " ").toLowerCase();
@@ -308,6 +415,7 @@
   }
 
   async function view(say) {                   // step one: reads only, creates nothing
+    await gate(say);
     say("1/3 Đang lấy hộp sẵn sàng từ Box builder…");
     const first = await readPending();
     if (first.disabled) { say("Hàng đợi đưa hộp lên SM đang tắt trong Box builder. Bật lại ở mục Tự động hoá.", "warn"); return { ready: [], create: [], skip: new Map() }; }
@@ -334,6 +442,7 @@
 
   async function createBoxes(say, todo) {      // step two: runs only from the confirm button
     if (!WRITES_ENABLED) throw new Plain(READ_ONLY_CREATE);
+    await wake();
     say("Đang kiểm tra lại trước khi tạo…");
     const p = await readPending();
     const sm = await readSmBoxes(say);           // reads only: nothing is posted to Box builder here
@@ -393,7 +502,7 @@
     say(`SM: đã đăng nhập. Kho SM có ${total} món (${pages} trang).`, "ok");
     say(hasVi ? "SM trả tên tiếng Việt cho món." : "SM không trả tên tiếng Việt. Box builder sẽ dùng tên trong file CSV của nó.", hasVi ? "ok" : "warn");
     say("2/3 Đang gọi Box builder…");
-    await wake();
+    await wake(true);
     say("Box builder: có trả lời.", "ok");
     say("3/3 Đang kiểm tra mã đồng bộ…");
     const r = await app("GET", "/api/sync/check");
@@ -453,6 +562,35 @@
     throw new Plain(problem && problem !== "NOCHECK" ? problem : `Box builder trả lỗi ${r.status}.`);
   }
 
+  /* What the installed copy's own header says about updates (Tampermonkey keeps it in GM_info.scriptMetaStr). A copy updates itself only
+     when the header names an @updateURL, or a @downloadURL other than "none". GM_info.scriptWillUpdate is not used: it does not say what the header holds. */
+  function updateState() {
+    let meta = "";
+    try { meta = String((typeof GM_info !== "undefined" && GM_info && GM_info.scriptMetaStr) || ""); } catch { meta = ""; }
+    if (!meta) return "Tự cập nhật: không rõ";
+    const heads = meta.split(/\r?\n/).map((l) => /^\s*\/\/\s*@(updateURL|downloadURL)\s+(\S+)/i.exec(l)).filter(Boolean);
+    const on = heads.some((m) => m[1].toLowerCase() === "updateurl" || m[2].toLowerCase() !== "none");
+    return on ? "Tự cập nhật: BẬT" : "Tự cập nhật: TẮT";
+  }
+
+  /* ------------------------------------------------------------------ optional auto refresh (reads only)
+     While an SM tab is open and the person has switched it on in the panel: SM's boxes are read every 10 minutes and the catalog (with the
+     boxes) every 60 minutes, so what Box builder knows about SM stays fresh without a click. It reads SM with GET and posts what a button press
+     would post, nothing else. It never starts while another run is going, a failed run is tried again 5 minutes later, and it switches
+     itself off when SM says the person is signed out. The switch and the next due times live in the script's own storage, so a second SM
+     tab sees that someone just refreshed and waits. One timer for the whole page: the panel hands its pieces to `panelApi`. */
+  const autoOn = () => store.get("bb_auto", false) === true;
+  const dueAt = (key) => Number(store.get(key, 0)) || 0;
+  let panelApi = null, autoGoing = false;
+  async function autoTick() {
+    if (autoGoing || !autoOn() || !panelApi || panelApi.busy() || !panelApi.configured()) return;       // never while a run is still going
+    const now = Date.now();
+    const kind = now >= dueAt("bb_auto_catalog") ? "catalog" : (now >= dueAt("bb_auto_boxes") ? "boxes" : null);
+    if (!kind) return;
+    autoGoing = true;
+    try { await panelApi.autoRun(kind); } finally { autoGoing = false; }
+  }
+
   /* ------------------------------------------------------------------ the panel */
   function build() {
     const addStyle = (text) => {
@@ -478,7 +616,13 @@
       #bb-log{margin-top:10px;min-height:40px;max-height:240px;overflow:auto;border:1px solid #dbe1de;border-radius:8px;padding:6px 8px;background:#f8faf9}
       #bb-log .ok{color:#0c4a3e}#bb-log .warn{color:#7a4a00}#bb-log .bad{color:#a8231b;font-weight:600}#bb-log .progress{color:#48575f}
       #bb-note{margin-top:8px;color:#48575f;font-size:12px}
-      #bb-writes{margin:0 0 2px;font-weight:600;color:#7a4a00}`);
+      #bb-writes{margin:0 0 2px;font-weight:600;color:#7a4a00}
+      #bb-update{margin:0 0 2px;color:#48575f;font-size:12px}
+      #bb-pre{margin:6px 0 0;color:#48575f;font-size:12px}
+      #bb-pre.warn{color:#7a4a00;font-weight:600}
+      #bb-auto-row{display:flex;align-items:center;gap:6px;margin-top:10px}
+      #bb-auto-row label{display:inline;margin:0;font-weight:600}
+      #bb-auto-note{margin-top:4px;color:#48575f;font-size:12px}`);
 
     const btn = document.createElement("button");
     btn.id = "bb-btn"; btn.type = "button"; btn.textContent = "Box builder";
@@ -497,7 +641,9 @@
     const intro = document.createElement("div"); intro.id = "bb-note";
     intro.textContent = WRITES_ENABLED ? "Đọc kho và hộp từ SM (chỉ đọc) và gửi cho Box builder. Chỉ tạo hộp mới trong SM khi bạn bấm xác nhận."
       : "Đọc kho và hộp từ SM (chỉ đọc) và gửi cho Box builder. Bản này chỉ đọc: chưa tạo được hộp trong SM.";
-    panel.append(title, writes, intro);
+    const upd = document.createElement("div"); upd.id = "bb-update"; upd.textContent = updateState();
+    const pre = document.createElement("div"); pre.id = "bb-pre";
+    panel.append(title, writes, upd, intro, pre);
     const fApp = field("bb-app", "Địa chỉ Box builder", "text", store.get("bb_app", DEFAULT_APP) || "", "https://box-builder-guwc.onrender.com");
     const fTok = field("bb-token", "Mã đồng bộ (SYNC_TOKEN)", "password", store.get("bb_token", "") || "");
     const fSec = field("bb-sectors", "Khu (Sector)", "text", store.get("bb_sectors", "Hanoi-GPI") || "Hanoi-GPI", "Hanoi-GPI");
@@ -506,6 +652,11 @@
     const bSync = button("bb-sync", "Đồng bộ kho ngay", "go");
     const bBoxes = button("bb-boxes", "Đọc hộp trong SM");
     row.append(bCheck, bSync, bBoxes);
+    const autoRow = document.createElement("div"); autoRow.id = "bb-auto-row";
+    const auto = document.createElement("input"); auto.type = "checkbox"; auto.id = "bb-auto";
+    const autoLabel = document.createElement("label"); autoLabel.htmlFor = "bb-auto"; autoLabel.textContent = "Tự làm mới khi tab SM đang mở (chỉ đọc)";
+    autoRow.append(auto, autoLabel);
+    const autoNote = document.createElement("div"); autoNote.id = "bb-auto-note";
 
     const readyBox = document.createElement("div"); readyBox.id = "bb-ready";
     const readyCount = document.createElement("div"); readyCount.id = "bb-ready-count";
@@ -524,7 +675,7 @@
     const foot = document.createElement("div"); foot.id = "bb-note";
     foot.textContent = WRITES_ENABLED ? "Chỉ đọc từ SM. Việc duy nhất ghi vào SM là tạo hộp mới sau khi bạn bấm Xác nhận. Không sửa, giao, mượn hay xoá gì."
       : "Chỉ đọc từ SM. Bản này không ghi gì vào SM: không tạo, sửa, giao, mượn hay xoá hộp.";
-    panel.append(row, readyBox, log, last, foot);
+    panel.append(row, autoRow, autoNote, readyBox, log, last, foot);
     document.body.append(btn, panel);
 
     let busy = false, ready = [], plan = [], skip = new Map(), seq = 0;
@@ -534,8 +685,19 @@
       if (kind) d.className = kind;
       d.textContent = text;
       if (kind === "progress" && log.lastChild && log.lastChild.className === "progress") log.lastChild.replaceWith(d); else log.append(d);
+      while (log.childNodes.length > 300) log.firstChild.remove();       // a panel left open for days does not grow without end
       log.scrollTop = log.scrollHeight;
     };
+    const quiet = () => { };
+    const showPre = () => { const t = preText(); pre.textContent = t.text; pre.className = t.warn ? "warn" : ""; };
+    const hhmm = (t) => (t > Date.now() ? new Date(t).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "ngay khi rảnh");
+    const showAuto = () => {
+      auto.checked = autoOn();
+      autoNote.textContent = store.get("bb_auto_note", "") || (autoOn()
+        ? `Tự làm mới đang bật. Lần kế tiếp: hộp SM ${hhmm(dueAt("bb_auto_boxes"))}, kho ${hhmm(dueAt("bb_auto_catalog"))}. Chỉ đọc SM, không tạo hay sửa gì.`
+        : "Tự làm mới đang tắt. Khi bật: đọc hộp SM mỗi 10 phút, kho mỗi 60 phút.");
+    };
+    const configured = () => /^https?:\/\//i.test(String(store.get("bb_app", DEFAULT_APP) || "").trim()) && !!store.get("bb_token", "");
     const save = () => { store.set("bb_app", fApp.value.trim()); store.set("bb_token", fTok.value); store.set("bb_sectors", fSec.value.trim()); };
     const showConfirm = () => {
       bConfirm.hidden = plan.length === 0; bConfirm.disabled = busy;
@@ -564,6 +726,9 @@
         if (mine !== seq) return;
         ready = []; render(e instanceof Plain ? e.message : "Chưa đọc được danh sách hộp sẵn sàng.");
       }
+      try { await preflight(quiet); }
+      catch (e) { lastPre = { at: Date.now(), error: e instanceof Plain ? e.message : "chưa đọc được trạng thái." }; }
+      if (mine === seq) showPre();
     };
     const run = (fn, opts) => async () => {
       if (busy) return;
@@ -571,15 +736,16 @@
       save(); if (!(opts && opts.keep)) log.replaceChildren();
       all.forEach((b) => { b.disabled = true; }); bConfirm.disabled = true;
       let ok = false;
+      liveSay = say;
       try { await fn(say); ok = true; say("Hoàn tất.", "ok"); }
       catch (e) { say(e instanceof Plain ? e.message : `Có lỗi không rõ: ${e && e.message ? e.message : e}`, "bad"); }
-      finally { busy = false; all.forEach((b) => { b.disabled = false; }); showLast(); showConfirm(); }
+      finally { liveSay = null; busy = false; all.forEach((b) => { b.disabled = false; }); showLast(); showConfirm(); showAuto(); showPre(); }
       if (ok && !(opts && opts.own)) await refreshReady();
     };
     btn.addEventListener("click", () => { panel.hidden = !panel.hidden; if (!panel.hidden && !busy) refreshReady(); });
     bCheck.addEventListener("click", run(async (s) => { await check(s); }));
     bSync.addEventListener("click", run(async (s) => { await sync(s); }));
-    bBoxes.addEventListener("click", run(async (s) => { await syncSmBoxes(s); }));
+    bBoxes.addEventListener("click", run(async (s) => { await wake(); await syncSmBoxes(s); }));
     bRefresh.addEventListener("click", () => { if (!busy) refreshReady(); });
     bView.addEventListener("click", run(async (s) => {
       plan = []; skip = new Map(); showConfirm();
@@ -598,8 +764,42 @@
       todo = plan; plan = []; showConfirm();
       make();
     });
+
+    /* Auto refresh: one run, claimed first in storage so a second SM tab waits, then the same reads a button press does. */
+    const autoRun = (kind) => run(async (s) => {
+      const t0 = Date.now();
+      store.set("bb_auto_boxes", t0 + AUTO_RETRY_MS);                        // a failed run leaves this as the time of the next try
+      if (kind === "catalog") store.set("bb_auto_catalog", t0 + AUTO_RETRY_MS);
+      s(`Tự làm mới: ${kind === "catalog" ? "đọc kho và hộp" : "đọc hộp"} từ SM…`, "progress");
+      try {
+        if (kind === "catalog") await sync(s); else { await gate(s); await syncSmBoxes(s); }
+        const t1 = Date.now();
+        store.set("bb_auto_boxes", t1 + AUTO_BOXES_MS);
+        if (kind === "catalog") store.set("bb_auto_catalog", t1 + AUTO_CATALOG_MS);
+        s("Tự làm mới: xong.", "ok");
+      } catch (e) {
+        if (e instanceof Plain && e.signedOut) {                              // SM says nobody is signed in: stop until the person turns it on again
+          store.set("bb_auto", false);
+          store.set("bb_auto_note", "Tự làm mới đã tắt vì SM chưa đăng nhập. Đăng nhập SM rồi bật lại.");
+        }
+        throw e;
+      }
+    }, { keep: true, own: true })();
+    auto.addEventListener("change", () => {
+      if (auto.checked) save();                                              // what was typed in the boxes counts, even if no button was pressed yet
+      if (auto.checked && !configured()) { store.set("bb_auto_note", "Nhập địa chỉ Box builder và mã đồng bộ trước khi bật tự làm mới."); auto.checked = false; showAuto(); return; }
+      if (auto.checked) {
+        store.set("bb_auto", true); store.set("bb_auto_note", ""); store.set("bb_auto_boxes", 0); store.set("bb_auto_catalog", 0);   // due now
+        setTimeout(autoTick, 1500);
+      } else { store.set("bb_auto", false); store.set("bb_auto_note", ""); }
+      showAuto();
+    });
+    panelApi = { busy: () => busy, configured, autoRun };
+    showAuto(); showPre();
   }
 
+  setInterval(autoTick, AUTO_TICK_MS);
+  setTimeout(autoTick, 5000);
   const ensure = () => { if (document.body && !document.getElementById("bb-btn")) build(); };
   console.log(`[Box builder] script v${VERSION} đang chạy trên ${location.host}`);
   if (document.body) ensure(); else window.addEventListener("DOMContentLoaded", ensure);
