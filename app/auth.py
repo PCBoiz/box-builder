@@ -42,7 +42,8 @@ PUBLIC_EXACT = {"/login", "/api/config", "/api/auth/status", "/api/auth/login", 
                 "/box_builder_sm.user.js", "/box_builder_sm.txt", "/favicon.ico"}
 PUBLIC_PREFIX = ("/static/",)
 MACHINE_EXACT = {"/api/taskboxes", "/api/sheet-boxes", "/api/catalog/sync", "/api/sm/boxes/sync", "/api/sync/check",
-                 "/api/preflight", "/api/sm/returnable"}          # the last two carry the sync token and no person
+                 "/api/preflight", "/api/sm/returnable",          # the two carry the sync token and no person
+                 "/api/sheet/checks"}                             # carries its own SHEET_TOKEN: it can record the supporters' check and nothing else
 MACHINE_PUSHED = re.compile(r"^/api/boxes/[^/]+/pushed$")
 USER_EXACT = {"/dung", "/my/print"}
 USER_PREFIX = ("/api/my/",)

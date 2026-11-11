@@ -211,6 +211,18 @@ def _schema(pg: bool) -> list[str]:
               qty        INTEGER NOT NULL DEFAULT 1,
               PRIMARY KEY(sm_box_id, object_id))""",
         "CREATE INDEX IF NOT EXISTS ix_sm_box_items_object ON sm_box_items(object_id)",
+        # what the sheet's own script last reported for an approved box (service.save_sheet_checks): the two ticks (1, 0 or NULL when the
+        # cell could not be read) and the object rows the supporters left in the block. One row per box, replaced by each report.
+        # support_seen_unticked: 1 once any report showed the supporters' tick off (or unreadable). A tick that was already on in the very
+        # first report may be left over from an earlier day's box in the same block, so it counts only after the app has seen it off.
+        # "rows" is quoted on purpose: it is a keyword in some SQL dialects.
+        f"""CREATE TABLE IF NOT EXISTS sheet_checks(
+              box_id                BIGINT PRIMARY KEY REFERENCES boxes(id) ON DELETE CASCADE,
+              sc_tick               INTEGER,
+              supporter_tick        INTEGER,
+              support_seen_unticked INTEGER NOT NULL DEFAULT 0,
+              "rows"                TEXT NOT NULL DEFAULT '[]',
+              read_at               {real} NOT NULL)""",
         # on/off switches for the automations (only rows that were ever changed; defaults live in app/automation.py)
         f"""CREATE TABLE IF NOT EXISTS automations(
               k          TEXT PRIMARY KEY,

@@ -61,6 +61,15 @@ META = {
                 "Mặc định tắt: khi tắt, công cụ trong SM không thấy hộp nào. Việc tạo TaskBox trong SM vẫn do bạn bấm xác nhận.",
         "enabled": False, "config": {}, "limits": {},
     },
+    "need_supporter_check": {
+        "title": "Chờ người hỗ trợ kiểm trước khi lên SM",
+        "desc": "Khi bật, hộp đã duyệt chỉ lên SM sau khi SC tick hộp cần dùng, người hỗ trợ kiểm món rồi tick, và danh sách trong bảng tính khớp với hộp. "
+                "Món người hỗ trợ xoá khỏi ô (do thiếu) hoặc số lượng bị giảm thì hộp đổi theo bảng tính, và món thiếu vào danh sách đã dùng ở bảng tính. "
+                "Món thừa hoặc số lượng tăng thì hộp bị chặn để người làm hộp xem lại. "
+                "Tick của người hỗ trợ chỉ tính khi app đã thấy nó tắt trước đó, để tick còn lại từ hộp hôm trước không cho hộp mới lên SM. "
+                "Cần bật cả \"Cấp danh sách cho bảng tính Google\" và \"Hàng chờ lên SM\". Khi tắt, mọi thứ chạy như trước.",
+        "enabled": False, "config": {}, "limits": {},
+    },
 }
 # the labels of the number boxes, the same words as CFG_LABEL in app.js
 LABEL = {"stale_hours": "Cảnh báo khi kho cũ hơn (giờ)", "low_stock": "Cảnh báo khi một nhóm còn dưới (món)",
@@ -128,6 +137,9 @@ def set_switch(conn, key: str, enabled: bool | None = None, config: dict | None 
             (key, int(new_enabled), json.dumps(new_cfg), time.time()))
         if enabled is not None and enabled != cur["enabled"]:
             _log(conn, "switch", f"{META[key]['title']}: {'đã bật' if new_enabled else 'đã tắt'}")
+    if key == "need_supporter_check" and new_enabled and not cur["enabled"]:
+        from . import service
+        service.settle_sheet_checks(conn)               # reports the sheet sent while the switch was off now take effect
     return switches(conn)[key]
 
 
@@ -227,9 +239,14 @@ def todo(conn, catalog: Catalog, max_qty: int) -> list[dict]:
     if drafts:
         add("review", "info", f"{len(drafts)} hộp nháp chưa được duyệt. Người làm hộp tự duyệt hộp của mình.", "Hộp")
     q = service.sm_queue(conn, catalog, max_qty)
-    if q["blocked"]:
-        add("blocked", "bad", f"{len(q['blocked'])} hộp đã duyệt bị chặn nên chưa lên SM được: "
-            + "; ".join(f"{b['title']} ({b['reasons'][0]})" for b in q["blocked"][:3]), "Tự động hoá")
+    stuck = [b for b in q["blocked"] if not all(r in service.SHEET_WAIT_REASONS for r in b["reasons"])]      # a box that only waits for a tick is not stuck
+    if stuck:
+        add("blocked", "bad", f"{len(stuck)} hộp đã duyệt bị chặn nên chưa lên SM được: "
+            + "; ".join(f"{b['title']} ({b['reasons'][0]})" for b in stuck[:3]), "Tự động hoá")
+    waiting = [b for b in boxes if b["status"] == "approved" and not b["pushed"] and b["sheet"]["state"] in ("wait_sc", "wait_support")]
+    if waiting:                                         # the state is never "wait_..." while the switch is off
+        add("supporter", "info", f"{len(waiting)} hộp đã duyệt chưa được người hỗ trợ kiểm nên chưa lên SM. "
+            "Trong bảng tính: SC tick hộp cần dùng, người hỗ trợ kiểm món rồi tick, và bảng tính gửi kết quả về app.", "Bảng tính")
     if q["ready"] and sw["sm_queue"]["enabled"]:
         add("push", "warn", f"{len(q['ready'])} hộp sẵn sàng lên SM. Mở SM, bấm Quét dữ liệu ở khung Box builder, xem danh sách rồi bấm Đồng bộ.", "SM")
     approved = [b for b in boxes if b["status"] == "approved"]

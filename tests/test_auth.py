@@ -66,6 +66,10 @@ def mini(tmp_path, admin_ids="1001", admin_code="", base="http://testserver"):
     def returnable():
         return {"boxes": []}
 
+    @app.post("/api/sheet/checks")
+    def sheet_checks():
+        return {"ok": True}
+
     @app.post("/api/boxes/{bid}/pushed")
     def pushed(bid: str):
         return {"ok": True}
@@ -138,6 +142,7 @@ def test_the_scripts_in_the_team_browser_tabs_keep_working_without_a_login(tmp_p
     assert client.get("/api/sm/returnable").status_code == 200
     assert client.post("/api/catalog/sync").status_code == 200
     assert client.post("/api/sm/boxes/sync").status_code == 200
+    assert client.post("/api/sheet/checks").status_code == 200                  # the sheet's own script reports the supporters' check: no login, its own token
     assert client.post("/api/boxes/7/pushed").status_code == 200
     assert client.delete("/api/boxes/7/pushed").status_code == 200
     assert client.get("/api/config").status_code == 200
@@ -147,6 +152,9 @@ def test_the_scripts_in_the_team_browser_tabs_keep_working_without_a_login(tmp_p
     assert auth.klass("POST", "/api/boxes/7/pushed/x") == "admin"
     assert auth.klass("GET", "/api/preflight") == auth.klass("GET", "/api/sm/returnable") == "machine"
     assert auth.klass("POST", "/api/sm/returnable/x") == "admin"
+    assert auth.klass("POST", "/api/sheet/checks") == "machine"
+    assert auth.klass("GET", "/api/sheet") == "admin" and auth.klass("PUT", "/api/sheet") == "admin" and auth.klass("GET", "/api/sheet/script") == "admin"   # the sheet box on the page stays admin only
+    assert auth.klass("POST", "/api/sheet/checks/x") == "admin" and auth.klass("POST", "/api/sheet/check") == "admin"
 
 
 def test_klass_is_default_deny():

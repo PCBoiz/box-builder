@@ -72,6 +72,10 @@ class SmBoxesBody(BaseModel):
     allow_empty: bool = False
 
 
+class SheetChecksBody(BaseModel):
+    checks: list = []                                  # one report per approved box; the limits and the entries are checked in service.save_sheet_checks
+
+
 class SmPushBody(BaseModel):
     assignee: str = Field(default="", max_length=60)
     borrow_now: bool = False
@@ -174,7 +178,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
     # A browser sends a plain form POST from any web page without asking first. With no access code set, that would let a page the
     # visitor opens approve, regenerate or reopen boxes here. Refuse unsafe requests that a browser marks as coming from another
     # site. The two token routes are exempt: the userscript calls them from the SM page and they carry their own secret.
-    TOKEN_ROUTES = ("/api/catalog/sync", "/api/sm/boxes/sync")
+    TOKEN_ROUTES = ("/api/catalog/sync", "/api/sm/boxes/sync", "/api/sheet/checks")
 
     @app.middleware("http")
     async def refuse_cross_site_writes(request: Request, call_next):
@@ -477,6 +481,21 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
                 return {"boxes": [], "disabled": True}
             return {"boxes": service.sm_queue(c, cat, s.max_qty)["ready"]}
         return {"boxes": service.taskboxes(c, cat, wanted, pending_only=pending)}
+
+    def sheet_auth(x_sheet_token: str = Header(default="")):
+        """Its own secret, not the sync token: whoever holds it can record the supporters' check and nothing else."""
+        if not s.sheet_token:
+            raise HTTPException(503, "Máy chủ chưa đặt SHEET_TOKEN nên chưa nhận kết quả kiểm từ bảng tính.")
+        if not hmac.compare_digest(x_sheet_token.encode(), s.sheet_token.encode()):
+            raise HTTPException(401, "Sai mã của bảng tính.")
+
+    @app.post("/api/sheet/checks")
+    def sheet_checks(body: SheetChecksBody, _=Depends(sheet_auth), c=Depends(conn_dep)):
+        """The sheet's own script reports, for each approved box, the SC's tick, the supporters' tick and the objects the supporters left in the block.
+        The server only records it (and, with the supporter gate on, applies a clean report to the box). It never reads the sheet."""
+        out = service.save_sheet_checks(c, body.checks, time.time(), automation.is_on(c, "need_supporter_check"))
+        sheet_panel.touch_check(c, out["saved"])
+        return {"ok": True, **out}
 
     @app.get("/api/sheet-boxes")
     def sheet_boxes(c=Depends(conn_dep)):

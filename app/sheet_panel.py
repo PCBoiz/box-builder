@@ -37,6 +37,11 @@ def touch(conn, boxes: int, now: float | None = None) -> None:
     _put(conn, "sheet_last_fetch", json.dumps({"at": time.time() if now is None else now, "boxes": int(boxes)}))
 
 
+def touch_check(conn, boxes: int, now: float | None = None) -> None:
+    """Called when the sheet's script reports the supporters' check: remember when, and for how many boxes."""
+    _put(conn, "sheet_last_check", json.dumps({"at": time.time() if now is None else now, "boxes": int(boxes)}))
+
+
 def normalize(url: str) -> str | None:
     """The canonical link to the sheet (no query, no user markers), or None when it is not a Google Sheets link."""
     m = SHEET_RE.match((url or "").strip())
@@ -56,9 +61,10 @@ def install(app, s) -> None:
     @router.get("/api/sheet")
     def get_sheet(c=Depends(conn_dep)):
         last = _get(c, "sheet_last_fetch")
+        checked = _get(c, "sheet_last_check")
         on = auth.enforced(s)
         return {"enforced": on, "url": (_get(c, "sheet_url") or "") if on else "", "last_fetch": json.loads(last) if last else None,
-                "export_on": automation.is_on(c, "sheet_export")}
+                "last_check": json.loads(checked) if checked else None, "export_on": automation.is_on(c, "sheet_export")}
 
     @router.put("/api/sheet")
     def put_sheet(body: SheetBody, request: Request, c=Depends(conn_dep)):

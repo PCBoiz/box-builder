@@ -186,7 +186,11 @@ def state(conn, catalog: Catalog) -> dict:
     # Read the revision BEFORE the data. If a write lands while we read, the page holds data that is at least as new as
     # its revision, so the next poll sees a different number and refetches. (Reading it last could label old data with a
     # newer revision and leave the page stale until something else changed.)
+    from . import automation
     rev_first = rev(conn)
+    sw = automation.switches(conn)                     # read once: reuse_cutoff below gets it too
+    gate_on = sw["need_supporter_check"]["enabled"]
+    records = sheet_records(conn) if gate_on else {}
     cat = catalog.items()
     boxes = []
     pushed = {r["box_id"]: {"sm_box_id": r["sm_box_id"], "at": r["pushed_at"]}
@@ -212,9 +216,10 @@ def state(conn, catalog: Catalog) -> dict:
             "categories": json.loads(b["categories"]), "count": b["count"], "status": b["status"],
             "message": b["message"], "owner": b["owner"], "updated_at": b["updated_at"], "items": items,
             "pushed": pushed.get(b["id"]), "day": b["day"],
+            "sheet": sheet_view(b["status"], bool(pushed.get(b["id"])), gate_on, b["count"], [{"id": i["id"], "qty": i["qty"]} for i in items], records.get(b["id"])),
         })
     in_boxes = conn.execute("SELECT COUNT(*) FROM box_items").fetchone()[0]
-    cutoff = reuse_cutoff(conn)
+    cutoff = reuse_cutoff(conn, switches=sw)
     claimed = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
     catset = set(cat)
     ext = external_binding(conn, cutoff)
@@ -278,7 +283,7 @@ def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool
             "itemsDetail": [{"object_id": i["id"], "name": display_name(i["name"], i["vi"]), "floor": "",
                              "location": i["slot"], "quantity": i["qty"]} for i in b["items"]],
             "builder": {"box_id": b["id"], "module": b["module"], "label": b["label"],       # never the owner: this route needs no login and an ID is a login
-                        "status": b["status"], "pushed": b["pushed"], "day": b["day"]},
+                        "status": b["status"], "pushed": b["pushed"], "day": b["day"], "sheet": b["sheet"]},
         })
     return out
 
@@ -297,6 +302,7 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
     newest_day: dict[str, str] = {}
     for tb in pending:
         newest_day[tb["title"]] = max(newest_day.get(tb["title"], ""), tb["builder"]["day"])
+    records = None                                       # the sheet's reports, read only when the supporter gate is on
     for tb in pending:
         reasons = []
         if tb["builder"]["day"] < newest_day[tb["title"]]:
@@ -318,11 +324,261 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
         elif (tb["title"], tb["builder"]["day"]) in pushed_titles or (tb["title"], tb["builder"]["day"]) in seen:
             reasons.append(f"tiêu đề \"{tb['title']}\" trùng với một hộp khác")
         seen.add((tb["title"], tb["builder"]["day"]))
+        if tb["builder"]["sheet"]["state"] != "off":     # an approved box that is not in SM shows "off" only while the supporter gate is off
+            records = sheet_records(conn) if records is None else records
+            reasons.extend(_gate_reasons(tb, records.get(tb["builder"]["box_id"])))
         if reasons:
             blocked.append({"box_id": tb["builder"]["box_id"], "title": tb["title"], "reasons": reasons})
         else:
             ready.append(tb)
     return {"ready": ready, "blocked": blocked}
+
+
+# ----------------------------------------------------------------------------- the supporters' check, reported by the sheet's own script
+# For each approved box the sheet's script reports the SC's tick ("this box is needed this shift"), the supporters' tick ("IDs and stock checked")
+# and the objects left in the block (a supporter blanks the cell of an object that is missing). The server only records that and compares it with
+# the box; it never reads the sheet. While the switch "Chờ người hỗ trợ kiểm trước khi lên SM" is off, none of it changes a box or the queue.
+SHEET_MAX_CHECKS = 200                                   # boxes in one report
+SHEET_MAX_ROWS = 30                                      # object rows of one box in one report (a block in the sheet has 21)
+SHEET_NOTE = "thiếu theo người hỗ trợ"                   # note of an object put on the "used in the sheet" list because the supporters did not have it
+SHEET_STALE_TICK = "tick có từ trước, chờ người hỗ trợ bỏ tick và tick lại"          # the supporters' tick was already on the first time the app looked
+SHEET_WAIT_REASONS = ("chờ SC tick", "chờ người hỗ trợ kiểm", SHEET_STALE_TICK)
+
+
+def _tick(v) -> int | None:
+    """A tick is trusted only when it is a real true or false; anything else (a text, a number, nothing) is unknown."""
+    return 1 if v is True else 0 if v is False else None
+
+
+def _sheet_qty(v) -> int | None:
+    """A quantity as the sheet says it: None = not said or not a number, 0 = none left, otherwise 1 to 9999."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        n = v
+    elif isinstance(v, float):
+        if not math.isfinite(v):
+            return None
+        n = math.floor(v)
+    elif isinstance(v, str) and re.fullmatch(r"\s*\d{1,6}\s*", v):
+        n = int(v)
+    else:
+        return None
+    return 0 if n < 1 else min(9999, n)
+
+
+def sheet_rows(raw) -> list[dict]:
+    """The objects the supporters left in a box's block, as [{"id": "003076", "qty": 1 or None}] in the order given. An entry that is not an
+    object or has no valid ID is dropped. The same ID twice becomes one entry with the quantities added up (a blank quantity counts as 1)."""
+    out: dict[str, int | None] = {}
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict) or isinstance(r.get("id"), bool) or not isinstance(r.get("id"), (int, str)):
+            continue                                     # pad_id would read digits out of anything (a list, a float 3076.0), so only a number or a text goes through it
+        oid = pad_id(r["id"])
+        if oid is None:
+            continue
+        q = _sheet_qty(r.get("qty"))
+        out[oid] = q if oid not in out else (1 if out[oid] is None else out[oid]) + (1 if q is None else q)
+    return [{"id": o, "qty": q} for o, q in out.items()]
+
+
+def reconcile(items: list[dict], rows: list[dict]) -> dict:
+    """Compare what the box holds, items [{"id", "qty"}], with what the supporters left, rows [{"id", "qty"}] (qty None = not said).
+    Accepted without asking: an object that is gone (a blank cell, or a quantity of 0) and a smaller quantity.
+    Not accepted: an ID the box does not hold ("extra") and a quantity above the box's ("qty_up").
+    Returns diff (what is not accepted, empty when the report is clean), left (the box's objects the supporters still have, in box order),
+    removed (the ones they do not), lowered (kept with a smaller quantity) and keep ([{"id", "qty"}], the list to apply when diff is empty)."""
+    have = {i["id"]: int(i["qty"]) for i in items}
+    extra, up, keep = [], [], {}
+    for r in sheet_rows(rows):
+        oid, q = r["id"], r["qty"]
+        if oid not in have:
+            extra.append(oid)
+        elif q is None:
+            keep[oid] = have[oid]
+        elif q > have[oid]:
+            up.append(oid)
+        elif q >= 1:
+            keep[oid] = q
+    order = [i["id"] for i in items]
+    present = set(keep) | set(up)
+    return {"diff": [{"id": o, "why": "extra"} for o in sorted(extra)] + [{"id": o, "why": "qty_up"} for o in sorted(up)],
+            "left": [o for o in order if o in present], "removed": [o for o in order if o not in present],
+            "lowered": [o for o in order if o in keep and keep[o] < have[o]], "keep": [{"id": o, "qty": keep[o]} for o in order if o in keep]}
+
+
+def sheet_view(status: str, pushed: bool, gate_on: bool, count: int, items: list[dict], record: dict | None) -> dict:
+    """The `sheet` part of a box as the screens and the tools see it: {"state", "missing", "diff", "read_at"}.
+    off: the gate does not apply (the switch is off, or the box is not an approved box still waiting for SM).
+    wait_sc: the SC has not ticked. wait_support: the supporters' tick is off, unreadable, or was already on the first time the app looked
+    (record["seen"] is False): that tick may be left over from an earlier day's box in the same block, so it counts only after a report showed it
+    off. The SC's tick has no such rule, because an SC may tick before the box is filled.
+    ok: both ticks and the report matches the box. diff: an object that is not in the box, or a bigger quantity (listed in diff).
+    missing: no object of the box is left. `missing` counts the objects the supporters did not have, also after the box was changed to match."""
+    if not gate_on or status != "approved" or pushed:
+        return {"state": "off", "missing": 0, "diff": [], "read_at": None}
+    out = {"state": "wait_sc", "missing": 0, "diff": [], "read_at": record["read_at"] if record else None}
+    if record is None or record["sc"] is not True:
+        return out
+    if not _support_ticked(record):
+        out["state"] = "wait_support"
+        return out
+    g = reconcile(items, record["rows"])
+    out["missing"] = max(0, count - len(g["left"]))
+    out["diff"] = g["diff"]
+    out["state"] = "diff" if g["diff"] else "missing" if not g["left"] else "ok"
+    return out
+
+
+def _support_ticked(record: dict) -> bool:
+    """The supporters' tick, as the gate trusts it: on now, and seen off in an earlier (or this) report."""
+    return record["sup"] is True and bool(record["seen"])
+
+
+def _stored_rows(text) -> list[dict]:
+    try:
+        return sheet_rows(json.loads(text))
+    except (TypeError, ValueError):
+        return []                                        # unreadable rows count as an empty block: the box stays blocked, never cleared
+
+
+def sheet_records(conn, box_id: int | None = None) -> dict[int, dict]:
+    """The last report of each box (or of one box): {"sc", "sup" (True, False or None), "seen" (the supporters' tick has been seen off), "rows", "read_at"}."""
+    q, args = 'SELECT box_id, sc_tick, supporter_tick, support_seen_unticked, "rows", read_at FROM sheet_checks', ()
+    if box_id is not None:
+        q, args = q + " WHERE box_id=?", (box_id,)
+    return {r["box_id"]: {"sc": None if r["sc_tick"] is None else r["sc_tick"] == 1, "sup": None if r["supporter_tick"] is None else r["supporter_tick"] == 1,
+                          "seen": r["support_seen_unticked"] == 1, "rows": _stored_rows(r["rows"]), "read_at": float(r["read_at"])} for r in conn.execute(q, args)}
+
+
+def _diff_text(diff: list[dict]) -> str:
+    parts = []
+    for why, word in (("extra", "thừa món"), ("qty_up", "tăng số lượng")):
+        ids = [d["id"] for d in diff if d["why"] == why]
+        if ids:
+            parts.append(f"{word} {', '.join(ids[:3])}" + (" ..." if len(ids) > 3 else ""))
+    return "; ".join(parts)
+
+
+def _gate_reasons(tb: dict, record: dict | None) -> list[str]:
+    """Why a box is not ready while the supporter gate is on. Empty only when both ticks are in, the report matches the box and the box
+    already equals the supporters' list. Anything unexpected stays blocked."""
+    sheet = tb["builder"]["sheet"]
+    st = sheet["state"]
+    if st == "wait_sc":
+        return ["chờ SC tick"]
+    if st == "wait_support" and record and record["sup"] is True and not record["seen"]:
+        return [SHEET_STALE_TICK]
+    if st == "diff":
+        return ["bảng tính khác hộp: " + _diff_text(sheet["diff"])]
+    if st == "missing":
+        return ["người hỗ trợ báo thiếu hết món"]
+    if st == "ok" and record and record["sc"] is True and _support_ticked(record):
+        g = reconcile([{"id": c["object_id"], "qty": c["quantity"]} for c in tb["contents"]], record["rows"])
+        if g["diff"] or not g["left"]:
+            return ["bảng tính khác hộp"]
+        return ["chờ cập nhật hộp theo kết quả kiểm"] if g["removed"] or g["lowered"] else []         # a clean report not applied yet (a race, or the switch was off)
+    return ["chờ người hỗ trợ kiểm"]
+
+
+def _settle_plan(conn, box_id: int) -> dict | None:
+    """What a clean report changes in an approved box that is not in SM: the objects to drop and the quantities to lower. None when there is
+    nothing to do, or the report is not both ticks, not clean, or leaves no object. Read only."""
+    b = conn.execute("SELECT status FROM boxes WHERE id=?", (box_id,)).fetchone()
+    if b is None or b["status"] != "approved" or conn.execute("SELECT 1 FROM sm_push WHERE box_id=?", (box_id,)).fetchone():
+        return None
+    rec = sheet_records(conn, box_id).get(box_id)
+    if rec is None or rec["sc"] is not True or not _support_ticked(rec):
+        return None
+    rows = box_items(conn, box_id)
+    g = reconcile([{"id": r["object_id"], "qty": r["qty"]} for r in rows], rec["rows"])
+    if g["diff"] or not g["left"] or not (g["removed"] or g["lowered"]):
+        return None
+    pos, lowered = {r["object_id"]: r["pos"] for r in rows}, set(g["lowered"])
+    return {"removed": [(pos[o], o) for o in g["removed"]], "lowered": [(pos[k["id"]], k["qty"]) for k in g["keep"] if k["id"] in lowered], "left": len(g["left"])}
+
+
+def _settle_in_tx(conn, box_id: int, now: float) -> bool:
+    """Make an approved box equal the supporters' list: drop the objects they did not have (each goes on the "used in the sheet" list so the
+    picker leaves it alone until the reuse rule frees it) and lower the quantities they lowered. Call inside tx(). The box stays approved.
+    remove_item and set_qty refuse an approved box, so this does their two statements itself; the UNIQUE index on object_id is not involved
+    because nothing is added."""
+    plan = _settle_plan(conn, box_id)
+    if plan is None:
+        return False
+    for pos, _ in plan["removed"]:
+        conn.execute("DELETE FROM box_items WHERE box_id=? AND pos=?", (box_id, pos))
+    for pos, q in plan["lowered"]:
+        conn.execute("UPDATE box_items SET qty=? WHERE box_id=? AND pos=?", (q, box_id, pos))
+    conn.execute("UPDATE boxes SET updated_at=? WHERE id=?", (now, box_id))
+    conn.executemany(
+        "INSERT INTO external_used(object_id, note, added_at) VALUES(?,?,?) ON CONFLICT (object_id) DO UPDATE SET added_at = CASE "
+        "WHEN external_used.added_at > 0 AND external_used.added_at < excluded.added_at THEN excluded.added_at ELSE external_used.added_at END",
+        [(oid, SHEET_NOTE, now) for _, oid in plan["removed"]])
+    from . import auth
+    auth.audit(conn, "bảng tính", "sheet_apply", box_id,                                    # counts only: no object, no person
+               f"theo bảng tính: bớt {len(plan['removed'])} món, giảm số lượng {len(plan['lowered'])} món, còn {plan['left']} món", now=now)
+    return True
+
+
+def settle_sheet_checks(conn, now: float | None = None) -> int:
+    """Apply every clean report that was not applied yet (it came while the switch was off). Returns the number of boxes changed."""
+    now = time.time() if now is None else now
+    n = 0
+    for (box_id,) in conn.execute("SELECT box_id FROM sheet_checks WHERE sc_tick=1 AND supporter_tick=1 AND support_seen_unticked=1 ORDER BY box_id").fetchall():
+        if _settle_plan(conn, box_id) is None:
+            continue
+        with tx(conn):
+            n += _settle_in_tx(conn, box_id, now)
+    return n
+
+
+def save_sheet_checks(conn, checks: list, now: float, settle: bool = False) -> dict:
+    """Record what the sheet's script reported: one latest report per box (a new one replaces the old). A box that is not known, not approved or
+    already in SM is skipped and counted, and so is an entry that is not a report or is replaced by a later one in the same request. Too many boxes
+    or rows in a request is refused as a whole before anything is written. With `settle` (the supporter gate is on) a clean report is also applied
+    to the box. Returns {"saved", "skipped"}."""
+    if len(checks) > SHEET_MAX_CHECKS:
+        raise Invalid(f"Một lần gửi nhận tối đa {SHEET_MAX_CHECKS} hộp, lần này có {len(checks)} hộp. Chia nhỏ rồi gửi lại.")
+    parsed: dict[int, tuple] = {}
+    skipped = 0
+    for ch in checks:
+        if not isinstance(ch, dict):
+            skipped += 1
+            continue
+        raw = ch.get("rows")
+        if isinstance(raw, list) and len(raw) > SHEET_MAX_ROWS:
+            raise Invalid(f"Một hộp nhận tối đa {SHEET_MAX_ROWS} dòng món, lần này có hộp có {len(raw)} dòng. Kiểm tra lại cách bảng tính đọc ô.")
+        bid = ch.get("box_id")
+        if isinstance(bid, bool) or not isinstance(bid, int) or not 1 <= bid <= 2 ** 53 or not isinstance(raw, list):
+            skipped += 1
+            continue
+        if bid in parsed:
+            skipped += 1                                                  # the later line for the same box wins
+        parsed[bid] = (_tick(ch.get("sc_tick")), _tick(ch.get("supporter_tick")), json.dumps(sheet_rows(raw), ensure_ascii=False, separators=(",", ":")))
+    status, pushed = {}, set()
+    if parsed:
+        marks = ",".join("?" * len(parsed))
+        status = {r["id"]: r["status"] for r in conn.execute(f"SELECT id, status FROM boxes WHERE id IN ({marks})", tuple(parsed)).fetchall()}
+        pushed = {r[0] for r in conn.execute(f"SELECT box_id FROM sm_push WHERE box_id IN ({marks})", tuple(parsed)).fetchall()}
+    saved = 0
+    for bid, (sc, sup, rows) in parsed.items():
+        if status.get(bid) != "approved" or bid in pushed:
+            skipped += 1
+            continue
+        with tx(conn):                                                    # one box at a time: the write lock is not held for the whole request
+            b = conn.execute("SELECT status FROM boxes WHERE id=?", (bid,)).fetchone()
+            if b is None or b["status"] != "approved" or conn.execute("SELECT 1 FROM sm_push WHERE box_id=?", (bid,)).fetchone():
+                skipped += 1                                              # changed since the check above
+                continue
+            conn.execute('INSERT INTO sheet_checks(box_id, sc_tick, supporter_tick, support_seen_unticked, "rows", read_at) VALUES(?,?,?,?,?,?) '
+                         'ON CONFLICT (box_id) DO UPDATE SET sc_tick = excluded.sc_tick, supporter_tick = excluded.supporter_tick, "rows" = excluded."rows", '
+                         'read_at = excluded.read_at, support_seen_unticked = CASE WHEN excluded.supporter_tick = 1 THEN sheet_checks.support_seen_unticked ELSE 1 END',
+                         (bid, sc, sup, 0 if sup == 1 else 1, rows, now))        # off or unreadable sets the flag; it is never cleared again
+            if settle:
+                _settle_in_tx(conn, bid, now)
+            saved += 1
+    return {"saved": saved, "skipped": skipped}
 
 
 # ----------------------------------------------------------------------------- object browser
