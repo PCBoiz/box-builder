@@ -273,8 +273,12 @@ const spyRead=(seen)=>(t,a)=>{ seen.push(t+'!'+a); return read(t,a); };
 // ---- cell parsers
 eq(['003076',3076,' 4702 ',"'004702","' 4702",'','   ',null,undefined,'N/A','1234567','12 34',12.5,true,'0047x1',new Date(0)].map(ctx.checkIdOf_),
    ['003076','003076','004702','004702','004702','','','','',null,null,null,null,null,null,null],'checkIdOf_: blank is "", digits are padded, anything else is null');
-eq([5,'5',' 5 ','05',2.5,0,-3,'',' ','abc','1e3',true,null,undefined,'5.0',NaN,1e21,'٣','2 3','0','000','-1'].map(ctx.checkQtyOf_),
-   [5,5,5,5,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],'checkQtyOf_: a positive whole number or null');
+eq([5,'5',' 5 ','05',2.5,0,-3,'',' ','abc','1e3',true,null,undefined,'5.0',NaN,1e21,'٣','2 3','0','000','-1',' 0 ',-0,'0 ',' 00 ','+0','0.0',false,'٠',[0],{}].map(ctx.checkQtyOf_),
+   [5,5,5,5,null,0,null,null,null,null,null,null,null,null,null,null,null,null,null,0,0,null,0,0,0,0,null,null,null,null,null,null],
+   'checkQtyOf_: a whole number from 0 up, else null (0 is "none left", never unknown)');
+// the pin the app's side relies on: a typed 0 is the number 0, not null, and a blank or odd cell is null; a negative stays unknown
+eq([0,'0',' 0 '].map(ctx.checkQtyOf_).every((x)=>x===0&&typeof x==='number'),true,'checkQtyOf_: 0, "0" and " 0 " are all the number 0');
+eq(['','  ',null,undefined,'abc','-1',-1,-0.5,'1.5'].map(ctx.checkQtyOf_).every((x)=>x===null),true,'checkQtyOf_: blank, text, negative and decimal cells are unknown (null)');
 eq([true,false,'TRUE','FALSE',1,0,'',null,undefined,'x',[true]].map(ctx.boolOf_),[true,false,null,null,null,null,null,null,null,null,null],'boolOf_: only a real boolean counts');
 eq(['A','C','E','Z','AA','AZ'].map(ctx.colNum_),[1,3,5,26,27,52],'colNum_');
 // the columns of the three stages agree with each other: SC tick, supporters tick (the title column), Object ID, SL, left to right
@@ -297,13 +301,13 @@ eq(tk(13),[null,null],'A1 section 1: the text TRUE and the number 1 are not bool
 eq(tk(15),[null,null],'B3 section 2: text and blank'); eq(tk(16),[true,null],'A1 section 2: SC ticked, the supporters cell is blank');
 eq(Object.keys(itemOf(res,11).check),['box_id','sc_tick','supporter_tick','rows'],'the check has exactly the four fields of the contract');
 
-// ---- rows: only the non-blank IDs, ID as 6 digits, SL a positive whole number or null; the 21 data rows and nothing else
+// ---- rows: only the non-blank IDs, ID as 6 digits, SL a whole number from 0 up (0 = none left) or null; the 21 data rows and nothing else
 reset(); lay('M8',[2,28]);
 [[4,'003076',1],[5,4702,'2'],[6,' 005000 ',' 3 '],[7,'',1],[8,"'004800",2.5],[9,'012345',0],[10,'000001',''],[11,'123456','abc'],[12,'999999',true],
  [13,'777777',-1],[14,'654321',null],[15,'  ','7'],[16,'888888','1e3'],[17,'555555',12],[24,'111111',5]].forEach(([r,id,sl])=>{ sheet.M8['E'+r]=id; sheet.M8['H'+r]=sl; });
 sheet.M8.E3='Object ID'; sheet.M8.E25='222222'; sheet.M8.E2='333333';          // the sub-header, the row under the block and the title row are not data rows
 res=ctx.collectChecks_([mkc(21,'M8','Box B2','B2',['003076',4702,'005000','004800','012345','000001','123456','999999','777777','654321','888888','555555','111111','424242'],1,'M8-01')],read);
-eq(itemOf(res,21).check.rows,[{id:'003076',qty:1},{id:'004702',qty:2},{id:'005000',qty:3},{id:'004800',qty:null},{id:'012345',qty:null},{id:'000001',qty:null},
+eq(itemOf(res,21).check.rows,[{id:'003076',qty:1},{id:'004702',qty:2},{id:'005000',qty:3},{id:'004800',qty:null},{id:'012345',qty:0},{id:'000001',qty:null},
   {id:'123456',qty:null},{id:'999999',qty:null},{id:'777777',qty:null},{id:'654321',qty:null},{id:'888888',qty:null},{id:'555555',qty:12},{id:'111111',qty:5}],'rows and qty parsing');
 eq(itemOf(res,21).missing,1,'one of the 14 objects the app lists (424242) is not in the block');
 // blanked cells give fewer rows than the app listed; a block with nothing left gives none
@@ -509,6 +513,29 @@ props.SHEET_TOKEN=TOKEN;
 timerFixture(); ctx.SpreadsheetApp.getActive=()=>{ throw new Error('boom '+TOKEN); }; ctx.sendChecksAuto_(feed);
 if(!/^Không gửi được kết quả kiểm: boom \*\*\*$/.test(logs.slice(-1)[0])) fail('caught and scrubbed: '+logs.join('|'));
 ctx.SpreadsheetApp.getActive=()=>fakeBook; canWrite=false;
+// the fill throws (the sheet refuses a write, a quota, a vanished tab): the error is logged, the report is still sent, and the error is raised again at the end
+{ const realApply=ctx.apply_; ctx.apply_=()=>{ throw new Error('Service error: Spreadsheets'); };
+  timerFixture(); let err=null; try{ ctx.fillFromAppAuto(); }catch(e){ err=e; }
+  eq(net.map(n=>n.opts.method||'get'),['get','post'],'the fill threw: the feed was read and the check report was still sent');
+  eq(logs.filter(x=>/^Không điền được box vào bảng/.test(x)),['Không điền được box vào bảng: Service error: Spreadsheets'],'the fill error is logged in plain words');
+  eq(logs.slice(-1)[0],'Đã gửi 1 hộp: Box builder ghi nhận 3, bỏ qua 1 (hộp đã xoá, chưa duyệt hoặc đã lên SM).','and the report outcome is logged after it');
+  if(!err||err.message!=='Service error: Spreadsheets') fail('the fill error is raised again after the report, so Apps Script still counts the run as failed: '+err);
+  eq(writes,[],'nothing was written by the failed fill');
+  // no code set: the fill error is still logged and raised, and no report is attempted
+  delete props.SHEET_TOKEN; timerFixture(); err=null; try{ ctx.fillFromAppAuto(); }catch(e){ err=e; } props.SHEET_TOKEN=TOKEN;
+  eq(net.map(n=>n.opts.method||'get'),['get'],'no code: no report after a failed fill either'); if(!err) fail('still raised without a code');
+  ctx.apply_=realApply; }
+// the report fails the other way (it throws out of the helper): the fill result is already in the log and the run does not fail
+{ const realSend=ctx.sendChecksAuto_; ctx.sendChecksAuto_=()=>{ throw new Error('report boom '+TOKEN); };
+  timerFixture(); let err=null; try{ ctx.fillFromAppAuto(); }catch(e){ err=e; }
+  eq(err,null,'a failing report does not fail the run'); eq(writes,['E4:E5','H4:H5'],'the fill was done'); eq(logs[0].split('\n').slice(-1)[0],'Đã ghi 1 box.','the fill result was logged before the report');
+  eq(logs.slice(-1)[0],'Không gửi được kết quả kiểm.','and the failed report is logged without the error text');
+  if(logs.some(x=>x.indexOf(TOKEN)>=0)) fail('the code never reaches the log');
+  // both fail: the fill error is the one raised
+  const realApply=ctx.apply_; ctx.apply_=()=>{ throw new Error('fill boom'); }; timerFixture(); err=null; try{ ctx.fillFromAppAuto(); }catch(e){ err=e; }
+  eq(err&&err.message,'fill boom','both fail: the fill error is raised, and the log has both lines'); eq(logs.slice(-2),['Không điền được box vào bảng: fill boom','Không gửi được kết quả kiểm.'],'both failures are in the log');
+  ctx.apply_=realApply; ctx.sendChecksAuto_=realSend; }
+canWrite=false;
 // the feed cannot be read: the fill fails exactly as before and nothing is posted
 timerFixture(); reply=()=>({code:500,body:''}); let threw=false; try{ ctx.fillFromAppAuto(); }catch(e){ threw=/Không tải được Box builder/.test(e.message); }
 if(!threw||net.length!==1||writes.length) fail('a failed read must stop the run before any write or report');

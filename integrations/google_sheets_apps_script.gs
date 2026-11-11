@@ -92,13 +92,25 @@ function fillFromApp() {
   ui.alert('Box builder', 'Đã ghi ' + done + ' box.', ui.ButtonSet.OK);
 }
 
-/** Timer entry: same rules, no question. The fill goes first; then the check report is sent (the report never stops the fill and never throws). */
+/**
+ * Timer entry: same rules, no question. The fill goes first; then the check report is sent. The two never hide each other:
+ * if the fill throws, the error is logged and the report is still sent (the supporters' work is still in the sheet), and the error
+ * is raised again at the very end so the run still counts as failed in Apps Script; if the report fails, the fill's result is already logged.
+ */
 function fillFromAppAuto() {
   const boxes = fetchBoxes_();
-  const plan = buildPlan_(boxes);
-  const done = apply_(plan);
-  console.log(describe_(plan) + '\nĐã ghi ' + done + ' box.');
-  sendChecksAuto_(boxes);
+  let failed = null;
+  try {
+    const plan = buildPlan_(boxes);
+    const done = apply_(plan);
+    console.log(describe_(plan) + '\nĐã ghi ' + done + ' box.');
+  } catch (e) {
+    failed = e;
+    console.log('Không điền được box vào bảng: ' + clean_(e && e.message ? e.message : e, ''));
+  }
+  try { sendChecksAuto_(boxes); }                       // reports its own problems in the log and does not throw; this is only the last safety net
+  catch (e) { console.log('Không gửi được kết quả kiểm.'); }
+  if (failed) throw failed;
 }
 
 function installTimer() {
@@ -315,7 +327,8 @@ function showUsedIds() {
  * Returns { items: [{ name, tab, missing, check: { box_id, sc_tick, supporter_tick, rows: [{ id, qty }] } }], skipped: [text] }.
  *   - sc_tick / supporter_tick: true or false only when the cell holds a real boolean, else null (unknown). The supporters' tick
  *     is null as well when its row would meet the next block's title or fall outside the tab.
- *   - rows: the rows whose ID cell is not blank; id = 6 digits as text, qty = a positive whole number, or null when SL is blank or not one.
+ *   - rows: the rows whose ID cell is not blank; id = 6 digits as text, qty = a whole number (0 means the supporters have none: the app reads it as
+ *     gone), or null when SL is blank or not one.
  *   - `missing` (local only, never sent): how many of the app's own objects are no longer in the block.
  * A box whose block is not found, or whose block has an ID cell that is not a number, is listed in `skipped` and is not sent.
  */
@@ -399,13 +412,16 @@ function checkIdOf_(v) {
   return /^\d{1,6}$/.test(s) ? pad6_(s) : null;
 }
 
-/** An SL cell: a positive whole number (5, '5', ' 5 '), else null. */
+/**
+ * An SL cell: a whole number from 0 up (5, '5', ' 5 ', 0, '0', ' 0 '), else null (blank, text, negative, decimal: unknown).
+ * A supporter who types 0 and leaves the ID means "we do not have this object": the app reads a quantity of 0 as gone,
+ * so 0 must reach it as 0 and never as unknown.
+ */
 function checkQtyOf_(v) {
-  if (typeof v === 'number') return Number.isSafeInteger(v) && v > 0 ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? (v === 0 ? 0 : v) : null;
   const s = typeof v === 'string' ? v.trim() : '';
   if (!/^\d{1,9}$/.test(s)) return null;
-  const n = parseInt(s, 10);
-  return n > 0 ? n : null;
+  return parseInt(s, 10);
 }
 
 /** The text of the preview: what will be sent (counts per module, SC ticks, supporters' ticks, boxes with missing objects) and what will not. */
