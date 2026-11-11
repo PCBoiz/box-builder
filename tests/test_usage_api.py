@@ -20,7 +20,7 @@ def iso(days_ago):
 
 
 def day(days_ago):
-    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - days_ago * DAY))
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - days_ago * DAY + 7 * 3600))      # the calendar day in Vietnam time, as the app shows it
 
 
 def synced(client, cat, table, **extra):

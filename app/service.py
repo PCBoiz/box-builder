@@ -35,7 +35,7 @@ _AUTO = object()                        # "work the cutoff out from the switch"
 
 def when_of(text) -> float | None:
     """Epoch seconds from a date as SM writes it ('2026-11-10T08:00:00Z', '2026-11-10 08:00:00', '2026-11-10'), or None when it cannot be read.
-    A date without a zone is taken as UTC."""
+    A date without a zone is Vietnam local time (UTC+7): that is how the real SM writes created_at ("2026-11-11 17:13")."""
     t = str(text if text is not None else "").strip()
     if not t:
         return None
@@ -44,7 +44,7 @@ def when_of(text) -> float | None:
     except ValueError:
         return None
     if d.tzinfo is None:
-        d = d.replace(tzinfo=datetime.timezone.utc)
+        d = d.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=7)))
     if d.year < 2000:                       # a placeholder such as 0001-01-01 or 1970-01-01 is not a real box date: unreadable, so the box keeps holding
         return None
     return d.timestamp()
@@ -625,8 +625,9 @@ def usage_cfg(conn, switches: dict | None = None) -> dict | None:
 
 
 def day_text(epoch) -> str | None:
-    """'2026-11-10' (UTC) from epoch seconds, or None when unknown."""
-    return None if epoch is None else time.strftime("%Y-%m-%d", time.gmtime(epoch))
+    """'2026-11-10' (Vietnam time) from epoch seconds, or None when unknown. A date SM writes without a zone is Vietnam time, so a calendar day
+    read in stays the same calendar day shown out."""
+    return None if epoch is None else datetime.datetime.fromtimestamp(epoch, VN).strftime("%Y-%m-%d")
 
 
 def object_rows(conn, catalog: Catalog, q: str = "", category: str = "", status: str = "", sort: str = "id",

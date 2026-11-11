@@ -24,7 +24,7 @@ def test_served_script_has_the_address_the_connect_line_and_no_update_link(env):
     assert t.startswith("// ==UserScript==")                                           # Tampermonkey recognises it
     assert 'const DEFAULT_APP = "https://box-builder-guwc.onrender.com";' in t           # the address is filled in
     assert "// @connect      box-builder-guwc.onrender.com" in t
-    assert "@updateURL" not in t                                                         # an installed copy must not poll this app for a new version
+    assert not any(ln.startswith("// @updateURL") for ln in t.splitlines())             # an installed copy must not poll this app for a new version (header lines only: the tool may name the word in a comment)
     assert t.count("// @downloadURL none\n") == 1 and update_lines(t) == ["// @downloadURL none"]   # Tampermonkey's documented "no update check"
     assert "box-builder-guwc.onrender.com/box_builder_sm" not in t
     assert t.count("// @connect") >= 3 and "const DEFAULT_APP = \"\";" not in t
@@ -67,7 +67,7 @@ def test_the_same_script_is_also_served_as_plain_text_for_copy_and_paste(env):
     js, txt = client.get("/box_builder_sm.user.js", headers=hdr), client.get("/box_builder_sm.txt", headers=hdr)
     assert txt.status_code == 200 and txt.headers["content-type"].startswith("text/plain") and "charset=utf-8" in txt.headers["content-type"]
     assert txt.headers["cache-control"] == "no-cache" and txt.text == js.text
-    assert "@updateURL" not in txt.text and update_lines(txt.text) == ["// @downloadURL none"]      # the paste copy carries no update link either
+    assert update_lines(txt.text) == ["// @downloadURL none"]                                     # the paste copy carries no update link either (header lines only)
     assert txt.text.startswith("// ==UserScript==") and 'const DEFAULT_APP = "https://box-builder-guwc.onrender.com";' in txt.text
     assert client.get("/box_builder_sm.txt", params={"app": "https://a.com/path"}).status_code == 422          # same address check
     s.allowed_app_hosts = "nas.example.com"

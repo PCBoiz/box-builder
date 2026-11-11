@@ -17,7 +17,7 @@ def iso(days_ago):
 
 
 def day(days_ago):
-    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - days_ago * DAY))
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - days_ago * DAY + 7 * 3600))      # the calendar day in Vietnam time, as the app shows it
 
 
 def snapshot(client, *boxes):
@@ -54,7 +54,8 @@ def test_a_date_is_read_in_the_ways_sm_writes_it_and_anything_else_is_unknown():
     for text in ("2026-11-10T08:00:00Z", "2026-11-10T08:00:00.123456Z", "2026-11-10T08:00:00+07:00", "2026-11-10 08:00:00", "2026-11-10"):
         assert isinstance(service.when_of(text), float), text
     assert service.when_of("2026-11-10T08:00:00Z") == service.when_of("2026-11-10T15:00:00+07:00")
-    assert service.when_of("2026-11-10") == service.when_of("2026-11-10T00:00:00Z")                  # no zone: UTC
+    assert service.when_of("2026-11-10") == service.when_of("2026-11-10T00:00:00+07:00")             # no zone: Vietnam local time, as the real SM writes created_at
+    assert service.when_of("2026-11-11 17:13") == service.when_of("2026-11-11T10:13:00Z")            # the real SM shape: date and minutes, no seconds, no zone
     for bad in ("", None, "11-10", "hôm qua", "10/11/2026", "2026-13-40", 12345):
         assert service.when_of(bad) is None, bad
 
