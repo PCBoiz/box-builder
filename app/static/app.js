@@ -765,13 +765,135 @@ function renderSmBoxes() {
         (ru.undated_boxes ? ` ${fmt(ru.undated_boxes)} hộp không có ngày tạo nên vẫn giữ món.` : "");
   } else reuseEl.hidden = true;
   renderSmAges();
-  const fill = (listId, headId, rows) => {
-    $(listId).replaceChildren(...rows);
-    $(listId).hidden = $(headId).hidden = rows.length === 0;
-  };
-  fill("#smb-conf", "#smb-conf-h", r.conflicts.map((c) => h("li", {}, h("b", {}, c.box),
-    ": " + c.objects.map((o) => `${o.id}${o.name ? " " + o.name : ""} (đang ở ${o.sm_box})`).join(", "))));
-  fill("#smb-dbl", "#smb-dbl-h", r.doubles.slice(0, 50).map((d) => h("li", {}, h("b", {}, d.id), `${d.name ? " " + d.name : ""}: ${d.boxes.join(", ")}`)));
+  renderSmShared(r);
+}
+
+/* ------------------------------------------------------------------ objects that SM boxes hold, one row each with a meter
+   Meter: the track is the units that exist in SM (qty, borrowed or free), the blue fill is the units the SM boxes hold. More held than
+   exist is a shortage: the track is full and a hatched cap carries the extra. The state is always an icon and words, never colour alone. */
+Object.assign(ICONS, {                                    // one shape per state
+  smv_short: '<path d="M8 2.3 14.5 13.5h-13z"/><path d="M8 6.6v3.1"/><path d="M8 11.6v.2"/>',
+  smv_full: '<circle cx="8" cy="8" r="5.8"/><path d="M5.2 8h5.6"/>',
+  smv_room: '<circle cx="8" cy="8" r="5.8"/><path d="M5.3 8.3l1.9 1.9 3.6-4.1"/>',
+  smv_more: '<path d="M4 6.2l4 4 4-4"/>',
+});
+const SMV_PAGE = 50;
+const SMV_FILTERS = [["short", "Thiếu", "smv_short"], ["full", "Hết chỗ", "smv_full"], ["spare", "Còn chỗ", "smv_room"]];
+const smv = { filter: "", shown: SMV_PAGE, open: new Set(), sig: "" };
+
+function smvState(o) {
+  if (typeof o.total !== "number") return { key: "unk", rank: 3, fill: 0 };
+  if (o.units > o.total) return { key: "short", rank: 0, fill: o.units - o.total, text: `Thiếu ${fmt(o.units - o.total)}`, icon: "smv_short" };
+  return { key: o.units === o.total ? "full" : "spare", rank: o.units === o.total ? 1 : 2, fill: o.total ? o.units / o.total : 0,
+    text: o.units === o.total ? "Hết chỗ" : "Còn chỗ", icon: o.units === o.total ? "smv_full" : "smv_room" };
+}
+/* Short first (the biggest shortage first), then the fullest, then by ID. Objects whose count SM never gave come last. */
+const smvOrder = (a, b) => a.st.rank - b.st.rank || b.st.fill - a.st.fill || (a.o.id < b.o.id ? -1 : a.o.id > b.o.id ? 1 : 0);
+
+function smvNames(o) {
+  const en = (o.en || "").trim(), vi = (o.vi || "").trim();
+  return en && vi && en.toLowerCase() !== vi.toLowerCase() ? { main: en, sub: vi } : { main: en || vi || "Chưa rõ tên trong SM", sub: "" };
+}
+const smvDay = (d) => (d && d.length >= 10 ? `${d.slice(8, 10)}/${d.slice(5, 7)}` : "");
+
+function smvMeter(o, st, label) {
+  if (st.key === "unk") return h("div", { class: "smr-meter" }, h("span", { class: "smr-n" }, `giữ ${fmt(o.units)} cái`));
+  const total = o.total, units = o.units, scale = Math.max(total, units, 1), kept = Math.min(units, total);
+  const text = `${fmt(units)} trên ${fmt(total)} cái` + (st.key === "short" ? `, thiếu ${fmt(units - total)}` : "");
+  return h("div", { class: "smr-meter" },
+    h("span", { class: "smr-bar", role: "meter", "aria-label": `Số cái các hộp SM đang giữ: ${label}`, "aria-valuemin": "0", "aria-valuemax": String(scale),
+      "aria-valuenow": String(units), "aria-valuetext": text },
+      h("span", { class: "smr-track", style: `flex:${total} 1 0` }, kept ? h("i", { class: "smr-fill", style: `width:${(100 * kept / total).toFixed(2)}%` }) : null),
+      units > total ? h("i", { class: "smr-over", style: `flex:${units - total} 1 0` }) : null),
+    h("span", { class: "smr-n" }, `${fmt(units)} / ${fmt(total)}`),
+    h("span", { class: "smr-state" }, icon(st.icon), st.text));
+}
+
+function smvRow(o, key) {
+  const st = smvState(o), nm = smvNames(o), label = nm.sub ? `${nm.main} (${nm.sub})` : nm.main;
+  const holders = o.holders || [], hasBoxes = holders.length > 0, link = typeof o.detail === "string" && /^https?:\/\//i.test(o.detail);
+  const chips = holders.map((b) => h("li", { class: "smr-chip" }, h("b", {}, b.title),
+    h("span", {}, [b.status, smvDay(b.day) ? `tạo ${smvDay(b.day)}` : "", `giữ ${fmt(b.units)} cái`].filter(Boolean).join(" · "))));
+  if (o.sheet && hasBoxes) chips.push(h("li", { class: "smr-chip" }, h("b", {}, "Danh sách đã dùng ở bảng tính")));
+  return h("li", { class: "smr smr-" + st.key, "data-id": o.id },
+    h("div", { class: "smr-pic" }, BBThumbs.thumb({ id: o.id, name: o.en, vi: o.vi, img: o.img, img_exp: o.img_exp, detail: o.detail }, { size: "md" })),
+    h("div", { class: "smr-name" }, h("b", { class: "smr-en" }, nm.main), nm.sub ? h("span", { class: "smr-vi" }, nm.sub) : null,
+      h("span", { class: "smr-meta" }, `ID ${o.id}` + (o.slot ? ` · Vị trí ${o.slot}` : ""),
+        link ? [" · ", h("a", { class: "smr-open", href: o.detail, target: "_blank", rel: "noopener noreferrer", "aria-label": `Mở trong SM: ${label}` }, "Mở trong SM")] : null)),
+    hasBoxes ? smvMeter(o, st, label) : h("div", { class: "smr-meter" }, h("span", { class: "smr-note" }, "Chỉ có trong danh sách đã dùng ở bảng tính")),
+    chips.length ? h("details", { class: "smr-d", open: smv.open.has(key) || null, ontoggle: (e) => { e.target.open ? smv.open.add(key) : smv.open.delete(key); } },
+      h("summary", {}, `${fmt(holders.length)} hộp`, h("span", { class: "sr-only" }, `: ${label}`), icon("smv_more")),
+      h("ul", { class: "smr-chips" }, chips)) : null);
+}
+
+/* The summary: three bars, one per state, each a button that filters the list below. The list is the table behind them. */
+function smvSummary(rows) {
+  const count = (k) => rows.filter((x) => x.st.key === k).length;
+  const most = Math.max(1, ...SMV_FILTERS.map(([k]) => count(k)));
+  return SMV_FILTERS.map(([k, text, ic]) => {
+    const n = count(k);
+    return h("button", { type: "button", class: "smr-sum smr-sum-" + k, "data-k": k, "aria-pressed": String(smv.filter === k), disabled: n === 0 || null,
+      onclick: () => smvFilter(smv.filter === k ? "" : k) },
+      h("span", { class: "smr-sum-t" }, icon(ic), text),
+      h("span", { class: "smr-sum-bar", "aria-hidden": "true" }, n ? h("i", { style: `width:${Math.max(2, 100 * n / most).toFixed(2)}%` }) : null),
+      h("span", { class: "smr-sum-n" }, `${fmt(n)} món`));
+  });
+}
+
+let smvRows = [];
+function smvFilter(k) {
+  smv.filter = k;
+  smv.shown = SMV_PAGE;
+  for (const b of document.querySelectorAll("#smb-dbl-sum .smr-sum")) b.setAttribute("aria-pressed", String(b.dataset.k === k));
+  smvDraw();
+}
+function smvDraw() {
+  const shownRows = smv.filter ? smvRows.filter((x) => x.st.key === smv.filter) : smvRows;
+  const cut = shownRows.slice(0, smv.shown), more = shownRows.length - cut.length;
+  $("#smb-dbl").replaceChildren(...cut.map((x) => smvRow(x.o, "d:" + x.o.id)));
+  $("#smb-dbl-more").hidden = more <= 0;
+  $("#smb-dbl-more").textContent = `Xem thêm ${fmt(Math.min(SMV_PAGE, more))} món`;
+  $("#smb-dbl-all").hidden = !smv.filter;
+  const f = SMV_FILTERS.find(([k]) => k === smv.filter);
+  const text = `Đang hiện ${fmt(cut.length)} trong ${fmt(shownRows.length)} món` + (f ? ` ở tình trạng ${f[1]} (tổng ${fmt(smvRows.length)} món)` : "") + "."
+    + (smvRows.length >= 200 ? " SM có thể còn món khác: danh sách chỉ lấy 200 món đầu theo ID." : "");
+  if ($("#smb-dbl-count").textContent !== text) $("#smb-dbl-count").textContent = text;        // write only when it changed, so a screen reader is not told twice
+}
+
+function setupSmShared() {
+  $("#smb-dbl-more").addEventListener("click", () => {
+    const before = $("#smb-dbl").children.length;
+    smv.shown += SMV_PAGE;
+    smvDraw();
+    const row = $("#smb-dbl").children[before];
+    if (row) { row.tabIndex = -1; row.focus(); }                       // carry on from the first new row
+  });
+  $("#smb-dbl-all").addEventListener("click", () => {
+    const was = smv.filter;
+    smvFilter("");
+    const back = document.querySelector(`#smb-dbl-sum .smr-sum[data-k="${was}"]`);       // the button that was pressed is still there: the keyboard goes back to it
+    if (back) back.focus();
+  });
+}
+
+function renderSmShared(r) {
+  const root = $("#smb-view");
+  const sig = JSON.stringify([r.conflicts, r.doubles]);
+  if (sig === smv.sig) return;                                       // nothing changed: leave the list, the open rows and the keyboard alone
+  if (smv.sig && root.contains(document.activeElement)) return;      // keep the keyboard where it is; the list is redrawn when focus leaves
+  smv.sig = sig;
+  const conf = r.conflicts.map((c) => h("li", { class: "smr-group" },
+    h("h4", {}, c.box, h("small", {}, STATUS[c.status] || c.status)),
+    h("ul", { class: "smr-list" }, c.objects.map((o) => smvRow(o, `c:${c.box_id}:${o.id}`)))));
+  $("#smb-conf").replaceChildren(...conf);
+  $("#smb-conf").hidden = $("#smb-conf-h").hidden = $("#smb-conf-hint").hidden = conf.length === 0;
+  smvRows = r.doubles.map((o) => ({ o, st: smvState(o) })).sort(smvOrder);
+  if (smv.filter && !smvRows.some((x) => x.st.key === smv.filter)) smv.filter = "";
+  const has = smvRows.length > 0;
+  for (const id of ["#smb-dbl-h", "#smb-dbl-hint", "#smb-dbl-sum", "#smb-dbl", "#smb-dbl-foot"]) $(id).hidden = !has;
+  if (!has) return;
+  $("#smb-dbl-sum").replaceChildren(...smvSummary(smvRows));
+  smvDraw();
 }
 
 /* ------------------------------------------------------------------ the process as the admin watches it */
@@ -1370,6 +1492,7 @@ async function init() {
   chip.classList.toggle("warn", cfg.llm === "mock");
   setupNewBox(); setupUsed(); setupObjects(); setupBatch(); setupGuide(); setupTextSize(); setupFormHelp(); setupBackup(); setupSmPush(); setupSyncInstall(); setupCsvImport(); setupImgTip();
   setupPeople(); setupSheetLink(); setupLoginChip();
+  setupSmShared();
   await poll(true);
   setupCategories();
   setupTabs();

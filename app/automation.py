@@ -184,18 +184,19 @@ def alerts(conn, catalog: Catalog, taken: set[str]) -> list[dict]:
         n = sum(len(c["objects"]) for c in rep["conflicts"])
         out.append({"kind": "sm_conflict", "level": "bad",
                     "msg": f"{n} món trong {len(rep['conflicts'])} hộp đã nằm ở hộp khác (trong SM hoặc bảng tính): "
-                           + "; ".join(f"{c['box']} ({', '.join(o['id'] for o in c['objects'][:3])})" for c in rep["conflicts"][:3])
+                           + "; ".join(f"{c['box']} ({', '.join(service.label_of(catalog, o['id']) for o in c['objects'][:3])})" for c in rep["conflicts"][:3])
                            + ". Mở hộp và thay các món đó."})
     if rep["doubles"]:
         out.append({"kind": "sm_doubles", "level": "warn",
-                    "msg": f"{len(rep['doubles'])} món đang nằm trong hai hộp SM trở lên: " + ", ".join(d["id"] for d in rep["doubles"][:6]) + (" ..." if len(rep["doubles"]) > 6 else "")})
+                    "msg": f"{len(rep['doubles'])} món đang nằm trong hai hộp SM trở lên: " + ", ".join(service.label_of(catalog, d["id"]) for d in rep["doubles"][:3])
+                           + (" ..." if len(rep["doubles"]) > 3 else "")})
     items = catalog.items()
     claimed = {r[0] for r in conn.execute("SELECT object_id FROM box_items")}
     gone = sorted(claimed - set(items))
     if gone:
         out.append({"kind": "gone", "level": "bad",
-                    "msg": f"{len(gone)} món đang nằm trong hộp nhưng SM không còn liệt kê: {', '.join(gone[:8])}"
-                           + (" ..." if len(gone) > 8 else "")})
+                    "msg": f"{len(gone)} món đang nằm trong hộp nhưng SM không còn liệt kê: {', '.join(service.label_of(catalog, g) for g in gone[:3])}"
+                           + (" ..." if len(gone) > 3 else "")})
     up = switches(conn)["usage_penalty"]
     if up["enabled"]:
         st = usage.summary(items.values(), time.time(), up["config"])

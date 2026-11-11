@@ -44,6 +44,27 @@ class Item:
     created: float | None = None  # when SM created the object, epoch seconds; None = unknown
 
 
+@dataclass(frozen=True)
+class Seen:
+    """What SM (or the CSV, before the first sync) says about one object, whether or not it can go in a box. `Item` lists only objects
+    with stock; this also has the ones whose every unit is borrowed out, so a view of what boxes hold can still name them."""
+    id: str
+    en: str                  # SM's English name
+    vi: str                  # Vietnamese name (SM's own, else the CSV's)
+    slot: str
+    qty: int | None = None   # units that exist (borrowed out + free); None = not known (the CSV fallback never says)
+    avail: int | None = None # units free now
+    img: str = ""
+
+
+def _count(v) -> int | None:
+    """A unit count from a synced row, or None when it is missing or not a whole number."""
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return None
+
+
 UNCATEGORISED = "Chưa phân loại"
 LIVE_TYPES = ("Obj",)          # SM object types that can go in a box (Env = environments, Meta = system)
 
@@ -61,7 +82,9 @@ class Catalog:
         self._items: dict[str, Item] = {}
         self._cat_of: dict[str, str] = {}
         self._vi_of: dict[str, str] = {}
+        self._csv_seen: dict[str, Seen] = {}
         self._live: dict[str, Item] | None = None
+        self._seen: dict[str, Seen] = {}
         self.sectors: tuple[str, ...] = ()        # empty = every sector; the app sets it from SECTORS
         self.image_hosts: tuple[str, ...] = images.DEFAULT_HOSTS
         self.image_ttl_s: int = 55 * 60           # the app sets it from IMAGE_TTL_MINUTES
@@ -91,7 +114,10 @@ class Catalog:
                 cat_of[pad_id(r[0])] = r[3].strip()
         # Vietnamese names for every CSV row: SM's own object list carries no Vietnamese name, so a live sync falls back to these
         vi_of = {pad_id(r[0]): r[2].strip() for r in rows[1:] if len(r) >= 3 and pad_id(r[0]) and r[2].strip()}
-        self._items, self._cat_of, self._vi_of, self._mtime = items, cat_of, vi_of, mtime
+        # every CSV row by ID, in stock or not: the last place to find a name for an object a box holds
+        csv_seen = {pad_id(r[0]): Seen(pad_id(r[0]), r[1].strip(), r[2].strip(), r[5].strip() if len(r) > 5 else "")
+                    for r in rows[1:] if len(r) >= 3 and pad_id(r[0])}
+        self._items, self._cat_of, self._vi_of, self._csv_seen, self._mtime = items, cat_of, vi_of, csv_seen, mtime
 
     def _fresh(self):
         try:
@@ -109,6 +135,7 @@ class Catalog:
     def set_live(self, rows: list[dict], synced_at: float) -> dict:
         """Replace the catalog with SM's current objects. Returns counts so the caller can show what was skipped."""
         items, skipped = self._build_live(rows)
+        self._seen = self._build_seen(rows)
         self._live = items
         self._live_info = {"synced_at": synced_at, "received": len(rows), "skipped": skipped}
         return {**self._live_info, "usable": len(items)}
@@ -156,6 +183,28 @@ class Catalog:
                               images.pick_image(o, hosts=self.image_hosts) or "",
                               usage.parse_uses(o.get("uses")), usage.parse_created(o.get("created")))
         return items, skipped
+
+    def _build_seen(self, rows: list[dict]) -> dict[str, Seen]:
+        """Every object of the allowed sectors in the sync, including the ones with no stock left and the ones with no Vietnamese name.
+        Built once per sync, so a page that names many objects never reads the snapshot."""
+        seen: dict[str, Seen] = {}
+        for o in rows:
+            oid = pad_id(o.get("id", ""))
+            if oid is None or not self.allowed_sector(o) or str(o.get("type", "Obj")) not in LIVE_TYPES:
+                continue
+            old = self._csv_seen.get(oid)
+            seen[oid] = Seen(oid, str(o.get("name") or "").strip() or (old.en if old else ""),
+                             str(o.get("vi") or "").strip() or self._vi_of.get(oid, ""),
+                             str(o.get("loc") or "").strip() or (old.slot if old else ""),
+                             _count(o.get("qty")), _count(o.get("avail")), images.pick_image(o, hosts=self.image_hosts) or "")
+        return seen
+
+    def lookup(self, oid: str) -> Seen | None:
+        """Names, slot, picture and unit counts of an object, in stock or not. The last sync first, then the CSV; None when neither knows it."""
+        self._fresh()
+        if self._live is not None and oid in self._seen:
+            return self._seen[oid]
+        return self._csv_seen.get(oid)
 
     def allowed_sector(self, o: dict) -> bool:
         """Rows from other sectors, or with no sector at all, are dropped (when a sector filter is set)."""

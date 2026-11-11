@@ -112,7 +112,7 @@ def test_our_own_pushed_box_is_not_a_conflict_and_a_held_object_blocks_the_queue
     assert clash in h and h[clash]["title"] == "Someone else's"
     q = client.get("/api/queue").json()
     assert [b["box_id"] for b in q["ready"]] == [] and q["blocked"][0]["box_id"] == other
-    assert f"{clash} đã nằm trong hộp SM Someone else's" in q["blocked"][0]["reasons"]
+    assert [r for r in q["blocked"][0]["reasons"] if r.endswith(f"{clash} đã nằm trong hộp SM Someone else's")]      # the name of the object stands in front of its ID
     queue_on(client)                                                                         # the queue starts off; with it on, the userscript is still not offered it
     assert client.get("/api/taskboxes?pending=true").json()["boxes"] == []
     # SM returns the other box: the objects are free again on the next sync, and the queue clears

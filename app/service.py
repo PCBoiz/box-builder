@@ -1,6 +1,7 @@
 """Domain operations on boxes and the claim ledger. Every write runs inside one BEGIN IMMEDIATE
 transaction, so "check it is free, then take it" can never interleave with another user."""
 import datetime
+import itertools
 import json
 import math
 import re
@@ -288,6 +289,13 @@ def taskboxes(conn, catalog: Catalog, statuses=("approved",), pending_only: bool
     return out
 
 
+def label_of(catalog: Catalog, oid: str) -> str:
+    """'English (Tiếng Việt) 004702' as the sheet names an object, or just the ID when nobody knows its name. For sentences people read."""
+    seen = catalog.lookup(oid)
+    name = display_name(seen.en, seen.vi) if seen else ""
+    return f"{name} {oid}" if name else oid
+
+
 def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
     """Approved boxes that are not in SM yet, split into READY and BLOCKED (with the reasons).
     Pure read: this only decides what the userscript is shown; it never touches SM."""
@@ -311,14 +319,14 @@ def sm_queue(conn, catalog: Catalog, max_qty: int) -> dict:
         for c in tb["contents"]:
             it = cat.get(c["object_id"])
             if it is None:
-                reasons.append(f"{c['object_id']} không còn tồn kho ở SM")
+                reasons.append(f"{label_of(catalog, c['object_id'])} không còn tồn kho ở SM")
             elif c["object_id"] in held:
                 h = held[c["object_id"]]
-                reasons.append(f"{c['object_id']} đã nằm trong hộp SM {h['title'] or h['sm_box_id']}")
+                reasons.append(f"{label_of(catalog, c['object_id'])} đã nằm trong hộp SM {h['title'] or h['sm_box_id']}")
             elif c["object_id"] in sheet:
-                reasons.append(f"{c['object_id']} đã có trong danh sách đã dùng ở bảng tính")
+                reasons.append(f"{label_of(catalog, c['object_id'])} đã có trong danh sách đã dùng ở bảng tính")
             elif c["quantity"] > min(max_qty, it.stock) or c["quantity"] < 1:
-                reasons.append(f"{c['object_id']}: số lượng {c['quantity']} vượt mức cho phép (tối đa {min(max_qty, it.stock)})")
+                reasons.append(f"{label_of(catalog, c['object_id'])}: số lượng {c['quantity']} vượt mức cho phép (tối đa {min(max_qty, it.stock)})")
         if not tb["title"].strip():
             reasons.append("thiếu tiêu đề")
         elif (tb["title"], tb["builder"]["day"]) in pushed_titles or (tb["title"], tb["builder"]["day"]) in seen:
@@ -1146,7 +1154,7 @@ def add_item(conn, box_id: int, object_id: str, qty: int, catalog: Catalog, max_
         b = _editable(conn, box_id)
         taken_by = owner_of(conn, item.id)
         if taken_by:
-            raise Conflict(f"{item.id} ({item.name}) đã nằm trong {taken_by}.")
+            raise Conflict(f"{label_of(catalog, item.id)} đã nằm trong {taken_by}.")
         used = {r["pos"] for r in box_items(conn, box_id)}
         if pos is None:
             free = [p for p in range(1, b["count"] + 1) if p not in used]
@@ -1671,22 +1679,40 @@ def sm_ages(conn, catalog: Catalog, now: float | None = None) -> dict:
             "free_without_reuse": free_off}
 
 
+def _shared_object(catalog: Catalog, oid: str, boxes: list[dict]) -> dict:
+    """One object as the shared-items view draws it: SM's English name, the Vietnamese one, slot, picture, and the units the boxes hold
+    against the units that exist. `boxes` = {title, status, day, units} of the SM boxes holding it. `total` and `free` are left out when SM
+    never said how many exist, so the page can say "giữ N cái" without a meter. The units that exist are `qty`, never `avail`: a unit that is
+    borrowed out is not free, but it is still there."""
+    seen = catalog.lookup(oid)
+    out = {"id": oid, "name": (seen.vi or seen.en) if seen else "", "en": seen.en if seen else "", "vi": seen.vi if seen else "",
+           "slot": seen.slot if seen else "", "img": seen.img if seen else "", "img_exp": catalog.image_expiry(seen.img) if seen and seen.img else None,
+           "detail": images.detail_url(oid), "units": sum(b["units"] for b in boxes), "holders": boxes}
+    if seen and seen.qty is not None:
+        out["total"] = seen.qty
+        if seen.avail is not None:
+            out["free"] = seen.avail
+    return out
+
+
 def sm_report(conn, catalog: Catalog, ages: bool = False) -> dict:
     """What the last read of SM says, for the people who plan boxes: how many boxes and objects SM holds, this app's own unpushed
     boxes that contain an object an SM box holds (conflicts), and objects that two or more SM boxes hold at once (doubles).
     With the reuse switch on, boxes made before the cutoff hold nothing; `reuse` says how many boxes and objects that frees.
+    Each object in `doubles` and in a conflict also carries what the shared-items view draws (_shared_object): names, slot, picture, the units
+    the boxes hold and the units that exist, and `holders` (title, status, day, units per box). `boxes` stays the plain list of titles.
     `ages` adds the age bands and the "what if" table (sm_ages); it costs a few more queries, so only the page that shows it asks."""
     info = sm_boxes_info(conn)
     cutoff = reuse_cutoff(conn)
     held = sm_held(conn, cutoff)
     sheet = external_binding(conn, cutoff)
     cat = catalog.items()
-    name = lambda oid: (cat[oid].vi or cat[oid].name) if oid in cat else ""
     ours = {str(r[0]) for r in conn.execute("SELECT sm_box_id FROM sm_push")}          # boxes this app made in SM: they never held anything through SM
-    by_obj: dict[str, list[dict]] = {}
+    by_obj: dict[str, list[dict]] = {}                                                  # every box that holds an object (ours too): the doubles
+    theirs: dict[str, list[dict]] = {}                                                  # the same without ours: what a conflict is measured against
     old_boxes, undated, old_objects = set(), set(), set()
-    for r in conn.execute("SELECT i.object_id, b.sm_box_id, b.title, b.created_at FROM sm_box_items i JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id "
-                          "ORDER BY i.object_id, b.created_at, b.sm_box_id"):
+    for r in conn.execute("SELECT i.object_id, i.qty, b.sm_box_id, b.title, b.status, b.status_label, b.created_at FROM sm_box_items i "
+                          "JOIN sm_boxes b ON b.sm_box_id = i.sm_box_id ORDER BY i.object_id, b.created_at, b.sm_box_id"):
         when = when_of(r["created_at"])
         if r["sm_box_id"] not in ours:
             if when is None:
@@ -1695,14 +1721,19 @@ def sm_report(conn, catalog: Catalog, ages: bool = False) -> dict:
                 old_boxes.add(r["sm_box_id"])
                 old_objects.add(r["object_id"])
                 continue                                                     # an old box holds nothing, so it makes no double
-        by_obj.setdefault(r["object_id"], []).append({"sm_box_id": r["sm_box_id"], "title": r["title"] or r["sm_box_id"]})
-    doubles = [{"id": oid, "name": name(oid), "boxes": [b["title"] for b in bs]} for oid, bs in by_obj.items() if len(bs) > 1]
+        box = {"title": r["title"] or r["sm_box_id"], "status": r["status_label"] or r["status"],
+               "day": vn_day(when) if when is not None else "", "units": r["qty"]}
+        by_obj.setdefault(r["object_id"], []).append(box)
+        if r["sm_box_id"] not in ours:
+            theirs.setdefault(r["object_id"], []).append(box)
+    doubles = [{**_shared_object(catalog, oid, bs), "boxes": [b["title"] for b in bs]}
+               for oid, bs in itertools.islice(((o, bs) for o, bs in by_obj.items() if len(bs) > 1), 200)]
     pushed = {r[0] for r in conn.execute("SELECT box_id FROM sm_push")}
     conflicts = []
     for b in conn.execute("SELECT id, module, label, status FROM boxes ORDER BY module, label").fetchall():
         if b["id"] in pushed:
             continue
-        clash = [{"id": i["object_id"], "name": name(i["object_id"]),
+        clash = [{**_shared_object(catalog, i["object_id"], theirs.get(i["object_id"], [])), "sheet": i["object_id"] in sheet,
                   "sm_box": (held[i["object_id"]]["title"] or held[i["object_id"]]["sm_box_id"]) if i["object_id"] in held else "danh sách đã dùng trong bảng tính"}
                  for i in box_items(conn, b["id"]) if i["object_id"] in held or i["object_id"] in sheet]
         if clash:
@@ -1712,7 +1743,7 @@ def sm_report(conn, catalog: Catalog, ages: bool = False) -> dict:
     reuse = {"on": cutoff is not None, "days": sw["config"]["days"], "old_boxes": len(old_boxes), "undated_boxes": len(undated),
              "freed_objects": len({o for o in old_objects if o in cat} - taken_ids(conn, cutoff))}      # only objects nothing else still holds
     out = {"synced_at": info["synced_at"] if info else None, "boxes": info["active"] if info else 0, "objects_held": len(held),
-           "doubles": doubles[:200], "conflicts": conflicts, "reuse": reuse}
+           "doubles": doubles, "conflicts": conflicts, "reuse": reuse}
     if ages:
         out["ages"] = sm_ages(conn, catalog)
     return out

@@ -457,3 +457,78 @@ svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-widt
 .field-label { display: block; margin-top: 6px; font-size: 13px; font-weight: 600; }
 #used input[type="date"] { width: 100%; }
 .u-list li.reusable button { opacity: .6; }
+
+/* ------------------------------------------------------------------ objects that SM boxes hold (Tự động hoá > Hộp đang có trong SM)
+   One row per object: picture, names, a meter, a state, and a list of the boxes. Colours are the ones the usage chart already uses on this
+   panel colour (blue 4.91:1, dark orange 4.99:1, both over 3:1 for a mark); a state is always an icon and words, and a shortage is also hatched,
+   so no meaning rests on colour. The track is the units that exist, the blue fill the units the boxes hold, the hatched cap what is held beyond that. */
+#smb-view { --smv-blue: #2f6fa0; --smv-warn: #b8430a; --smv-stripe: #f6d5bf; --smv-track: #dfe5e2; display: grid; gap: 8px; }
+.smr-sums { display: grid; gap: 2px; max-width: 520px; }
+.smr-sum {
+  display: grid; grid-template-columns: 118px minmax(0, 1fr) 64px; align-items: center; gap: 10px; padding: 6px 10px; text-align: left;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer;
+}
+.smr-sum:hover:not(:disabled) { background: #eaeeec; }
+.smr-sum[aria-pressed="true"] { background: #fff; border-color: var(--ink); }
+.smr-sum:disabled { cursor: default; color: var(--ink2); }
+.smr-sum-t { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.smr-sum-bar { display: block; height: 12px; }
+.smr-sum-bar i { display: block; height: 100%; min-width: 3px; background: var(--smv-blue); border-radius: 0 4px 4px 0; }
+.smr-sum-short .smr-sum-bar i, .smr-over { background: repeating-linear-gradient(135deg, var(--smv-warn) 0 4px, var(--smv-stripe) 4px 8px); }
+.smr-sum-n { text-align: right; font-weight: 700; white-space: nowrap; }
+.smr-sum-short svg, .smr-short .smr-state svg { color: var(--smv-warn); }
+.smr-sum-full svg, .smr-full .smr-state svg { color: var(--smv-blue); }
+.smr-sum-spare svg, .smr-spare .smr-state svg { color: var(--ink2); }
+
+.smr-groups { display: grid; gap: 10px; }
+.smr-group { padding: 8px 12px; border: 1px solid var(--line); border-left: 4px solid var(--alert); border-radius: 8px; background: var(--cut); }
+.smr-group h4 { margin: 0 0 2px; font-size: 13.5px; }
+.smr-group h4 small { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--ink2); }
+.smr-list { display: grid; }
+.smr {
+  display: grid; grid-template-columns: 48px minmax(0, 1fr) 372px; grid-template-areas: "pic name meter" "pic more more";
+  align-items: center; column-gap: 14px; row-gap: 2px; padding: 10px 2px; border-top: 1px solid var(--line);
+}
+.smr:first-child { border-top: 0; }
+.smr-pic { grid-area: pic; align-self: start; }
+.smr-pic .bbt { --s: 48px; --r: 8px; }
+.smr-name { grid-area: name; display: grid; gap: 1px; min-width: 0; }
+.smr-en { overflow-wrap: anywhere; }
+.smr-vi { color: var(--ink2); overflow-wrap: anywhere; }
+.smr-meta { font-size: 12px; color: var(--ink2); }
+.smr-open { color: var(--smv-blue); text-underline-offset: 2px; }
+.smr-meter { grid-area: meter; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.smr-bar { flex: 1 1 auto; display: flex; gap: 2px; height: 12px; min-width: 60px; }
+.smr-track { display: flex; min-width: 0; background: var(--smv-track); border-radius: 0 4px 4px 0; }
+.smr-fill { display: block; height: 100%; min-width: 4px; background: var(--smv-blue); border-radius: 0 4px 4px 0; }
+.smr-over { display: block; min-width: 6px; border-radius: 0 4px 4px 0; }
+.smr-n { flex: none; min-width: 52px; text-align: right; font-weight: 700; white-space: nowrap; }
+.smr-n:only-child { text-align: left; font-weight: 400; }
+.smr-note { font-size: 12.5px; color: var(--ink2); }
+.smr-state { flex: none; display: inline-flex; align-items: center; gap: 6px; min-width: 98px; font-weight: 600; white-space: nowrap; }
+.smr-d { grid-area: more; }
+.smr-d summary {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: -6px; padding: 2px 6px; border-radius: 6px; list-style: none;
+  font-size: 12.5px; color: var(--ink2); cursor: pointer;
+}
+.smr-d summary::-webkit-details-marker { display: none; }
+.smr-d summary:hover { background: #eaeeec; color: var(--ink); }
+.smr-d[open] summary svg { transform: rotate(180deg); }
+.smr-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.smr-chip { display: grid; min-width: 0; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 12.5px; }
+.smr-chip b { overflow-wrap: anywhere; }
+.smr-chip span { font-size: 12px; color: var(--ink2); }
+.smr-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+@media (max-width: 720px) {
+  .smr { grid-template-columns: 48px minmax(0, 1fr); grid-template-areas: "pic name" "pic meter" "pic more"; column-gap: 10px; row-gap: 6px; }
+  .smr-meter { flex-wrap: wrap; row-gap: 4px; }
+  .smr-bar { flex: 1 1 100%; }
+  .smr-n { min-width: 0; text-align: left; }
+  .smr-state { min-width: 0; }
+  .smr-sum { grid-template-columns: 108px minmax(0, 1fr) 60px; padding: 6px; }
+}
+@media (forced-colors: active) {
+  .smr-track { forced-color-adjust: none; background: Canvas; outline: 1px solid CanvasText; }
+  .smr-fill, .smr-sum-bar i { forced-color-adjust: none; background: CanvasText; }
+  .smr-over, .smr-sum-short .smr-sum-bar i { forced-color-adjust: none; background: repeating-linear-gradient(135deg, CanvasText 0 4px, Canvas 4px 8px); }
+}

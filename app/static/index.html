@@ -281,10 +281,20 @@
         </table>
       </div>
     </div>
-    <h3 id="smb-conf-h" hidden>Hộp có món đã nằm trong hộp khác ở SM</h3>
-    <ul id="smb-conf" class="qlist bad" hidden></ul>
-    <h3 id="smb-dbl-h" hidden>Món đang nằm trong hai hộp SM trở lên</h3>
-    <ul id="smb-dbl" class="qlist" hidden></ul>
+    <div id="smb-view">
+      <h3 id="smb-conf-h" hidden>Hộp của bạn trùng với SM</h3>
+      <p id="smb-conf-hint" class="hint" hidden>Các hộp này có món đang nằm trong hộp SM hoặc trong danh sách đã dùng ở bảng tính. Mở hộp và thay các món đó.</p>
+      <ul id="smb-conf" class="smr-groups" hidden></ul>
+      <h3 id="smb-dbl-h" hidden>Món nằm trong hai hộp SM trở lên</h3>
+      <p id="smb-dbl-hint" class="hint" hidden>Mỗi dòng là một món. Thanh cho biết các hộp SM đang giữ bao nhiêu cái trên tổng số cái SM có. Giữ nhiều hơn số có là thiếu.</p>
+      <div id="smb-dbl-sum" class="smr-sums" role="group" aria-label="Lọc món theo tình trạng" hidden></div>
+      <ul id="smb-dbl" class="smr-list" hidden></ul>
+      <div id="smb-dbl-foot" class="smr-foot" hidden>
+        <p id="smb-dbl-count" class="hint" role="status"></p>
+        <button type="button" id="smb-dbl-more" class="btn small" hidden>Xem thêm</button>
+        <button type="button" id="smb-dbl-all" class="btn small" hidden>Bỏ lọc</button>
+      </div>
+    </div>
   </section>
 
   <section class="panel" id="a-alerts-panel">
