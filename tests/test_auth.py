@@ -191,10 +191,10 @@ def test_a_login_names_where_to_go(tmp_path):
 # ----------------------------------------------------------------------------- refusals
 def test_an_unknown_id_is_refused_with_one_fixed_message_and_nothing_typed_is_stored(tmp_path):
     client, s = mini(tmp_path)
-    r = login(client, "7777")
+    r = login(client, "zq-typed-id")
     assert r.status_code == 401 and r.json()["detail"] == auth.GENERIC_REFUSAL
     conn = db.connect(s.db_path)
-    assert "7777" not in str([tuple(x) for x in conn.execute("SELECT * FROM login_fail").fetchall()])        # only hashes are kept
+    assert "zq-typed-id" not in str([tuple(x) for x in conn.execute("SELECT * FROM login_fail").fetchall()])        # only hashes are kept
     rows = [tuple(x) for x in conn.execute("SELECT actor, action, detail FROM audit_log").fetchall()]
     assert rows == [("-", "login_fail", "")]                                     # the typed ID is not in the log
     for n, bad in enumerate(("", " ", "a", "x" * 41, "x" * 250, "id with space", "<script>", "../etc", None)):
@@ -433,10 +433,10 @@ def test_an_admin_in_the_setting_stays_admin_whatever_the_pasted_list_says(tmp_p
 
 def test_the_audit_log_keeps_the_ID_of_who_acted_and_no_secret(tmp_path):
     client, s = as_admin(tmp_path, admin_code="s3cret")
-    login(client, "7777", "s3cret", ip="1.2.3.4")
+    login(client, "zq-typed-id", "s3cret", ip="1.2.3.4")
     conn = db.connect(s.db_path)
     dump = " ".join(str(tuple(r)) for r in conn.execute("SELECT * FROM audit_log").fetchall())
-    assert "s3cret" not in dump and "7777" not in dump and "1.2.3.4" not in dump                              # no code, no typed ID, no raw address
+    assert "s3cret" not in dump and "zq-typed-id" not in dump and "1.2.3.4" not in dump                              # no code, no typed ID, no raw address
 
 
 def test_people_ids_are_matched_exactly_and_whitespace_is_trimmed(tmp_path):
