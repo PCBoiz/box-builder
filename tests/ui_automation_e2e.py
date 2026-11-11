@@ -205,7 +205,7 @@ try:
         # --- automations tab
         pg.click(".tab[data-view=auto]")
         pg.wait_for_selector(".sw-row")
-        check(pg.locator(".sw-row").count() == 8, "eight switches")
+        check(pg.locator(".sw-row").count() == 9, "nine switches")
         check(not pg.locator("#sw-auto_approve").is_checked(), "auto-approve starts OFF")
         check(pg.locator("#sw-sheet_export").is_checked(), "sheet export starts ON")
         check(pg.locator("#a-alerts li").count() >= 1, "an alert is listed (catalog not synced with SM)")
@@ -232,7 +232,7 @@ try:
         except Exception:
             pass
         check(pg.evaluate("document.activeElement.id") == "sw-sheet_export", "keyboard focus stays on the switch after it saves")
-        check(pg.locator(".sw-state[aria-hidden=true]").count() == 8, "the visual On/Off text is hidden from screen readers (the switch already says it)")
+        check(pg.locator(".sw-state[aria-hidden=true]").count() == 9, "the visual On/Off text is hidden from screen readers (the switch already says it)")
         reuse_row = pg.locator(".sw-row:has(#sw-reuse_old)")
         check(pg.locator("#sw-reuse_old").is_checked() and "Dùng lại món của hộp cũ" in reuse_row.inner_text() and "ngày" in reuse_row.inner_text(), "reuse: the switch is on and says what it does")
         check(reuse_row.locator("input[type=number]").input_value() == "30", "reuse: thirty days by default")

@@ -18,6 +18,8 @@ services:
         sync: false
       - key: SYNC_TOKEN             # secret the SM userscript sends to push the live object list (empty = sync off)
         sync: false
+      - key: SHEET_TOKEN            # secret the sheet's own script sends with the supporters' check (empty = that route is off); only records checks
+        sync: false
       - key: DEFAULT_COUNT
         value: "21"
       - key: MAX_QTY
