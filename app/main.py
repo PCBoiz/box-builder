@@ -469,6 +469,10 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         service.remove_used(c, oid)
         return {"ok": True}
 
+    def no_sheet(tb: dict) -> dict:
+        """These two feeds need no login, so they do not carry the supporters' check detail (object IDs they listed): the queue reads it from its own copy."""
+        return {**tb, "builder": {k: v for k, v in tb["builder"].items() if k != "sheet"}}
+
     @app.get("/api/taskboxes")
     def taskboxes(status: str = "approved", pending: bool = False, c=Depends(conn_dep)):
         """Boxes in the SM TaskBox userscript's own format: approved boxes only (the `status` parameter is kept for old callers and ignored: this
@@ -479,11 +483,11 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
             # what the SM userscript asks for: only boxes that passed the checks, and nothing when the queue is switched off
             if not automation.is_on(c, "sm_queue"):
                 return {"boxes": [], "disabled": True}
-            return {"boxes": service.sm_queue(c, cat, s.max_qty)["ready"]}
-        return {"boxes": service.taskboxes(c, cat, wanted, pending_only=pending)}
+            return {"boxes": [no_sheet(tb) for tb in service.sm_queue(c, cat, s.max_qty)["ready"]]}
+        return {"boxes": [no_sheet(tb) for tb in service.taskboxes(c, cat, wanted, pending_only=pending)]}
 
     def sheet_auth(x_sheet_token: str = Header(default="")):
-        """Its own secret, not the sync token: whoever holds it can record the supporters' check and nothing else."""
+        """Its own secret, not the sync token. Whoever holds it can report the supporters' check; with the gate on, a clean report changes the objects of approved boxes that are not in SM yet. The sheet script keeps it in its Script Properties, so it is readable by whoever can edit that script."""
         if not s.sheet_token:
             raise HTTPException(503, "Máy chủ chưa đặt SHEET_TOKEN nên chưa nhận kết quả kiểm từ bảng tính.")
         if not hmac.compare_digest(x_sheet_token.encode(), s.sheet_token.encode()):

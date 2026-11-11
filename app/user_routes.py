@@ -71,7 +71,7 @@ def install(app, s, cat, engine, count_for) -> None:
     def shape(b: dict) -> dict:
         return {"id": b["id"], "module": b["module"], "label": shown_label(b), "code": b["code"], "anchor": service.split_anchor(b["anchor"])[1] or b["anchor"],
                 "theme": b["theme"], "title": b["title"], "status": b["status"], "status_text": STATUS_TEXT.get(b["status"], b["status"]),
-                "message": plain_message(b), "count": b["count"], "pushed": bool(b["pushed"]), "updated_at": b["updated_at"], "day": b["day"], "sheet": b["sheet"],
+                "message": plain_message(b), "count": b["count"], "pushed": bool(b["pushed"]), "updated_at": b["updated_at"], "day": b["day"], "sheet": {"state": b["sheet"]["state"], "missing": b["sheet"]["missing"]},
                 "items": [{"pos": i["pos"], "id": i["id"], "qty": i["qty"], "name": i["name"], "vi": i["vi"], "category": i["category"], "slot": i["slot"],
                            "filled": i["source"] == "fill"}                         # put in by the app when the AI could not (the person should look at these)
                           for i in b["items"]]}

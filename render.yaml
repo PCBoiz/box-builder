@@ -18,7 +18,7 @@ services:
         sync: false
       - key: SYNC_TOKEN             # secret the SM userscript sends to push the live object list (empty = sync off)
         sync: false
-      - key: SHEET_TOKEN            # secret the sheet's own script sends with the supporters' check (empty = that route is off); only records checks
+      - key: SHEET_TOKEN            # secret the sheet's own script sends with the supporters' check (empty = that route is off). With the supporter gate on a report can change the objects of approved boxes, so keep it to the people who may edit the sheet's script
         sync: false
       - key: DEFAULT_COUNT
         value: "21"

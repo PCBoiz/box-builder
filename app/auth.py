@@ -43,7 +43,7 @@ PUBLIC_EXACT = {"/login", "/api/config", "/api/auth/status", "/api/auth/login", 
 PUBLIC_PREFIX = ("/static/",)
 MACHINE_EXACT = {"/api/taskboxes", "/api/sheet-boxes", "/api/catalog/sync", "/api/sm/boxes/sync", "/api/sync/check",
                  "/api/preflight", "/api/sm/returnable",          # the two carry the sync token and no person
-                 "/api/sheet/checks"}                             # carries its own SHEET_TOKEN: it can record the supporters' check and nothing else
+                 "/api/sheet/checks"}                             # carries its own SHEET_TOKEN (the supporters' check; with the gate on it also rewrites the objects of approved boxes not yet in SM)
 MACHINE_PUSHED = re.compile(r"^/api/boxes/[^/]+/pushed$")
 USER_EXACT = {"/dung", "/my/print"}
 USER_PREFIX = ("/api/my/",)
@@ -242,7 +242,7 @@ def parse_people(text: str) -> tuple[list[dict], list[dict]]:
         pid = normalize_id(parts[0])
         if not pid:
             spaced = len(parts) == 1 and re.search(r"\s", parts[0])
-            bad.append({"line": n, "reason": "Tách ID, tên, module bằng dấu phẩy hoặc phím Tab, ví dụ 2032, Hưng, M3." if spaced
+            bad.append({"line": n, "reason": "Tách ID, tên, module bằng dấu phẩy hoặc phím Tab, ví dụ 1111, Hải, M2." if spaced
                         else "ID phải gồm 2 đến 20 ký tự: chữ, số, dấu gạch ngang, gạch dưới hoặc dấu chấm."})
             continue
         if pid in seen:

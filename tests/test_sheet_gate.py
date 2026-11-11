@@ -537,7 +537,7 @@ def test_with_the_switch_off_the_queue_and_every_feed_are_exactly_as_before(env)
     def look():
         taskboxes = client.get("/api/taskboxes?pending=true").json()
         for tb in taskboxes["boxes"]:
-            assert tb["builder"].pop("sheet") == {"state": "off", "missing": 0, "diff": [], "read_at": None}
+            assert "sheet" not in tb["builder"]                       # the open feeds never carry the supporters' check detail
         state = client.get("/api/state").json()
         for b in state["boxes"]:
             assert b.pop("sheet")["state"] == "off"

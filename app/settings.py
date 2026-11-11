@@ -38,7 +38,7 @@ class Settings:
     max_parallel_llm: int = 1         # boxes picking at once; 1 = no wasted LLM calls on clashing picks
     sectors: str = "Hanoi-GPI"        # only objects from these SM sectors are ever used (comma list; empty = all)
     sync_token: str = ""              # secret the userscript sends to push the live SM catalog (empty = sync disabled)
-    sheet_token: str = ""             # secret the sheet's own script sends with the supporters' check (empty = that route is off). Not the sync token: it can only record checks
+    sheet_token: str = ""             # secret the sheet's own script sends with the supporters' check (empty = that route is off). Not the sync token. With the supporter gate on, a clean report changes the objects of approved boxes that are not in SM yet, so only people who may change approved boxes should be able to edit the sheet's script (it keeps this token in its Script Properties)
     sm_push_mode: str = "off"         # off | mock. 'mock' pushes ready boxes to a fake SM held in memory. There is no real mode.
     image_hosts: str = ""             # hosts an object picture may come from (comma list; empty = the default host set in images.py)
     image_ttl_minutes: int = 55       # how long a signed SM picture link is trusted when the link does not say (SM's last about an hour)

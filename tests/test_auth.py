@@ -353,8 +353,8 @@ def test_a_header_row_pasted_from_a_sheet_is_skipped_and_a_spaced_line_says_what
     assert [r["id"] for r in auth.parse_people("Mã NV;Tên;Module\n1001;A;M1")[0]] == ["1001"]
     rows, bad = auth.parse_people("1001, A\nID, an id that is literally ID")
     assert [r["id"] for r in rows] == ["1001", "ID"]                                                         # only the first line can be a header
-    rows, bad = auth.parse_people("2032 Hưng M3")
-    assert rows == [] and "dấu phẩy" in bad[0]["reason"] and "2032, Hưng, M3" in bad[0]["reason"]
+    rows, bad = auth.parse_people("1111 Hải M2")
+    assert rows == [] and "dấu phẩy" in bad[0]["reason"] and "1111, Hải, M2" in bad[0]["reason"]
     assert "2 đến 20 ký tự" in auth.parse_people("a")[1][0]["reason"]
 
 

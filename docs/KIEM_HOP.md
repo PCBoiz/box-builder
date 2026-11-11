@@ -21,7 +21,7 @@ Trang này dành cho admin. Người dùng thường không phải làm gì thê
 
 ## Cài đặt (làm một lần, chỉ admin)
 
-1. Trong Render đặt biến `SHEET_TOKEN`: một chuỗi dài ngẫu nhiên, khác `SYNC_TOKEN`. Biến này chỉ cho phép ghi nhận kết quả kiểm, không làm được việc khác.
+1. Trong Render đặt biến `SHEET_TOKEN`: một chuỗi dài ngẫu nhiên, khác `SYNC_TOKEN`. Biến này chỉ cho phép script bảng tính báo kết quả kiểm. Khi công tắc bật, kết quả đó đổi danh sách món của hộp đã duyệt chưa lên SM. Mã nằm trong thuộc tính của script nên ai sửa được script đọc được mã: chỉ cho những người được đổi hộp sửa script của bảng tính.
 2. Tab **Tự động hoá**, khung **Bảng tính Google**: dán link bảng tính (bản sao để thử trước, rồi bảng thật). Link chỉ lưu trong cơ sở dữ liệu, không bao giờ vào kho mã.
 3. Mở bảng tính, Tiện ích mở rộng, Apps Script: dán bản script mới (nút **Sao chép script bảng tính**), lưu, tải lại bảng.
 4. Menu **Box builder**, **Đặt mã Box builder**: gõ `SHEET_TOKEN` một lần. Mã nằm trong thuộc tính của script, không nằm trong file.
