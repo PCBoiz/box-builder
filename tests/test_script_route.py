@@ -37,8 +37,10 @@ def test_the_app_parameter_picks_the_address_and_bad_values_are_refused(env):
     r = client.get("/box_builder_sm.user.js?app=https://box-builder-guwc.onrender.com", headers={"host": "box-builder-guwc.onrender.com"})   # this server's own address
     assert 'const DEFAULT_APP = "https://box-builder-guwc.onrender.com";' in r.text
     assert update_lines(r.text) == ["// @downloadURL none"] and "?app=" not in r.text          # the parameter never reaches an update link
-    lan = client.get("/box_builder_sm.user.js?app=http://192.0.2.10:8080/")             # a trailing slash is tidied
-    assert 'const DEFAULT_APP = "http://192.0.2.10:8080";' in lan.text and "// @connect      192.0.2.10" in lan.text
+    lan = client.get("/box_builder_sm.user.js?app=https://192.0.2.10:8080/")            # a trailing slash is tidied
+    assert 'const DEFAULT_APP = "https://192.0.2.10:8080";' in lan.text and "// @connect      192.0.2.10" in lan.text
+    plain = client.get("/box_builder_sm.user.js?app=http://192.0.2.10:8080/")           # a listed host still needs https: the sync code must not travel in clear text
+    assert plain.status_code == 422 and "https://" in plain.json()["detail"]
     for bad in ('https://x.com";alert(1);//', "javascript:alert(1)", "https://a.com/path", "https://a b.com", "ftp://a.com",
                 "https://a.com\nGM_xmlhttpRequest", "https://" + "a" * 5 + ".com:99999999", "//evil.com", "https://user@evil.com"):
         got = client.get("/box_builder_sm.user.js", params={"app": bad})
@@ -79,7 +81,7 @@ def test_the_app_parameter_only_names_this_server_localhost_or_a_listed_host(env
     client, s, _ = make_client(env)
     here = {"host": "app.example.test:8443", "x-forwarded-proto": "https"}
     for js in ("/box_builder_sm.user.js", "/box_builder_sm.txt"):
-        for ok in ("https://app.example.test", "http://APP.example.test:9999", "https://app.example.test:8443/", "http://localhost", "http://localhost:8080",
+        for ok in ("https://app.example.test", "https://APP.example.test:9999", "https://app.example.test:8443/", "http://localhost", "http://localhost:8080",
                    "http://127.0.0.1:9000", "https://LocalHost"):
             r = client.get(js, params={"app": ok}, headers=here)
             host = re.match(r"https?://([^/:]+)", ok).group(1).lower()
@@ -90,13 +92,17 @@ def test_the_app_parameter_only_names_this_server_localhost_or_a_listed_host(env
             r = client.get(js, params={"app": bad}, headers=here)
             assert r.status_code == 422 and "ALLOWED_APP_HOSTS" in r.json()["detail"] and "UserScript" not in r.text, (js, bad, r.status_code)
     assert "evil" not in client.get("/box_builder_sm.user.js", params={"app": "https://evil.example"}, headers=here).text    # the refusal does not echo the address back
+    for js in ("/box_builder_sm.user.js", "/box_builder_sm.txt"):                                       # this server's own host over plain http is refused too: only localhost may use http
+        for plain in ("http://app.example.test", "http://app.example.test:8443"):
+            r = client.get(js, params={"app": plain}, headers=here)
+            assert r.status_code == 422 and "https://" in r.json()["detail"], (js, plain, r.status_code)
     # no parameter, or an empty one: the server's own address, whatever host name the request used
     for params in ({}, {"app": ""}, {"app": "  "}):
         r = client.get("/box_builder_sm.user.js", params=params, headers=here)
         assert r.status_code == 200 and 'const DEFAULT_APP = "https://app.example.test:8443";' in r.text
     # the owner's list: comma, space or semicolon between entries, a port or scheme tolerated, case ignored, empty entries mean nothing
     s.allowed_app_hosts = " nas.example.test, Other.EXAMPLE.test:8080;https://third.example.test/x  ,,"
-    for ok in ("https://nas.example.test", "http://other.example.test:1234", "https://THIRD.example.test"):
+    for ok in ("https://nas.example.test", "https://other.example.test:1234", "https://THIRD.example.test"):
         assert client.get("/box_builder_sm.user.js", params={"app": ok}, headers=here).status_code == 200, ok
     for bad in ("https://fourth.example.test", "https://nas.example.test.evil.example", "https://evil.example"):
         assert client.get("/box_builder_sm.user.js", params={"app": bad}, headers=here).status_code == 422, bad

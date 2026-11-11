@@ -1048,6 +1048,7 @@ def approve(conn, box_id: int) -> None:
         if n != b["count"]:
             raise Invalid(f"Hộp mới có {n}/{b['count']} món. Điền đủ món trước khi duyệt.")
         conn.execute("UPDATE boxes SET status='approved', message='', updated_at=? WHERE id=?", (time.time(), box_id))
+        conn.execute("DELETE FROM sheet_checks WHERE box_id=?", (box_id,))          # a box approved again has new objects the supporters never checked: it starts with no report
 
 
 def reopen(conn, box_id: int) -> None:
@@ -1055,6 +1056,7 @@ def reopen(conn, box_id: int) -> None:
         get_box(conn, box_id)
         _not_pushed(conn, box_id)
         conn.execute("UPDATE boxes SET status='draft', updated_at=? WHERE id=?", (time.time(), box_id))
+        conn.execute("DELETE FROM sheet_checks WHERE box_id=?", (box_id,))          # the box is about to change: an old report must not judge the new objects
 
 
 def _editable(conn, box_id: int) -> object:

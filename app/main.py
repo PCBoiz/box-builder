@@ -263,6 +263,8 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         # would make an installed tool hand that code to a stranger, so only this server, localhost, 127.0.0.1 and the hosts the owner listed pass.
         if app_url.strip() and host_of(target) not in {host_of(origin), "localhost", "127.0.0.1", *(host_of(h) for h in re.split(r"[,\s;]+", s.allowed_app_hosts))} - {""}:
             raise service.Invalid("Tham số app chỉ nhận địa chỉ của chính máy chủ này, localhost, 127.0.0.1 hoặc máy trong ALLOWED_APP_HOSTS.")
+        if app_url.strip() and target.startswith("http://") and host_of(target) not in {"localhost", "127.0.0.1"}:      # the sync code goes to this address in a header: never in clear text over the network
+            raise service.Invalid("Tham số app phải bắt đầu bằng https://, trừ localhost và 127.0.0.1.")
         with open(SCRIPT_FILE, encoding="utf-8") as f:
             text = f.read()
         host = urlsplit(target).hostname
@@ -779,7 +781,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         out = {"ok": True, "login_enforced": login.enforced(s), "sm_queue": automation.is_on(c, "sm_queue"),
                "catalog_age_min": minutes_since(cat.info().get("synced_at"), now),
                "sm_snapshot_age_min": minutes_since(sm_info.get("synced_at") if sm_info else None, now),
-               "ready_boxes": len(service.sm_queue(c, cat, s.max_qty)["ready"]), "expected_script_version": script_version()}
+               "ready_boxes": len(service.sm_queue(c, cat, s.max_qty)["ready"]) if automation.is_on(c, "sm_queue") else 0, "expected_script_version": script_version()}
         log_event("preflight", ready=out["ready_boxes"], queue=out["sm_queue"], login=out["login_enforced"])
         return out
 

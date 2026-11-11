@@ -510,6 +510,24 @@ def test_a_box_taken_back_to_draft_is_not_rewritten_either(env):
     assert items_of(s, box) == [(i, 1) for i in ids[:4]] and used_rows(s) == {}
 
 
+def test_a_box_reopened_and_approved_again_starts_with_no_report(env):
+    client, s, cat = gate_client(env)
+    ids = usable_ids(cat)
+    box = approved(s, ids[:4])
+    switch(client)
+    clear_post(client, chk(box, rows=[(ids[0], 1), (ids[1], 1), (ids[2], 1)]))                         # the supporters blank the fourth object and tick: the box follows them
+    assert items_of(s, box) == [(i, 1) for i in ids[:3]] and set(used_rows(s)) == {ids[3]}
+    assert client.post(f"/api/boxes/{box}/reopen").status_code == 200                                  # three of four: it cannot be approved, so the SC refills it
+    assert conn_of(s).execute("SELECT COUNT(*) FROM sheet_checks WHERE box_id=?", (box,)).fetchone()[0] == 0
+    conn_of(s).execute("INSERT INTO box_items(box_id,pos,object_id,qty,locked,source) VALUES(?,?,?,?,0,'manual')", (box, 4, ids[4], 1))
+    assert client.post(f"/api/boxes/{box}/approve").status_code == 200
+    assert conn_of(s).execute("SELECT COUNT(*) FROM sheet_checks WHERE box_id=?", (box,)).fetchone()[0] == 0        # the old report is gone
+    assert sheet_of(client, box)["state"] == "wait_sc" and box not in ready_ids(client)               # new objects: nobody has checked them yet
+    assert items_of(s, box) == [(i, 1) for i in (ids[0], ids[1], ids[2], ids[4])]                      # and the new object is still there
+    clear_post(client, chk(box, rows=[(ids[0], 1), (ids[1], 1), (ids[2], 1), (ids[4], 1)]))            # a fresh check of the new list passes
+    assert sheet_of(client, box)["state"] == "ok" and box in ready_ids(client)
+
+
 def test_a_failure_while_applying_leaves_the_box_and_the_used_list_as_they_were(env, monkeypatch):
     client, s, cat = gate_client(env)
     ids = usable_ids(cat)
@@ -806,7 +824,11 @@ def test_every_box_carries_the_sheet_part_in_the_state_the_user_page_and_the_tas
     def everywhere():
         mine = {b["id"]: b for b in client.get("/api/my/summary").json()["boxes"]}                      # login is off, so this page shows every box
         feed = {t["builder"]["box_id"]: t["builder"] for t in client.get("/api/taskboxes").json()["boxes"]}
-        return boxes_of(client)[box]["sheet"], mine[box]["sheet"], feed[box]["sheet"], boxes_of(client)[draft]["sheet"], mine[draft]["sheet"]
+        assert all("sheet" not in f for f in feed.values())                                            # the open feed never carries the supporters' check detail
+        a, d = boxes_of(client)[box]["sheet"], boxes_of(client)[draft]["sheet"]
+        assert set(mine[box]["sheet"]) == {"state", "missing"} and mine[box]["sheet"] == {"state": a["state"], "missing": a["missing"]}     # the user page: state and count only
+        assert mine[draft]["sheet"] == {"state": d["state"], "missing": d["missing"]}
+        return a, a, a, d, d
     assert everywhere() == (off,) * 5                                                                  # switch off
     switch(client)
     wait = {"state": "wait_sc", "missing": 0, "diff": [], "read_at": None}
