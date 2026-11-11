@@ -13,7 +13,8 @@ TOK = {"X-Sync-Token": "tok"}
 
 PUBLIC = {"/login", "/api/config", "/api/auth/status", "/api/auth/login", "/api/auth/logout", "/box_builder_sm.user.js", "/box_builder_sm.txt"}
 MACHINE = {("GET", "/api/taskboxes"), ("GET", "/api/sheet-boxes"), ("POST", "/api/catalog/sync"), ("POST", "/api/sm/boxes/sync"),
-           ("GET", "/api/sync/check"), ("POST", "/api/boxes/1/pushed"), ("DELETE", "/api/boxes/1/pushed")}
+           ("GET", "/api/sync/check"), ("POST", "/api/boxes/1/pushed"), ("DELETE", "/api/boxes/1/pushed"),
+           ("GET", "/api/preflight"), ("GET", "/api/sm/returnable")}
 USER = {("GET", "/dung"), ("GET", "/my/print"), ("GET", "/api/my/summary"), ("POST", "/api/my/boxes"), ("DELETE", "/api/my/boxes/1"),
         ("POST", "/api/my/boxes/1/regenerate"), ("POST", "/api/my/boxes/1/items/1/replace"), ("POST", "/api/my/boxes/1/approve"), ("POST", "/api/my/boxes/1/reopen"),
         ("POST", "/api/my/boxes/1/fill"), ("GET", "/api/my/plan"), ("PUT", "/api/my/plan"), ("GET", "/api/my/recent")}

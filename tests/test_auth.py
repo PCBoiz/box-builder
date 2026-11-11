@@ -58,6 +58,14 @@ def mini(tmp_path, admin_ids="1001", admin_code="", base="http://testserver"):
     def check():
         return {"ok": True}
 
+    @app.get("/api/preflight")
+    def preflight():
+        return {"ok": True}
+
+    @app.get("/api/sm/returnable")
+    def returnable():
+        return {"boxes": []}
+
     @app.post("/api/boxes/{bid}/pushed")
     def pushed(bid: str):
         return {"ok": True}
@@ -126,6 +134,8 @@ def test_the_scripts_in_the_team_browser_tabs_keep_working_without_a_login(tmp_p
     assert client.get("/api/taskboxes?status=approved").status_code == 200
     assert client.get("/api/sheet-boxes").status_code == 200
     assert client.get("/api/sync/check").status_code == 200
+    assert client.get("/api/preflight").status_code == 200
+    assert client.get("/api/sm/returnable").status_code == 200
     assert client.post("/api/catalog/sync").status_code == 200
     assert client.post("/api/sm/boxes/sync").status_code == 200
     assert client.post("/api/boxes/7/pushed").status_code == 200
@@ -135,6 +145,8 @@ def test_the_scripts_in_the_team_browser_tabs_keep_working_without_a_login(tmp_p
     assert auth.klass("GET", "/api/boxes/7/pushed") == "admin"                  # only POST and DELETE are the script's calls
     assert auth.klass("POST", "/api/boxes/7/approve") == "admin"
     assert auth.klass("POST", "/api/boxes/7/pushed/x") == "admin"
+    assert auth.klass("GET", "/api/preflight") == auth.klass("GET", "/api/sm/returnable") == "machine"
+    assert auth.klass("POST", "/api/sm/returnable/x") == "admin"
 
 
 def test_klass_is_default_deny():

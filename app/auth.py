@@ -41,7 +41,8 @@ HEADER_WORDS = {"id", "stt", "mã", "ma", "mã nv", "ma nv", "mã số", "ma so"
 PUBLIC_EXACT = {"/login", "/api/config", "/api/auth/status", "/api/auth/login", "/api/auth/logout",
                 "/box_builder_sm.user.js", "/box_builder_sm.txt", "/favicon.ico"}
 PUBLIC_PREFIX = ("/static/",)
-MACHINE_EXACT = {"/api/taskboxes", "/api/sheet-boxes", "/api/catalog/sync", "/api/sm/boxes/sync", "/api/sync/check"}
+MACHINE_EXACT = {"/api/taskboxes", "/api/sheet-boxes", "/api/catalog/sync", "/api/sm/boxes/sync", "/api/sync/check",
+                 "/api/preflight", "/api/sm/returnable"}          # the last two carry the sync token and no person
 MACHINE_PUSHED = re.compile(r"^/api/boxes/[^/]+/pushed$")
 USER_EXACT = {"/dung", "/my/print"}
 USER_PREFIX = ("/api/my/",)

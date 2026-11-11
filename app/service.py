@@ -725,17 +725,47 @@ def delete_box(conn, box_id: int) -> None:
         conn.execute("DELETE FROM boxes WHERE id=?", (box_id,))
 
 
-def mark_pushed(conn, box_id: int, sm_box_id: str) -> None:
-    """Record that an approved box now exists in SM. Idempotent; refuses boxes that are not approved."""
+SM_BOX_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def mark_pushed(conn, box_id: int, sm_box_id: str) -> bool:
+    """Record that an approved box now exists in SM; refuses boxes that are not approved. The same SM id again changes nothing (False). A
+    different id for a box that already has one is refused and the first stays: two ids would mean two boxes made in SM for one box here,
+    and the first record is the one the "already in SM" checks rely on. Returns True when a record was written."""
     sm_box_id = str(sm_box_id).strip()
     if not sm_box_id:
         raise Invalid("Thiếu Box ID của SM.")
+    if not SM_BOX_ID.fullmatch(sm_box_id):
+        raise Invalid("Box ID của SM chỉ gồm chữ, số, dấu gạch ngang và gạch dưới, dài tối đa 64 ký tự.")
     with tx(conn):
         b = get_box(conn, box_id)
         if b["status"] != "approved":
             raise Conflict("Chỉ hộp đã duyệt mới được đánh dấu là đã lên SM.")
-        conn.execute("DELETE FROM sm_push WHERE box_id=?", (box_id,))
+        have = conn.execute("SELECT sm_box_id FROM sm_push WHERE box_id=?", (box_id,)).fetchone()
+        if have:
+            if have["sm_box_id"] == sm_box_id:
+                return False
+            raise Conflict(f"Hộp này đã được ghi là có trong SM với mã {have['sm_box_id']}. Mã {sm_box_id} không thay được mã đó. "
+                           "Mở SM xem có hai hộp trùng không, rồi báo admin.")
         conn.execute("INSERT INTO sm_push(box_id, sm_box_id, pushed_at) VALUES(?,?,?)", (box_id, sm_box_id, time.time()))
+        return True
+
+
+def returnable(conn, include_today: bool = False, now: float | None = None) -> list[dict]:
+    """Boxes that are in SM or were (a live sm_push row, or a line in box_history) and were made before today in Vietnam time, so the tool can
+    look for them there and show what it would return. Today's boxes only with include_today. `sm_box_id` is '' when the app never heard
+    back from the tool. The title is the one the tool sent to SM. No owner: the route that serves this needs only the sync token."""
+    today = vn_day(time.time() if now is None else now)
+    out, seen = [], set()
+    for b in conn.execute("SELECT b.id, b.day, b.module, b.code, b.anchor, b.label, p.sm_box_id FROM sm_push p JOIN boxes b ON b.id = p.box_id").fetchall():
+        seen.add(b["id"])
+        out.append({"box_id": b["id"], "day": b["day"], "title": taskbox_title(b["code"] or b["module"], b["anchor"], b["label"]), "sm_box_id": b["sm_box_id"]})
+    for h in conn.execute("SELECT box_id, day, module, code, anchor, label, title, sm_box_id FROM box_history").fetchall():
+        if h["box_id"] in seen:                          # a box retired between the two reads: the live row already told it
+            continue
+        out.append({"box_id": h["box_id"], "day": h["day"], "sm_box_id": h["sm_box_id"],
+                    "title": h["title"] or taskbox_title(h["code"] or h["module"], h["anchor"], h["label"])})
+    return sorted((r for r in out if include_today or r["day"] < today), key=lambda r: (r["day"], r["box_id"]))
 
 
 def unmark_pushed(conn, box_id: int) -> None:

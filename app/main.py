@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import threading
@@ -24,6 +25,26 @@ from .settings import Settings
 from .sm_client import STATUS_LABELS, MockSM
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
+
+log = logging.getLogger("box_builder")
+if not log.handlers:                      # uvicorn sets up only its own loggers: without a handler of ours the info lines below would be dropped
+    log.setLevel(logging.INFO)
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    log.addHandler(_handler)
+
+
+def log_event(event: str, **counts: int) -> None:
+    """One line per token route call: the event and whole numbers only. Never a token, an ID, a title or a name."""
+    log.info("%s %s", event, " ".join(f"{k}={int(v)}" for k, v in counts.items()))
+
+
+def minutes_since(ts, now: float) -> int | None:
+    """Whole minutes from `ts` (epoch seconds) to `now`, or None when there is no time to count from."""
+    try:
+        return max(0, int((now - float(ts)) // 60))
+    except (TypeError, ValueError):
+        return None
 
 
 class NewBox(BaseModel):
@@ -139,7 +160,9 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         yield
         db.close_pools()                      # hand Neon its connections back politely
 
-    app = FastAPI(title="Box builder", lifespan=lifespan)
+    # The interactive docs and the schema list every route to anyone who asks: off unless ENABLE_DOCS=1 is set for a look at them.
+    docs = {} if s.enable_docs else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    app = FastAPI(title="Box builder", lifespan=lifespan, **docs)
 
     def conn_dep():
         c = db.connect(s.db_path)
@@ -317,6 +340,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         claimed = {r[0] for r in c.execute("SELECT object_id FROM box_items")}
         summary["claimed_now_unavailable"] = sorted(claimed - set(cat.items()))
         summary["healed_boxes"] = heal_boxes(c) if automation.is_on(c, "auto_heal") else []
+        log_event("catalog_sync", received=len(body.objects), usable=len(cat.items()), healed=len(summary["healed_boxes"]))
         return summary
 
     def heal_boxes(c) -> list[dict]:
@@ -689,7 +713,9 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         """The userscript (signed in to SM) sends the boxes SM holds so a new box never reuses one of their objects.
         Same secret as the catalog sync. Read only on SM's side; the server never contacts SM."""
         sync_auth(x_sync_token)
-        return service.save_sm_boxes(c, body.boxes, time.time(), body.allow_empty)
+        info = service.save_sm_boxes(c, body.boxes, time.time(), body.allow_empty)
+        log_event("sm_boxes_sync", received=info["received"], active=info["active"], held=info["objects_held"])
+        return info
 
     def sync_auth(x_sync_token: str):
         if not s.sync_token:
@@ -697,12 +723,47 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         if not hmac.compare_digest(x_sync_token.encode(), s.sync_token.encode()):
             raise HTTPException(401, "Sai mã đồng bộ.")
 
+    def script_version() -> str | None:
+        """The version the repo's tool says it is (its `const VERSION`), so the tool can tell whether the copy in the browser is the current one."""
+        try:
+            with open(SCRIPT_FILE, encoding="utf-8") as f:
+                m = re.search(r'^\s*const VERSION = "([^"]{1,40})";', f.read(), re.M)
+        except OSError:
+            return None
+        return m.group(1) if m else None
+
+    @app.get("/api/preflight")
+    def preflight(x_sync_token: str = Header(default=""), c=Depends(conn_dep)):
+        """The tool asks this before it does anything: is the app awake and its database answering, is login on, is the queue on, how old are the
+        two snapshots, how many boxes are ready. Needs the sync token like /api/sync/check. No owner, no names. A pure read: no housekeeping,
+        so a poll from the tool never retires a box or frees an object."""
+        sync_auth(x_sync_token)
+        c.execute("SELECT 1").fetchone()
+        now = time.time()
+        sm_info = service.sm_boxes_info(c)
+        out = {"ok": True, "login_enforced": login.enforced(s), "sm_queue": automation.is_on(c, "sm_queue"),
+               "catalog_age_min": minutes_since(cat.info().get("synced_at"), now),
+               "sm_snapshot_age_min": minutes_since(sm_info.get("synced_at") if sm_info else None, now),
+               "ready_boxes": len(service.sm_queue(c, cat, s.max_qty)["ready"]), "expected_script_version": script_version()}
+        log_event("preflight", ready=out["ready_boxes"], queue=out["sm_queue"], login=out["login_enforced"])
+        return out
+
+    @app.get("/api/sm/returnable")
+    def sm_returnable(today: bool = False, x_sync_token: str = Header(default=""), c=Depends(conn_dep)):
+        """Boxes made on an earlier day that are, or were, in SM (title, day, and the SM id when the tool reported it), for the tool's return
+        preview. today=1 adds today's boxes. No owner, no names, and it never runs housekeeping: a poll must not retire a box."""
+        sync_auth(x_sync_token)
+        boxes = service.returnable(c, include_today=today)
+        log_event("returnable", boxes=len(boxes), with_today=today)
+        return {"boxes": boxes}
+
     @app.post("/api/boxes/{box_id}/pushed")
     def box_pushed(box_id: int, body: PushedBody, x_sync_token: str = Header(default=""), c=Depends(conn_dep)):
         """The userscript reports a box it just created in SM, so it is never pushed twice. Needs the sync token
-        (not the shared access code, which may be switched off)."""
+        (not the shared access code, which may be switched off). The same SM id again is a no-op; another id for a box that has one is a 409."""
         sync_auth(x_sync_token)
-        service.mark_pushed(c, box_id, body.sm_box_id)
+        written = service.mark_pushed(c, box_id, body.sm_box_id)
+        log_event("pushed", new=written, same=not written)
         return {"ok": True}
 
     @app.delete("/api/boxes/{box_id}/pushed")
@@ -710,6 +771,7 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
         """Admin escape hatch: forget that a box was pushed (e.g. someone deleted it in SM by hand)."""
         sync_auth(x_sync_token)
         service.unmark_pushed(c, box_id)
+        log_event("unpushed", boxes=1)
         return {"ok": True}
 
     @app.get("/api/export.csv")
@@ -726,6 +788,18 @@ def create_app(settings: Settings | None = None, llm=None, catalog: Catalog | No
                             csv_safe(it["name"]), csv_safe(it["vi"]), csv_safe(it["category"])])
         return Response("﻿" + out.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": "attachment; filename=boxes.csv"})
+
+    # Registered last on purpose: the last middleware added is the outermost, so these headers are also on the answers the login gate and the
+    # cross-site check give without reaching a route (a 401, a 403, a redirect).
+    @app.middleware("http")
+    async def safe_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"      # an answer with boxes or counts is never kept by a browser or a proxy
+        return response
 
     return app
 
