@@ -16,6 +16,10 @@ REAL_CSV = os.path.join(os.path.dirname(__file__), "..", "data", "catalog.csv")
 
 
 PG_URL = os.getenv("TEST_DATABASE_URL")          # set it to also run every test on a real Postgres
+# Some tests open dozens of connections through conn_of() that are only handed back when the test ends (a loop of 32 picks needs about 70
+# at once), while the app's default pool holds 10: on Postgres they failed with "couldn't get a connection after 30 sec", and only when
+# earlier tests had left a straggler. A bigger pool for the test run fixes that; Postgres allows 100 connections by default.
+os.environ.setdefault("DB_POOL_MAX", "90")
 _open_conns = []
 
 
