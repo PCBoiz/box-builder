@@ -171,7 +171,7 @@ with the tip "Đồng bộ lại kho trong SM". A signed link that says nothing 
 catalog was read. The printed pick list leaves expired pictures out.
 
 Safety is unchanged: the server never writes to SM and holds no SM credentials (`tests/test_safety.py` enforces it).
-The userscript still creates TaskBoxes only after your confirm click; the sheet script still writes only empty cells.
+The userscript (0.3.1 and later) is read-only: it cannot write to SM at all (`WRITES_ENABLED = false`, pinned by tests); TaskBoxes are created and returned in the SCB Box System. The sheet script still writes only empty cells.
 A short activity log shows what the automations did.
 
 Browser tests: `pip install playwright && python -m playwright install chromium`, then `python tests/ui_automation_e2e.py`, `tests/admin_e2e.py` (login, people, sheet box, chart),
@@ -191,11 +191,11 @@ workbook IDs, locks, approval, expiry, access code, DeepSeek client against a fa
 3. **Google Sheet.** Paste `integrations/google_sheets_apps_script.gs` into the sheet's Apps Script. A menu fills the
    approved boxes into the block of the matching tab. It writes only into completely empty cells, re-checks right
    before writing, never overwrites, and shows a preview first. Timer is optional (same rules).
-4. **Push to SM.** In the userscript, paste the app link in the source field and press "Quét dữ liệu", review the table,
-   then press "Đồng bộ". For boxes from the app it is create-only: it never updates a box that already exists in SM.
-   After each confirmed create it tells the app (`POST /api/boxes/{id}/pushed`, needs `SYNC_TOKEN`), the box shows
-   "Đã lên SM", and it is skipped from then on, even on later days. A pushed box cannot be reopened or discarded
-   in the app. An admin can undo the mark with `DELETE /api/boxes/{id}/pushed` and the sync token.
+4. **SM stock and returned boxes.** The userscript (admin only, read-only, 0.4.0) refreshes the catalog and the SM box list; with auto refresh on, a
+   box returned in SM frees its objects here within about 10 minutes. It carries no update link: new versions are pasted by hand
+   (`docs/SM_SYNC.md`). Creating, assigning, borrowing and returning boxes in SM is done by the SCB Box System, not by this app or this script.
+5. **Supporters' check.** The sheet script reports the SC tick, the supporters' tick and the objects left in each block (`docs/KIEM_HOP.md`). With the
+   switch on, a box reaches the SM queue only when both ticks are in and the supporters' list matches.
 
 No SM password or token is stored on the server. The only secret the server holds for SM is the shared `SYNC_TOKEN`,
 which can only replace the catalog snapshot and mark boxes as pushed.

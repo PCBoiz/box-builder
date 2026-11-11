@@ -1,9 +1,9 @@
 # Đồng bộ kho từ SM sang Box builder
 
-Công cụ này là một script Tampermonkey chạy trong chính tab SM của bạn. Từ bản 0.3.0 nó làm ba việc: đọc kho đồ từ SM (kèm số lượt mượn và
-ngày tạo của từng món), đọc danh sách hộp trong SM, và tạo hộp mới trong SM cho các hộp đã duyệt trong Box builder. Hai việc đầu **chỉ đọc**.
-Việc thứ ba chỉ chạy sau khi bạn bấm nút **Xác nhận tạo**. Script chạy ở mọi trang `sm.config.inc/boxes` và `sm.config.inc/object`.
-Script không bao giờ chuyển trạng thái, giao, mượn, sửa hay xoá hộp trong SM, và máy chủ Box builder không bao giờ kết nối tới SM.
+Công cụ này là một script Tampermonkey chạy trong chính tab SM của **admin**. Người dùng thường không cài và không thấy nó. Từ bản 0.3.1 nó **chỉ đọc**:
+đọc kho đồ từ SM (kèm số lượt mượn và ngày tạo của từng món) và danh sách hộp trong SM, rồi gửi cho Box builder để mọi người thấy món nào còn trống và hộp nào đã trả.
+Script không tạo, giao, mượn, trả, sửa hay xoá gì trong SM, và máy chủ Box builder không bao giờ kết nối tới SM. Việc tạo hộp, giao, mượn và trả hộp trong SM do SCB làm,
+không do script này (xem mục "Tạo hộp và trả hộp trong SM"). Script chạy ở mọi trang `sm.config.inc/boxes` và `sm.config.inc/object`.
 
 **Script của nhóm (v2.23.0, "Sondeptraidatimthayban") là một công cụ khác.** Nó cũng đọc hộp đã duyệt từ Box builder và gửi kho lên Box builder,
 nhưng ngoài việc tạo hộp nó còn gán người nhận và cập nhật hộp trong SM. Hai script không cần cùng chạy: nếu bật cả hai, nút của chúng chồng nhau
@@ -49,38 +49,27 @@ Bấm **Đọc hộp trong SM**. Bước này cũng chạy tự động ở cu�
 
 Kết quả hiện một dòng, ví dụ: `Box builder nhận 13 hộp: 11 đang dùng (giữ 49 món), 2 đã trả nên bỏ qua.`
 
-## Đưa hộp sẵn sàng lên SM (hai bước)
+## Tạo hộp và trả hộp trong SM
 
-Hộp sẵn sàng là hộp đã duyệt trong Box builder, qua đủ các kiểm tra, và chưa có trong SM. Khi bạn mở panel, dòng
-**N hộp sẵn sàng đưa lên SM** cho biết có bao nhiêu hộp, kèm danh sách (tên hộp và số món). Bấm **Làm mới** để đọc lại.
+Bản này không có nút tạo hộp. Trong file script vẫn còn đoạn mã tạo hộp (một lệnh `POST /api/boxes` sau khi bấm xác nhận) để người xem mã thấy nó làm gì, nhưng nó bị khoá:
+hằng số `WRITES_ENABLED` là `false` và ba chỗ kiểm tra nó (bước xem không đưa ra danh sách tạo, hàm tạo hộp dừng ở dòng đầu, hàm gửi lệnh tạo dừng ở dòng đầu).
+Khung công cụ ghi **Ghi vào SM: TẮT**. Test `tests/test_safety.py` và hai test trình duyệt chặn mọi thay đổi làm hằng số này bật mà không ai hay.
 
-1. **Xem và tạo trong SM.** Script đọc hộp trong SM (như phần trên), rồi đối chiếu tên. Hộp nào có tên trùng một hộp chưa trả
-   trong SM được ghi là `đã có trong SM, bỏ qua`. Bước này **không tạo gì**. Cuối bước, script cho biết sẽ tạo bao nhiêu hộp
-   và hiện nút **Xác nhận tạo N hộp**.
-2. **Xác nhận tạo N hộp.** Chỉ nút này mới ghi vào SM. Script đọc lại danh sách một lần nữa, rồi tạo từng hộp bằng một lệnh
-   `POST /api/boxes` từ chính tab SM của bạn, với tên hộp, mã món neo, danh sách món, ghi chú `Created by Box builder #<mã hộp>`
-   và `borrow_now` luôn là `false` (không mượn, không giao ai). Tạo xong, script báo cho Box builder để hộp không bị đưa lên lần nữa.
+Hộp đã duyệt, kiểm tra của người hỗ trợ, tạo hộp trong SM, giao, mượn và trả hộp: xem `docs/KIEM_HOP.md` và phần SCB. Hộp thử đầu tiên trên SM thật cũng đi qua SCB.
 
-Cách script tránh tạo trùng:
+## Làm mới tự động (từ bản 0.4.0)
 
-- Nút xác nhận tắt trong lúc chạy, và bấm lần hai không tạo thêm gì. Muốn tạo tiếp, bấm lại **Xem và tạo trong SM**.
-- Một hộp lỗi không làm dừng các hộp khác. Mỗi hộp có một dòng kết quả. Riêng khi SM báo bạn chưa đăng nhập, script dừng ngay.
-- Hộp bị bỏ qua vẫn nằm trong danh sách sẵn sàng của Box builder. Nếu hộp trùng tên đó không phải của Box builder, đổi tên hộp trong Box builder.
+Mặc định tắt. Khi admin bật công tắc trong khung công cụ và giữ tab SM mở, script tự đọc lại: danh sách hộp mỗi 10 phút (để hộp đã trả giải phóng món), kho đồ mỗi 60 phút.
+Nó không bao giờ chạy chồng lên một lần đọc đang chạy, thử lại sau 5 phút nếu lỗi, và tự tắt khi SM báo chưa đăng nhập. Chỉ có lệnh đọc. Người dùng thường thấy
+dòng "Kho SM: cập nhật ... trước" ở đầu trang mới hơn mà không phải bấm gì.
 
-Lần đầu dùng với SM thật, chỉ để một hộp ở trạng thái sẵn sàng, bấm xác nhận rồi mở hộp đó trong SM để kiểm tra trước khi đưa nhiều hộp.
+Khi mở panel, script hỏi `/api/preflight` một lần: máy chủ có thức không, bao nhiêu hộp sẵn sàng, dữ liệu cũ bao lâu, và bản script này có khớp bản mới nhất không.
+Máy chủ miễn phí ngủ sau 15 phút không có ai dùng và dậy mất khoảng một phút: script báo "Máy chủ đang thức dậy" và thử lại, không báo lỗi mã đồng bộ.
 
-### Thử MỘT hộp trên SM thật (làm một lần, do chính bạn bấm)
+## Cập nhật bản mới
 
-Luồng tạo hộp đã chạy tốt trên SM giả, nhưng chưa từng chạy trên SM thật. Người hỗ trợ (Claude) không đăng nhập SM và không bấm thay bạn được.
-
-1. Trong trang admin của Box builder, tạo và duyệt MỘT hộp thử nhỏ (ví dụ module `TEST`, mã section `TEST-01`, ba món). Đừng để hộp nào khác ở trạng thái đã duyệt. Tên hộp trong SM sẽ là `TEST-01 - B2` (hoặc theo nhãn bạn đặt).
-2. Mở SM, đăng nhập, bấm nút **Box builder**, bấm **Xem và tạo trong SM**. Bước này không tạo gì. Đọc dòng "Sẽ tạo 1 hộp": tên đúng, số món đúng.
-3. Bấm **Xác nhận tạo 1 hộp**. Script gửi đúng một lệnh tạo hộp, với `borrow_now` là `false` (không mượn, không giao ai).
-4. Mở trang `sm.config.inc/boxes`, tìm hộp theo tên. Kiểm tra: tên, món neo, danh sách món và số lượng, trạng thái `created`, không ai được giao.
-5. Quay lại Box builder: hộp phải hiện "Đã lên SM". Nếu script báo "đã tạo trong SM nhưng chưa báo được cho Box builder", **đừng tạo lại**: lần xem sau hộp sẽ hiện là đã có trong SM.
-6. Chỉ khi cả năm bước đúng mới đưa nhiều hộp lên.
-
-Dọn hộp thử: hộp thử trong SM bạn tự xử lý trong SM (Box builder không xoá gì trong SM). Trong Box builder, hộp đã lên SM không bỏ duyệt hay huỷ được; để trả ba món về kho, admin gỡ dấu "đã lên SM" bằng `DELETE /api/boxes/<mã>/pushed` kèm mã đồng bộ, rồi huỷ hộp.
+Script không tự cập nhật (dòng `@downloadURL none`, không có `@updateURL`). Muốn dùng bản mới, mở `/box_builder_sm.txt` trên Box builder, chép toàn bộ,
+dán đè vào script trong Tampermonkey rồi lưu. Dòng "Tự cập nhật: TẮT" trong khung công cụ xác nhận đúng như vậy.
 
 ## Đọc số lượt mượn (từ bản 0.3.0)
 
@@ -108,18 +97,6 @@ Khi đồng bộ kho, script đọc thêm hai thứ của mỗi món từ lệnh
 | SM không trả danh sách món trong hộp | SM trả hộp nhưng không kèm món | Box builder không biết hộp nào giữ món nào. Báo người phụ trách script |
 | Kho đã đồng bộ, nhưng chưa đọc được hộp SM | Đồng bộ kho xong, bước đọc hộp lỗi | Làm theo lý do ghi cùng dòng, rồi bấm **Đọc hộp trong SM** |
 | Danh sách hộp SM trống nên bị bỏ qua | SM trả về 0 hộp mà không báo tổng là 0, có thể đọc lỗi | Bấm lại. Nếu vẫn vậy, báo người phụ trách script |
-| Chưa có hộp nào sẵn sàng đưa lên SM | Không có hộp đã duyệt chưa đưa lên SM | Duyệt hộp trong Box builder, rồi bấm **Làm mới** |
-| Hàng đợi đưa hộp lên SM đang tắt | Công tắc hàng đợi trong Box builder đang tắt | Bật lại ở mục Tự động hoá |
-| Hộp "...": đã có trong SM, bỏ qua | SM có hộp chưa trả cùng tên | Không cần làm gì. Nếu hộp đó không phải của Box builder, đổi tên hộp |
-| Hộp "...": không còn sẵn sàng sau khi đọc SM | Món của hộp đã nằm trong một hộp SM khác, hoặc hộp vừa bị sửa | Xem mục Hàng chờ trong Box builder để biết lý do |
-| Hộp "...": đã đổi từ lúc bạn xem, bỏ qua | Hộp bị sửa giữa hai lần bấm | Bấm lại **Xem và tạo trong SM** |
-| Sẽ tạo N hộp ... Chưa tạo gì | Bước xem xong, chưa ghi gì vào SM | Bấm **Xác nhận tạo N hộp** nếu danh sách đúng |
-| Hộp "...": SM không tạo được. SM từ chối: ... | SM không nhận hộp và nêu lý do | Sửa theo lý do (ví dụ món không còn trong kho SM), rồi bấm lại **Xem và tạo trong SM**. Các hộp khác vẫn được tạo |
-| Hộp "...": đã tạo trong SM (mã) và báo cho Box builder | Tạo xong | Không cần làm gì |
-| Hộp "...": đã tạo trong SM (mã) nhưng chưa báo được cho Box builder | Hộp đã có trong SM, nhưng Box builder chưa ghi nhận | Đừng tạo lại. Lần xem sau hộp sẽ hiện là đã có trong SM |
-| Hộp "...": SM nhận yêu cầu nhưng không trả mã hộp | SM không nói mã hộp mới | Mở SM kiểm tra hộp đã có chưa trước khi tạo lại |
-| Dừng lại, N hộp còn lại chưa tạo | SM báo chưa đăng nhập giữa chừng | Đăng nhập SM, bấm lại **Xem và tạo trong SM** |
-| Xong: tạo X hộp, lỗi Y, bỏ qua Z | Tổng kết lần tạo | Đọc dòng của từng hộp lỗi |
 | Phiên bản Box builder này còn cũ, chưa có chức năng này | Máy chủ chưa có phần nhận hộp hoặc danh sách hộp sẵn sàng | Cập nhật Box builder |
 
 ## Điều cần biết
@@ -129,5 +106,5 @@ Khi đồng bộ kho, script đọc thêm hai thứ của mỗi món từ lệnh
 - Box builder từ chối một lần đồng bộ nếu nó làm kho tụt dưới một nửa hoặc dưới 50 món, để một lần đọc lỗi không xoá mất kho.
 - Link ảnh của SM là link ký sẵn nên hết hạn sau một thời gian. Đồng bộ lại thì ảnh hiện lại.
 - Mã đồng bộ được lưu trong bộ nhớ riêng của Tampermonkey trên máy bạn, không nằm trong file script. Script chỉ gửi mã này cho Box builder, không bao giờ gửi cho SM.
-- Mọi lệnh tới SM là GET, trừ một lệnh `POST /api/boxes` cho mỗi hộp bạn đã xác nhận tạo.
+- Mọi lệnh tới SM là GET. Trong file còn một lệnh `POST /api/boxes` của đoạn mã tạo hộp, nhưng nó bị khoá bởi `WRITES_ENABLED = false`.
 - Test trình duyệt: `python -I tests/userscript_sync_e2e.py` và `python -I tests/userscript_push_e2e.py` (cần playwright và chromium). Cả hai dùng SM giả, không chạm SM thật.
