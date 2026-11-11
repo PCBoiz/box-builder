@@ -6,7 +6,10 @@ the lifetime use and creation date that ride along (read from SM in several shap
 the plain Vietnamese status lines after a sync, the box read, the script on SM's /object page, and that SM only ever got GET requests.
 Since 0.4.0 also: a sleeping server (proxy 502/503/524 or an HTML page) is "waking", never "SYNC_TOKEN not set", reads are tried 4 times 2, 4 and 8 seconds
 apart and writes once, every call to the app is anonymous with redirect "error", the update line and the Box builder line of the panel, and the optional
-auto refresh (boxes every 10 minutes, catalog every 60, never over a running run, off when signed out), driven by Playwright's fake clock."""
+auto refresh (boxes every 10 minutes, catalog every 60, never over a running run, off when signed out), driven by Playwright's fake clock.
+Since 0.4.1 also: only a 401, a 403 or a redirect to the login page switches auto refresh off (an HTML 502, a JSON 503 or a maintenance page keeps it on and is
+tried again 5 minutes later), an automatic run never saves the boxes of its own tab over the storage, the automatic catalog read waits 250 ms between pages
+(on a paused fake clock) and a manual one does not, and the header has @noframes."""
 import csv, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import sync_playwright
@@ -68,8 +71,9 @@ PORT = int(os.environ.get("E2E_PORT") or free_port())
 BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "tok-sync-e2e"
+ROTATED = "tok-rotated-elsewhere"                                                  # what another tab saved as the code while this tab still shows TOKEN
 SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 # ---- the pretend SM: objects shaped like the real /api/objects (no Vietnamese name), plus another sector and a hostile picture link
 with open(os.path.join(ROOT, "data", "catalog.csv"), encoding="utf-8-sig", newline="") as fh:
@@ -140,7 +144,8 @@ switch_on("sm_queue")
 
 fails, errs = [], []
 sm_requests, app_requests, app_posts, sm_box_queries = [], [], [], []
-state = {"signed_in": True, "old_server": False, "usage_mode": "mixed", "queue": {}, "preflight_version": VERSION}
+state = {"signed_in": True, "old_server": False, "usage_mode": "mixed", "queue": {}, "preflight_version": VERSION, "sm_fault": None}
+fault_hits = []                                                                    # the paths the pretend SM answered with a fault
 app_calls = []                                                                     # every request the script made to the app, with the options it passed
 HTML_503 = {"status": 503, "responseText": "<!doctype html><html><body>Service is waking up</body></html>"}
 HTML_502 = {"status": 502, "responseText": "<html><body>Bad gateway</body></html>"}
@@ -162,7 +167,9 @@ def gm(opts):
         if nxt is not None: return nxt
     if state["old_server"] and path == "/api/sync/check":
         return {"status": 404, "responseText": '{"detail":"Not Found"}'}
-    req = urllib.request.Request(opts["url"], method=opts["method"], headers=opts.get("headers") or {}, data=(opts.get("data") or "").encode() or None)
+    headers = dict(opts.get("headers") or {})
+    if headers.get("X-Sync-Token") == ROTATED: headers["X-Sync-Token"] = TOKEN         # a code changed in another tab: the app knows it as the real one
+    req = urllib.request.Request(opts["url"], method=opts["method"], headers=headers, data=(opts.get("data") or "").encode() or None)
     try:
         with urllib.request.urlopen(req, timeout=60) as r: return {"status": r.status, "responseText": r.read().decode()}
     except urllib.error.HTTPError as e:
@@ -187,11 +194,27 @@ def as_served(o, i):
     elif mode == "unreadable": o.update(_usage_count={"label": "heavy", "flag": True}, created_at="2024-01-02T03:04:05Z")
     return o                                                                       # mode "missing": neither field is there
 
+SM_FAULTS = {                                                                      # what a signed-out or unwell SM can answer
+    "login200": dict(status=200, content_type="text/html", body="<html><body>Login</body></html>"),
+    "401": dict(status=401, content_type="application/json", body='{"detail":"Not authenticated"}'),
+    "403": dict(status=403, content_type="application/json", body='{"detail":"Forbidden"}'),
+    "redirect": dict(status=302, headers={"Location": "https://sm.config.inc/login"}, body=""),
+    "502": dict(status=502, content_type="text/html", body="<html><body>Bad gateway</body></html>"),
+    "503json": dict(status=503, content_type="application/json", body='{"detail":"maintenance"}'),
+    "maintenance200": dict(status=200, content_type="text/html", body="<html><body>Back soon: scheduled maintenance</body></html>"),
+}
+def sm_fault(route):
+    """Answers with the current fault, if any: `sm_fault` in the state, or the old signed_in flag (a 200 page). True when it answered."""
+    kind = state["sm_fault"] or (None if state["signed_in"] else "login200")
+    if not kind: return False
+    fault_hits.append(urlsplit(route.request.url).path)
+    route.fulfill(**SM_FAULTS[kind])
+    return True
+
 def sm_objects(route):
     req = route.request
     note(req)
-    if not state["signed_in"]:
-        return route.fulfill(status=200, content_type="text/html", body="<html><body>Login</body></html>")
+    if sm_fault(route): return
     page = int(parse_qs(urlsplit(req.url).query).get("page", ["1"])[0])
     chunk = [as_served(o, (page - 1) * 30 + j) for j, o in enumerate(objects[(page - 1) * 30: page * 30])]
     chunk = [dict(o, name_vi=o["name"]) for o in chunk] if HAS_VI["on"] else chunk
@@ -202,8 +225,7 @@ def sm_objects(route):
 def sm_boxes(route):
     req = route.request
     note(req)
-    if not state["signed_in"]:
-        return route.fulfill(status=200, content_type="text/html", body="<html><body>Login</body></html>")
+    if sm_fault(route): return
     query = parse_qs(urlsplit(req.url).query)
     sm_box_queries.append(query)
     route.fulfill(status=200, content_type="application/json", body=json.dumps(
@@ -365,7 +387,7 @@ try:
             got_uses = {i: back[i]["uses"] for i in back}
             want_uses = {i: EXPECT[objects[i]["id"]][0] for i in back}
             check(got_uses == want_uses, f"the app's object list returns the uses it was sent (a real 0 stays 0, unknown stays empty): {got_uses}")
-            days = {10: "2024-03-05", 11: "2023-11-14", 12: "2023-11-02", 14: "2022-01-01", 15: "2021-06-30", 23: "2023-11-14", 24: "2023-11-14"}
+            days = {10: "2024-03-05", 11: "2023-11-15", 12: "2023-11-02", 14: "2022-01-01", 15: "2021-06-30", 23: "2023-11-15", 24: "2023-11-15"}      # a Vietnam day: 22:13 UTC on the 14th is the 15th there
             got_days = {i: back[i].get("created") for i in days}
             check(got_days == days, f"and the creation day of each object that had a readable date: {got_days}")
             check(all(not back[i].get("created") for i in (16, 17, 18, 19, 20, 21, 22)), "an object with no readable date has no creation day in the app")
@@ -544,15 +566,15 @@ try:
         check(n_posts("/api/sm/boxes/sync") == a0 + 1, "4 minutes after the failure: no new try")
         minutes(ap, 2)
         check(n_posts("/api/sm/boxes/sync") == a0 + 2 and n_done(ap) >= d0 + 2, "5 minutes after: one more try, and it works")
-        # signed out: it stops
-        state["signed_in"] = False
+        # signed out (SM answers 401): it stops
+        state["sm_fault"] = "401"
         for _ in range(12):
             ap.clock.run_for(60000); idle_(ap)
             if not stored(ap, "bb_auto"): break
         check(stored(ap, "bb_auto") is False and not ap.locator("#bb-auto").is_checked() and "Tự làm mới đã tắt vì SM chưa đăng nhập" in ap.inner_text("#bb-auto-note"), "SM says nobody is signed in: auto refresh turns itself off and the panel says why")
         a2 = snap(); ap.clock.run_for(3 * 3600 * 1000); time.sleep(0.5)
         check(snap() == a2, "three hours later: it asked for nothing more")
-        state["signed_in"] = True; nd = n_done(ap); ap.check("#bb-auto"); ap.clock.run_for(3000); idle_(ap)
+        state["sm_fault"] = None; nd = n_done(ap); ap.check("#bb-auto"); ap.clock.run_for(3000); idle_(ap)
         check(n_done(ap) == nd + 1 and stored(ap, "bb_auto") is True and "Tự làm mới đã tắt" not in ap.inner_text("#bb-auto-note") and snap()[3] == a2[3] + 1, "signed in again and switched on again: it starts at once with the catalog")
         ap.uncheck("#bb-auto"); a3 = snap(); ap.clock.run_for(2 * 3600 * 1000); time.sleep(0.5)
         check(stored(ap, "bb_auto") is False and snap() == a3, "switched off: no more runs")
@@ -565,6 +587,96 @@ try:
         minutes(ap, 25)
         s8 = snap(); check(s8[0] == s7[0] + 1 and s8[2] == s7[2] + 1 and s8[3] == s7[3], f"when the stored time comes this tab reads the boxes once ({s7} -> {s8})")
         ap.close()
+        # --- SM unwell is not "signed out". Only a 401, a 403 or a redirect to the login page switches auto refresh off; an HTML 502 on the boxes list,
+        # --- a JSON 503 or a maintenance page keeps it on and is tried again after the documented 5 minutes.
+        FAR = CLOCK0 + 10 * 3600 * 1000
+        def boxes_due(**extra):                     # an SM tab with auto refresh on, the boxes due now and the catalog far away (what another tab stored)
+            seed = {"bb_app": BASE, "bb_token": TOKEN, "bb_sectors": "Hanoi-GPI", "bb_auto": True, "bb_auto_boxes": 0, "bb_auto_catalog": FAR}
+            seed.update(extra); return open_clock(seed=seed)
+        def first_run(page, h0):                    # the first tick (5 seconds after load) meets the fault; wait until SM was asked and the run is over
+            page.clock.run_for(6000)
+            end = time.time() + 60
+            while len(fault_hits) == h0 and time.time() < end: page.wait_for_timeout(50)       # not time.sleep: the page's calls to the app are served while Playwright waits
+            idle_(page)
+        state["sm_fault"] = "502"; h0 = len(fault_hits)
+        ap = boxes_due(); first_run(ap, h0)
+        check(fault_hits[h0:] == ["/api/boxes"], f"the boxes list was asked once and SM answered an HTML 502 ({fault_hits[h0:]})")
+        check("SM trả lỗi 502" in log_text(ap) and "Chưa đăng nhập SM" not in log_text(ap), "the log says SM gave an error (502), not that nobody is signed in")
+        check(stored(ap, "bb_auto") is True and ap.locator("#bb-auto").is_checked() and "Tự làm mới đã tắt" not in ap.inner_text("#bb-auto-note"), "an HTML 502 on the boxes list during an auto run: auto refresh stays on")
+        left = stored(ap, "bb_auto_boxes") - ap.evaluate("Date.now()")
+        check(240000 <= left <= 300000, f"and the next try is the documented 5 minutes away, not the next minute and not 10 ({left} ms)")
+        minutes(ap, 4); time.sleep(0.3)
+        check(len(fault_hits) == h0 + 1, "4 minutes after the failure: no new try")
+        minutes(ap, 2)
+        check(len(fault_hits) == h0 + 2 and stored(ap, "bb_auto") is True and ap.locator("#bb-auto").is_checked(), "5 minutes after: one more try, it fails the same way and the timer is still on")
+        state["sm_fault"] = None; d0 = n_done(ap); minutes(ap, 6)
+        check(n_done(ap) >= d0 + 1 and stored(ap, "bb_auto") is True, "SM is well again: the next try works, with no need to switch it on again")
+        ap.close()
+        for fault, stays in (("503json", True), ("maintenance200", True), ("login200", True), ("401", False), ("403", False), ("redirect", False)):
+            state["sm_fault"] = fault; h0 = len(fault_hits)
+            ap = boxes_due(); first_run(ap, h0)
+            on = stored(ap, "bb_auto") is True and ap.locator("#bb-auto").is_checked()
+            if stays:
+                left = stored(ap, "bb_auto_boxes") - ap.evaluate("Date.now()")
+                check(on and "Tự làm mới đã tắt" not in ap.inner_text("#bb-auto-note") and 240000 <= left <= 300000, f"SM answers '{fault}' (not a sign-out): auto refresh stays on, next try in 5 minutes ({left} ms)")
+            else:
+                check(not on and stored(ap, "bb_auto") is False and "Tự làm mới đã tắt vì SM chưa đăng nhập" in ap.inner_text("#bb-auto-note"), f"SM answers '{fault}' (signed out): auto refresh switches itself off and says why")
+                a2 = len(fault_hits); ap.clock.run_for(3 * 3600 * 1000); time.sleep(0.4)
+                check(len(fault_hits) == a2, f"and after '{fault}' it asks SM for nothing more in three hours")
+            ap.close()
+        state["sm_fault"] = None
+
+        # --- an automatic run does not save this tab's boxes: the code and the sector were changed in another tab (the storage), this tab still shows the old ones
+        ap = boxes_due()
+        ap.evaluate("([t, sec]) => { window.__store.bb_token = t; window.__store.bb_sectors = sec; }", [ROTATED, "Hanoi-GPI,Hanoi-4F"])
+        check(ap.input_value("#bb-token") == TOKEN and ap.input_value("#bb-sectors") == "Hanoi-GPI", "(this tab's boxes still show the old code and sector)")
+        d0 = n_done(ap); calls0 = len(app_calls)
+        ap.clock.run_for(6000); idle_(ap)
+        ap.wait_for_function("document.querySelector('#bb-log').innerText.includes('Tự làm mới: xong.')", timeout=180000); idle_(ap)
+        check(n_done(ap) == d0 + 1, "the auto run went through")
+        check(stored(ap, "bb_token") == ROTATED and stored(ap, "bb_sectors") == "Hanoi-GPI,Hanoi-4F" and stored(ap, "bb_app") == BASE,
+              f"it did not save its own boxes over the storage: the code another tab saved is still there ({stored(ap, 'bb_token')!r}, {stored(ap, 'bb_sectors')!r})")
+        check(app_calls[calls0:] and all((c.get("headers") or {}).get("X-Sync-Token") == ROTATED for c in app_calls[calls0:]), "and it worked with the code from the storage, not the one in the boxes")
+        check(ap.input_value("#bb-token") == TOKEN, "the boxes of the panel were left alone")
+        ap.click("#bb-boxes")
+        check(stored(ap, "bb_token") == TOKEN and stored(ap, "bb_sectors") == "Hanoi-GPI", "a button press still keeps what is typed in the boxes")
+        idle_(ap); ap.close()
+
+        # --- the automatic catalog read waits 250 ms between pages (a paused fake clock: nothing moves unless the clock does); a manual sync does not wait
+        pages_n = -(-len(objects) // 30)
+        def settle(page, count, quiet=0.4, limit=60):
+            """Wait, in real time, until count() has stopped changing for `quiet` seconds; returns it. page.wait_for_timeout, not time.sleep:
+            the page's calls to the app are answered by this process only while it is waiting inside Playwright."""
+            last, since, end = count(), time.time(), time.time() + limit
+            while time.time() < end:
+                page.wait_for_timeout(50); cur = count()
+                if cur != last: last, since = cur, time.time()
+                elif time.time() - since >= quiet: break
+            return last
+        def until(page, cond, limit=180):
+            end = time.time() + limit
+            while not cond() and time.time() < end: page.wait_for_timeout(50)
+            return cond()
+        def pause(page): page.clock.pause_at(page.evaluate("Date.now()") / 1000 + 0.5)
+        read_page = lambda page, k: f"Đã đọc trang {k}/{pages_n}" in log_text(page)             # the panel's progress line names the last page read
+        ap = open_clock(seed={"bb_app": BASE, "bb_token": TOKEN, "bb_sectors": "Hanoi-GPI", "bb_auto": True, "bb_auto_boxes": 0, "bb_auto_catalog": 0}); pause(ap)
+        o0 = n_sm_objects(); ap.clock.run_for(6000)
+        check(until(ap, lambda: read_page(ap, 1)) and settle(ap, n_sm_objects) - o0 == 2, f"the automatic catalog read asked for the first page (and the check before it) and then waits ({n_sm_objects() - o0} reads of SM's objects)")
+        ap.clock.run_for(249)
+        check(settle(ap, n_sm_objects) - o0 == 2 and not read_page(ap, 2), "249 ms on the clock: still waiting, the second page is not asked for")
+        ap.clock.run_for(1)
+        check(until(ap, lambda: read_page(ap, 2)) and settle(ap, n_sm_objects) - o0 == 3, "250 ms on the clock: the second page is asked for, and only that one")
+        for k in (3, 4, 5):
+            ap.clock.run_for(250)
+            check(until(ap, lambda: read_page(ap, k)) and settle(ap, n_sm_objects) - o0 == k + 1, f"each 250 ms of the clock releases exactly one more page (page {k})")
+        until(ap, lambda: (ap.clock.run_for(250), "Tự làm mới: xong." in log_text(ap))[1], limit=240)
+        check("Tự làm mới: xong." in log_text(ap) and n_sm_objects() - o0 == pages_n + 1, f"the run finishes once the clock lets it, with every page read ({n_sm_objects() - o0} reads, {pages_n} pages and the check's read)")
+        ap.close()
+        ap = open_clock(); pause(ap)
+        o0 = n_sm_objects(); ap.evaluate("document.getElementById('bb-sync').click()")
+        until(ap, lambda: "Hoàn tất." in log_text(ap), limit=240)
+        check("Hoàn tất." in log_text(ap) and n_sm_objects() - o0 == pages_n + 1, f"a manual sync on a clock that never moves reads all {pages_n} pages: it does not wait between pages")
+        ap.close()
         # it cannot be turned on without an address and a sync code
         ap0 = open_clock(fields=False); ap0.evaluate("window.__store.bb_app = ''; window.__store.bb_token = ''"); ap0.click("#bb-auto"); time.sleep(0.3)
         check(not ap0.locator("#bb-auto").is_checked() and stored(ap0, "bb_auto") in (None, False) and "Nhập địa chỉ Box builder và mã đồng bộ" in ap0.inner_text("#bb-auto-note"), "without an address and a sync code the switch refuses to turn on and says what is missing")
@@ -575,6 +687,7 @@ try:
         def tm_match(pattern, url):               # Tampermonkey's @match: the text before * must be there, * stands for anything
             return re.fullmatch(".*".join(re.escape(part) for part in pattern.split("*")), url) is not None
         check("https://sm.config.inc/*" in matches and "https://sm.config.inc/object*" in matches, f"the header keeps the old @match and adds the object page ({matches})")
+        check(re.search(r"^// @noframes$", SCRIPT, flags=re.M) is not None, "the header says @noframes: a frame inside SM gets no panel and no timer")
         check(any(tm_match(m, USAGE_URL) for m in matches) and tm_match("https://sm.config.inc/object*", USAGE_URL), "the object page's address (sorted by usage) is covered by @match")
         pg3 = open_sm(b, url=USAGE_URL, html=USAGE_PAGE)
         pg3.wait_for_selector("#bb-btn", timeout=8000)
@@ -588,8 +701,8 @@ try:
         non_get = [(m, p) for m, p, _ in sm_requests if m != "GET"]
         check(sm_requests and not non_get, f"every request to SM was a GET ({len(sm_requests)} of them, {len(non_get)} writes)")
         paths = {p for _, p, _ in sm_requests}
-        check(paths <= {"/", "/object", "/api/objects", "/api/boxes"}, f"SM was only asked for: {sorted(paths)}")
-        check(not any(TOKEN in json.dumps(h) or "not-the-code" in json.dumps(h) for _, _, h in sm_requests), "the sync code was never sent to SM")
+        check(paths <= {"/", "/object", "/api/objects", "/api/boxes", "/login"}, f"SM was only asked for: {sorted(paths)} (/login is where the browser followed the pretend SM's redirect, not a call of the script)")
+        check(not any(TOKEN in json.dumps(h) or "not-the-code" in json.dumps(h) or ROTATED in json.dumps(h) for _, _, h in sm_requests), "the sync code was never sent to SM")
         check({p for m, p in app_requests} <= {"/api/config", "/api/sync/check", "/api/catalog/sync", "/api/sm/boxes/sync", "/api/taskboxes", "/api/preflight"}, f"the app was only asked for: {sorted({p for _, p in app_requests})}")
         check(app_calls and all(c.get("anonymous") is True and c.get("redirect") == "error" for c in app_calls), f"all {len(app_calls)} calls to the app were anonymous (no cookies) with redirect 'error'")
         check(not any(x in json.dumps(c) for c in app_calls for x in ("private-note", "[BB 2026-01-01", "next_actions", "collected")), "the SM boxes' notes and next_actions never went to the app")

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Box builder: đồng bộ kho với SM
 // @namespace    box-builder
-// @version      0.4.0
+// @version      0.4.1
 // @description  Đọc kho đồ (kèm số lần dùng và ngày tạo) và danh sách hộp từ Scenario Manager (chỉ đọc) và gửi cho Box builder. Có thể tự làm mới khi tab SM đang mở. Bản này chỉ đọc: không tạo, sửa hay xoá gì trong SM.
 // @match        https://sm.config.inc/*
 // @match        https://sm.config.inc/object*
@@ -14,6 +14,7 @@
 // @connect      localhost
 // @connect      127.0.0.1
 // @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
 /* What this does, in one paragraph: it runs in your own signed-in SM tab. It reads SM's object list and box list with GET
@@ -30,13 +31,17 @@
    gives for the object). Both come from the same GET /api/objects pages, only as a number and a date string, never a person.
    Since 0.4.0 the panel shows what Box builder says about itself (ready boxes, how old its data is, which script version it expects),
    what the installed header says about updates, and has an optional switch that refreshes SM's boxes and the catalog on a timer
-   while the SM tab is open (reads only). */
+   while the SM tab is open (reads only).
+   Since 0.4.1: the script runs in the top page only (@noframes), so a frame inside SM gets no panel and no timer of its own; an automatic run
+   never saves what is typed in this tab's boxes (it reads the address, code and sector from storage, so a stale tab cannot undo a change made in another
+   tab); an automatic catalog read waits a moment between pages; only a 401, a 403 or a redirect to the login page counts as "signed out" (a 5xx or a
+   maintenance page is "SM is unwell" and the timer stays on); and a read never forwards a body or headers to SM. */
 (function () {
   "use strict";
   if (window.__bbSm) return;
   window.__bbSm = true;
 
-  const VERSION = "0.4.0";
+  const VERSION = "0.4.1";
   const WRITES_ENABLED = false;         // this build only reads SM; the create flow below is switched off in three places
   const DEFAULT_APP = "";               // the app fills this in when it serves the script, so nobody has to type the address
   const PAGE_CAP = 200;                 // never read more than this many pages of 30 from SM
@@ -47,6 +52,7 @@
   const AUTO_BOXES_MS = 10 * 60 * 1000;     // SM's boxes are read this often while auto refresh is on
   const AUTO_CATALOG_MS = 60 * 60 * 1000;   // the catalog (and the boxes with it) this often
   const AUTO_RETRY_MS = 5 * 60 * 1000;      // after a failed run the next try is this far away
+  const AUTO_PAGE_PAUSE_MS = 250;           // the automatic catalog read waits this long between two pages of SM, so up to 200 reads do not come in a burst
   const store = {
     get: (k, d) => { try { return GM_getValue(k, d); } catch { return d; } },
     set: (k, v) => { try { GM_setValue(k, v); } catch { /* storage unavailable: the panel still works for this visit */ } },
@@ -85,7 +91,8 @@
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), SM_TIMEOUT);
     try {
-      const res = await fetch(u.href, { method, credentials: "same-origin", headers: opts.headers, body: opts.body, signal: ctrl.signal });
+      const extra = method === "GET" ? {} : { headers: opts.headers, body: opts.body };     // a read carries no body and no extra headers; only the listed POST forwards them
+      const res = await fetch(u.href, { method, credentials: "same-origin", ...extra, signal: ctrl.signal });
       const text = await res.text();             // read inside the timer: a stalled body also ends as a timeout
       const type = res.headers.get("content-type") || "";
       return { status: res.status, ok: res.ok, redirected: res.redirected, url: res.url, type, text, json: parseJson(text, type) };
@@ -95,10 +102,15 @@
   }
   const loginPage = (r) => r.redirected && /\/login/.test(r.url);
 
+  /* "Signed out" is decided only by a 401, a 403 or a redirect to the login page: those switch the auto refresh off. Anything else that is not
+     JSON is SM being unwell: a 5xx or a proxy's page keeps the timer on (the next try is 5 minutes later). A 200 page that is not data could be a
+     login page drawn in place or a maintenance page, so it is worded as both and, for the timer, is not "signed out". */
+  const notData = () => new Plain("Chưa đăng nhập SM trong tab này, hoặc SM đang bảo trì (SM trả một trang web thay vì dữ liệu). Đăng nhập SM rồi bấm lại, hoặc thử lại sau ít phút.");
   async function smJson(path) {                  // a read that must give JSON
     const r = await smRequest(path, { method: "GET" });
-    if (r.status === 401 || r.status === 403 || loginPage(r) || !/json/.test(r.type)) throw signedOut();
+    if (r.status === 401 || r.status === 403 || loginPage(r)) throw signedOut();
     if (!r.ok) throw new Plain(`SM trả lỗi ${r.status}. Thử lại sau ít phút.`);
+    if (!/json/.test(r.type)) throw notData();
     if (r.json === null) throw new Plain("SM trả dữ liệu không đọc được. Thử lại sau ít phút.");
     return r.json;
   }
@@ -519,7 +531,7 @@
     return { total, hasVi, viFallback };
   }
 
-  async function sync(say) {
+  async function sync(say, opts) {             // opts.pace: wait a moment between pages (the automatic run only)
     const info = await check(say);
     const sectors = String(store.get("bb_sectors", "Hanoi-GPI") || "").split(",").map((x) => x.trim()).filter(Boolean);
     say("Đang đọc kho từ SM…");
@@ -537,6 +549,7 @@
       }
       say(`Đã đọc trang ${page}/${pages} (${rows.length} món thuộc khu ${sectors.join(", ") || "tất cả"}).`, "progress");
       page += 1;
+      if (page <= pages && opts && opts.pace) await sleep(AUTO_PAGE_PAUSE_MS);
     } while (page <= pages);
     if (rows.length < 50) throw new Plain(`Chỉ đọc được ${rows.length} món thuộc khu ${sectors.join(", ")}. Kiểm tra ô Khu (đúng chính tả, ví dụ Hanoi-GPI).`);
     const withVi = rows.filter((r) => r.vi).length;
@@ -733,7 +746,8 @@
     const run = (fn, opts) => async () => {
       if (busy) return;
       busy = true;                              // set before the first await, so a second press in the same instant finds it set
-      save(); if (!(opts && opts.keep)) log.replaceChildren();
+      if (!(opts && opts.nosave)) save();       // a button press keeps what is typed; an automatic run does not (see autoRun)
+      if (!(opts && opts.keep)) log.replaceChildren();
       all.forEach((b) => { b.disabled = true; }); bConfirm.disabled = true;
       let ok = false;
       liveSay = say;
@@ -772,7 +786,7 @@
       if (kind === "catalog") store.set("bb_auto_catalog", t0 + AUTO_RETRY_MS);
       s(`Tự làm mới: ${kind === "catalog" ? "đọc kho và hộp" : "đọc hộp"} từ SM…`, "progress");
       try {
-        if (kind === "catalog") await sync(s); else { await gate(s); await syncSmBoxes(s); }
+        if (kind === "catalog") await sync(s, { pace: true }); else { await gate(s); await syncSmBoxes(s); }
         const t1 = Date.now();
         store.set("bb_auto_boxes", t1 + AUTO_BOXES_MS);
         if (kind === "catalog") store.set("bb_auto_catalog", t1 + AUTO_CATALOG_MS);
@@ -784,7 +798,7 @@
         }
         throw e;
       }
-    }, { keep: true, own: true })();
+    }, { keep: true, own: true, nosave: true })();     // nosave: this tab's boxes may be stale or half typed; app() and sync() read the storage
     auto.addEventListener("change", () => {
       if (auto.checked) save();                                              // what was typed in the boxes counts, even if no button was pressed yet
       if (auto.checked && !configured()) { store.set("bb_auto_note", "Nhập địa chỉ Box builder và mã đồng bộ trước khi bật tự làm mới."); auto.checked = false; showAuto(); return; }

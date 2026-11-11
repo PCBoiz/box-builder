@@ -69,7 +69,7 @@ BROWSER = os.environ.get("E2E_BROWSER", "chromium")
 BASE = f"http://127.0.0.1:{PORT}"
 TOKEN = "tok-push-e2e"
 SCRIPT = read_text(ROOT, "integrations", "box_builder_sm.user.js")       # the file as it ships: read-only (WRITES_ENABLED false)
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 HEADER = re.search(r"^// ==UserScript==\n.*?^// ==/UserScript==", SCRIPT, flags=re.S | re.M).group(0)
 META_OFF = HEADER.replace("// @connect      localhost\n", "// @connect      localhost\n// @downloadURL  none\n", 1)   # what the app serves: one @downloadURL none, no @updateURL
 META_ON = HEADER.replace("// @connect      localhost\n", "// @connect      localhost\n// @updateURL    https://box-builder.example.invalid/box_builder_sm.user.js\n", 1)
@@ -484,7 +484,7 @@ try:
             page = open_sm(script, store=store, meta=meta); page.click("#bb-btn"); return page
 
         # --- every request to SM goes through one wrapper with a method and path allowlist (GET only is ever sent; the create is also refused while the switch is false)
-        PROBE = "  window.__probe = (p, m) => smRequest(p, { method: m });\n  const ensure = () =>"
+        PROBE = "  window.__probe = (p, m) => smRequest(p, { method: m });\n  window.__probeWith = (p, o) => smRequest(p, o);\n  const ensure = () =>"
         for name, script in (("switched on", without(SCRIPT_WRITE, "  const ensure = () =>", PROBE)), ("shipped", without(SCRIPT, "  const ensure = () =>", PROBE))):
             pp = opened(script=script)
             def probe(path, method): return pp.evaluate("([p, m]) => window.__probe(p, m).then(() => 'sent', (e) => e.message)", [path, method])
@@ -498,6 +498,14 @@ try:
             check(len(sm_requests) == n_sm and sum(1 for e in pp.evaluate("window.__events")[n_ev:] if e["kind"] == "fetch") == 0, f"[{name}] none of the refused requests reached the network")
             for path in ("/api/boxes?limit=500&page=1", "/api/objects?page=2"):
                 check(probe(path, "GET") == "sent", f"[{name}] allowed: GET {path}")
+            # a read never carries a body or the caller's headers, even if a caller passes them (a fetch with a GET body would fail instead of reading)
+            n_sm, n_ev = len(sm_requests), len(pp.evaluate("window.__events"))
+            got = pp.evaluate("""() => window.__probeWith('/api/boxes?limit=1', { method: 'GET', body: '{"leak":1}', headers: { 'X-Probe': 'leak', 'Content-Type': 'application/json' } }).then(() => 'sent', (e) => e.message)""")
+            sent_now = sm_requests[n_sm:]
+            fetches = [e for e in pp.evaluate("window.__events")[n_ev:] if e["kind"] == "fetch"]
+            check(got == "sent" and len(sent_now) == 1 and sent_now[0][0] == "GET" and sent_now[0][3] == "" and "x-probe" not in {k.lower() for k in sent_now[0][2]}
+                  and "leak" not in json.dumps(sent_now[0][2]) and len(fetches) == 1 and fetches[0]["body"] is None,
+                  f"[{name}] a GET that was given a body and headers sends neither, and still reads ({got!r})")
             pp.close()
 
         # --- the panel says what the installed header says about updates (not what GM_info.scriptWillUpdate claims)
