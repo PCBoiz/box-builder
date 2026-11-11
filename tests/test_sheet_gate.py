@@ -633,7 +633,8 @@ def test_the_other_checks_of_the_queue_still_apply_on_top_of_the_gate(env):
     r = reasons(client)
     assert list(r) == [held] and len(r[held]) == 1 and r[held][0].endswith(f"{ids[0]} đã nằm trong hộp SM Someone else's box") and ready_ids(client) == {free}     # a cleared box is still stopped by the old check (the object's name now stands in front of its ID)
     post(client, chk(held, sc=False, rows=[(i, 1) for i in ids[:3]]))
-    assert reasons(client)[held] == [f"{ids[0]} đã nằm trong hộp SM Someone else's box", "chờ SC tick"]      # both are said, the real problem first
+    rs = reasons(client)[held]
+    assert len(rs) == 2 and rs[0].endswith(f"{ids[0]} đã nằm trong hộp SM Someone else's box") and rs[1] == "chờ SC tick"      # both are said, the real problem first
 
 
 def test_a_box_already_in_sm_is_not_gated_and_not_listed(env):
