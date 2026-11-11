@@ -60,7 +60,7 @@ Hộp đã duyệt, kiểm tra của người hỗ trợ, tạo hộp trong SM, 
 ## Làm mới tự động (từ bản 0.4.0)
 
 Mặc định tắt. Khi admin bật công tắc trong khung công cụ và giữ tab SM mở, script tự đọc lại: danh sách hộp mỗi 10 phút (để hộp đã trả giải phóng món), kho đồ mỗi 60 phút.
-Nó không bao giờ chạy chồng lên một lần đọc đang chạy, thử lại sau 5 phút nếu lỗi, và tự tắt khi SM báo chưa đăng nhập. Chỉ có lệnh đọc. Người dùng thường thấy
+Nó không bao giờ chạy chồng lên một lần đọc đang chạy, thử lại sau 5 phút nếu lỗi (kể cả khi SM trả lỗi 5xx hoặc một trang HTML), và chỉ tự tắt khi SM trả 401, 403 hoặc chuyển về trang đăng nhập. Lần chạy tự động không lưu trường nào và chỉ chạy ở trang chính (`@noframes`). Chỉ có lệnh đọc. Người dùng thường thấy
 dòng "Kho SM: cập nhật ... trước" ở đầu trang mới hơn mà không phải bấm gì.
 
 Khi mở panel, script hỏi `/api/preflight` một lần: máy chủ có thức không, bao nhiêu hộp sẵn sàng, dữ liệu cũ bao lâu, và bản script này có khớp bản mới nhất không.

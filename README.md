@@ -191,7 +191,7 @@ workbook IDs, locks, approval, expiry, access code, DeepSeek client against a fa
 3. **Google Sheet.** Paste `integrations/google_sheets_apps_script.gs` into the sheet's Apps Script. A menu fills the
    approved boxes into the block of the matching tab. It writes only into completely empty cells, re-checks right
    before writing, never overwrites, and shows a preview first. Timer is optional (same rules).
-4. **SM stock and returned boxes.** The userscript (admin only, read-only, 0.4.0) refreshes the catalog and the SM box list; with auto refresh on, a
+4. **SM stock and returned boxes.** The userscript (admin only, read-only, 0.4.1) refreshes the catalog and the SM box list; with auto refresh on, a
    box returned in SM frees its objects here within about 10 minutes. It carries no update link: new versions are pasted by hand
    (`docs/SM_SYNC.md`). Creating, assigning, borrowing and returning boxes in SM is done by the SCB Box System, not by this app or this script.
 5. **Supporters' check.** The sheet script reports the SC tick, the supporters' tick and the objects left in each block (`docs/KIEM_HOP.md`). With the
